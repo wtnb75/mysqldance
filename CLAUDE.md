@@ -7,13 +7,14 @@ MySQL 8.0 系以降に直接接続し、DB を「1 レコード 1 行・バイ�
 タスクランナーは `task`。
 
 ```sh
+task check              # fmt（go fmt, go fix）→ lint → 単体テスト。コミット前に実行する
 task test               # 単体テスト（MySQL 不要。統合テストは skip）
 task test:integration   # Docker で MySQL 8.0 / 8.4 を起動して統合テスト
 task lint               # golangci-lint
-task fmt                # gofmt
+task fmt                # go fmt と go fix
 ```
 
-統合テストは環境変数 `MYSQLDANCE_TEST_DSN` があるときだけ動く。コミット前に `task fmt` `task lint` `task test` を通す。
+統合テストは環境変数 `MYSQLDANCE_TEST_DSN` があるときだけ動く。コミット前に `task check` を通す。`internal/` の DB 読み出し・書き出しを変えたときは `task test:integration` も通す。
 
 ## 構成
 
@@ -46,6 +47,8 @@ task fmt                # gofmt
 
 - 追加 / 削除 / 更新 / 一覧: `mgmt-backlog`
 - 実装: `impl-backlog`（ブランチ名は `backlog/B-NNN-<slug>`。PR タイトルの先頭に `B-NNN:` を付ける）
+  - 仕様の確定だけユーザーに聞き、その後は commit・push・PR の作成まで自動で進める。マージはしない。
+  - コードレビューの指摘は自動で受け入れ・範囲外・却下を判断する。却下した指摘は `docs/review-decisions.md` に残し、同じ指摘を繰り返さない。レビューに関わるコードを書くときは、この台帳を読む。
 
 補助タスク（`scripts/backlog.awk` を使う）:
 

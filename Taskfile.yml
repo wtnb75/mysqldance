@@ -20,6 +20,13 @@ tasks:
       - go fmt ./...
       - go fix ./...
 
+  check:
+    desc: Run fmt (go fmt, go fix), lint and unit tests in order
+    cmds:
+      - task: fmt
+      - task: lint
+      - task: test
+
   update:
     desc: update dependencies
     cmds:
