@@ -88,6 +88,7 @@
 ## B-026 [todo|P1] CI で MySQL 8.0 / 8.4 に対する統合テストを実行する
 - 依存: B-025
 - 概要: 統合テストは `MYSQLDANCE_TEST_DSN` があるときだけ動く。手元では `task test:integration` が Docker で起動するが、CI ではジョブの `services`（またはマトリクス）で MySQL 8.0 と 8.4 を起動して同じテストを実行する。参照元の `mcprt` には統合テストがないため、この部分は参照できず、新規に設計する。
+- 前提: 再利用可能な workflow（`.github/workflows/integration.yml`、`workflow_call`）に統合テストのジョブを置き、`branch.yml` と `main.yml` の両方から呼ぶ。MySQL は `services` で起動し、`mysqladmin ping` のヘルスチェックで待つ。統合テストが skip されたら（`MYSQLDANCE_TEST_DSN is not set`）ジョブを失敗させる。
 - 受け入れ条件:
   - [ ] 8.0 と 8.4 のそれぞれで統合テストが実行される（マトリクス）
   - [ ] MySQL の起動を待ってからテストを始める（ヘルスチェック）
