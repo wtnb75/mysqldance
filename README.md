@@ -1,5 +1,7 @@
 # mysqldance
 
+[![main](https://github.com/wtnb75/mysqldance/actions/workflows/main.yml/badge.svg)](https://github.com/wtnb75/mysqldance/actions/workflows/main.yml)
+
 A CLI that connects directly to MySQL and writes databases to a flat directory of SQL files with **one record per line and fully deterministic output**. The same data always produces the same bytes, so you can keep dumps in Git and review diffs, or hand them straight to the official MySQL Docker image's `/docker-entrypoint-initdb.d` to restore.
 
 Targets MySQL 8.0 and later (including 8.4). MariaDB and 5.7 are not supported.
