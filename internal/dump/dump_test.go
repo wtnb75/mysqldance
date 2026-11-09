@@ -532,8 +532,33 @@ func (f *failingWriter) Write(p []byte) (int, error) {
 	return f.w.Write(p)
 }
 
-func TestWriteFailureRemovesPartialFile(t *testing.T) {
-	e := newEnv(t)
+// failOn makes writing the file at failing (its final path) fail after part
+// of its header, calling before first if it is not nil, and restores the hook
+// at cleanup.
+func failOn(t *testing.T, failing string, before func()) {
+	t.Helper()
+	hookFileWriter(t, func(path string, f *os.File) io.Writer {
+		if path == failing {
+			if before != nil {
+				before()
+			}
+			return &failingWriter{w: f, n: 10}
+		}
+		return f
+	})
+}
+
+// hookFileWriter replaces fileWriter until the end of the test.
+func hookFileWriter(t *testing.T, hook func(path string, f *os.File) io.Writer) {
+	t.Helper()
+	orig := fileWriter
+	t.Cleanup(func() { fileWriter = orig })
+	fileWriter = hook
+}
+
+// threeTables creates a database with tables a, b and c and returns its name.
+func (e *env) threeTables(t *testing.T) string {
+	t.Helper()
 	db := uniqueName(t)
 	e.createDB(t, db)
 	e.exec(t,
@@ -541,40 +566,140 @@ func TestWriteFailureRemovesPartialFile(t *testing.T) {
 		"CREATE TABLE b (id INT PRIMARY KEY)", "INSERT INTO b VALUES (1), (2)",
 		"CREATE TABLE c (id INT PRIMARY KEY)", "INSERT INTO c VALUES (3)",
 	)
+	return db
+}
+
+func TestWriteFailureKeepsPreviousDump(t *testing.T) {
+	e := newEnv(t)
+	db := e.threeTables(t)
 	dir := t.TempDir()
-	stale := filepath.Join(dir, naming.DataFile(db, "gone"))
-	if err := os.WriteFile(stale, []byte("old\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "README.txt"), []byte("keep\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	failing := filepath.Join(dir, naming.DataFile(db, "b"))
-	orig := fileWriter
-	t.Cleanup(func() { fileWriter = orig })
-	fileWriter = func(path string, f *os.File) io.Writer {
-		if path == failing {
-			// Fail after part of the header, leaving a partial file behind
-			// unless writeFile removes it.
-			return &failingWriter{w: f, n: 10}
-		}
-		return f
-	}
+	e.dump(t, dir, db)
+	before := readFiles(t, dir)
+
+	// The data changes, a table disappears and another is added, so a partly
+	// applied second dump would differ from the first in every way.
+	e.exec(t, "INSERT INTO a VALUES (10)", "DROP TABLE c", "CREATE TABLE d (id INT PRIMARY KEY)")
+	failOn(t, filepath.Join(dir, naming.DataFile(db, "b")), nil)
 
 	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir})
 	if err == nil || !strings.Contains(err.Error(), "injected write failure") {
 		t.Fatalf("Run = %v, want the injected write failure", err)
 	}
-	if exists(t, failing) {
-		t.Errorf("partial file %s was left behind", failing)
+	if after := readFiles(t, dir); !reflect.DeepEqual(after, before) {
+		t.Errorf("previous dump changed after a failed run:\nbefore %q\nafter  %q", before, after)
 	}
-	// The cleanup already ran, so the output of db is incomplete: the stale
-	// file is gone, files before b are new and c was never written.
-	if exists(t, stale) {
-		t.Errorf("stale file %s survived although cleanup ran", stale)
+}
+
+func TestCancelKeepsPreviousDump(t *testing.T) {
+	e := newEnv(t)
+	db := e.threeTables(t)
+	dir := t.TempDir()
+	e.dump(t, dir, db)
+	before := readFiles(t, dir)
+
+	e.exec(t, "INSERT INTO a VALUES (10)")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Cancel, as Ctrl-C does, while the data file of b is being created. No
+	// write fails, so the run stops because reading c sees the cancel.
+	cancelAt := filepath.Join(dir, naming.DataFile(db, "b"))
+	hookFileWriter(t, func(path string, f *os.File) io.Writer {
+		if path == cancelAt {
+			cancel()
+		}
+		return f
+	})
+
+	if err := Run(ctx, Options{Source: e.cfg, DBs: []string{db}, OutDir: dir}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run = %v, want context.Canceled", err)
 	}
-	if !exists(t, filepath.Join(dir, naming.SchemaFile(db))) || !exists(t, filepath.Join(dir, naming.DataFile(db, "a"))) {
-		t.Errorf("files written before the failure are missing: %q", readFiles(t, dir))
+	if after := readFiles(t, dir); !reflect.DeepEqual(after, before) {
+		t.Errorf("previous dump changed after cancel:\nbefore %q\nafter  %q", before, after)
 	}
-	if exists(t, filepath.Join(dir, naming.DataFile(db, "c"))) {
-		t.Errorf("data file of c was written after the failure")
+}
+
+func TestFailureInLaterDatabaseKeepsEarlierOnes(t *testing.T) {
+	e := newEnv(t)
+	db1 := e.threeTables(t)
+	db2 := e.threeTables(t)
+	dir := t.TempDir()
+	e.dump(t, dir, db1, db2)
+	before := readFiles(t, dir)
+
+	e.exec(t, "USE "+quote(db1), "INSERT INTO a VALUES (10)")
+	failOn(t, filepath.Join(dir, naming.DataFile(db2, "b")), nil)
+
+	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db1, db2}, OutDir: dir})
+	if err == nil || !strings.Contains(err.Error(), "injected write failure") {
+		t.Fatalf("Run = %v, want the injected write failure", err)
+	}
+	if after := readFiles(t, dir); !reflect.DeepEqual(after, before) {
+		t.Errorf("dump of the earlier database changed:\nbefore %q\nafter  %q", before, after)
+	}
+}
+
+func TestSymlinkAppearingDuringRunRefused(t *testing.T) {
+	e := newEnv(t)
+	db := e.threeTables(t)
+	dir := t.TempDir()
+	e.dump(t, dir, db)
+	before := readFiles(t, dir)
+
+	sentinel := filepath.Join(t.TempDir(), "sentinel")
+	if err := os.WriteFile(sentinel, []byte("sentinel\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// An owned name that is not a regular file appears after the early check,
+	// while the data file of b is being created.
+	link := filepath.Join(dir, naming.DataFile(db, "zz"))
+	hookFileWriter(t, func(path string, f *os.File) io.Writer {
+		if path == filepath.Join(dir, naming.DataFile(db, "b")) {
+			if err := os.Symlink(sentinel, link); err != nil {
+				t.Error(err)
+			}
+		}
+		return f
+	})
+	e.exec(t, "INSERT INTO a VALUES (10)")
+
+	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir})
+	if err == nil || !strings.Contains(err.Error(), link) {
+		t.Fatalf("Run = %v, want an error naming %s", err, link)
+	}
+	after := readFiles(t, dir)
+	delete(after, filepath.Base(link))
+	if !reflect.DeepEqual(after, before) {
+		t.Errorf("previous dump changed:\nbefore %q\nafter  %q", before, after)
+	}
+}
+
+func TestTempFiles(t *testing.T) {
+	e := newEnv(t)
+	db := e.threeTables(t)
+	dir := t.TempDir()
+	// A temp file left by a killed run is swept; a similar file that is not
+	// ours is not.
+	leftover := filepath.Join(dir, ".mysqldance-0001.tmp")
+	other := filepath.Join(dir, ".other.tmp")
+	for _, p := range []string{leftover, other} {
+		if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.dump(t, dir, db)
+	if exists(t, leftover) {
+		t.Errorf("leftover temp file %s was not swept", leftover)
+	}
+	if !exists(t, other) {
+		t.Errorf("unrelated file %s was removed", other)
+	}
+	for name := range readFiles(t, dir) {
+		if strings.HasPrefix(name, ".mysqldance-") {
+			t.Errorf("temp file %s left after a successful run", name)
+		}
 	}
 }
 

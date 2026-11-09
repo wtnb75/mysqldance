@@ -90,7 +90,7 @@ A data file has ``INSERT INTO `t` VALUES`` followed by the values, one record pe
 
 In file names, database and table names keep only ASCII letters, digits, `_` and `-` as they are; every other byte (`.`, `%`, spaces, each byte of non-ASCII UTF-8, and so on) becomes `%XX` (uppercase hex). Examples: `my.db` → `my%2Edb`, `日本` → `%E6%97%A5%E6%9C%AC`. Because the separator `.` never appears inside a name, databases that share a prefix, such as `mydb` and `mydb2`, can live in one directory without breaking the lexicographic order of each database's schema → data files.
 
-- **255-byte limit**: if an escaped file name exceeds 255 bytes the run fails and nothing is written for that database (a non-ASCII table name grows to roughly 9 bytes per character).
+- **255-byte limit**: if an escaped file name exceeds 255 bytes the run fails and the output directory is left unchanged (a non-ASCII table name grows to roughly 9 bytes per character).
 - **Names differing only in case**: if two output file names become identical when lowercased, such as `Users` and `users` (across all databases in one run), the run fails. This prevents files from overwriting each other on case-insensitive file systems.
 
 ## Determinism and ordering
@@ -114,19 +114,21 @@ Tables that are not InnoDB (MyISAM and so on) cannot guarantee snapshot consiste
 
 ## Re-dumping and removing stale files
 
-Re-dumping into the same output directory deletes **that database's files** (`<db>.00-schema.sql` and `<db>.10-data.*.sql`) before writing each database again. Data files of tables that existed last time but are gone now therefore do not remain. Files of other databases and unrelated files such as `README.txt` are left alone. Files are always created new (existing paths are never followed).
+Re-dumping into the same output directory replaces **each dumped database's files** (`<db>.00-schema.sql` and `<db>.10-data.*.sql`) once every database has been written, and deletes the files of that database from last time that were not written again. Data files of tables that existed last time but are gone now therefore do not remain. Files of other databases and unrelated files such as `README.txt` are left alone. New files are always created fresh under temporary names (existing paths are never followed).
 
 A table hidden from the dump account by missing privileges is indistinguishable from a dropped table. If a table that was visible last time becomes invisible after a privilege change, its data file is deleted as stale and is not part of the new output. Always dump with an account that has the same privileges.
 
 ### Failure handling
 
-Databases are processed one at a time, in the order given. For each database the order is "check → delete → write".
+A run has two phases. Databases are processed one at a time, in the order given, and every file is written under a temporary name (`.mysqldance-NNNN.tmp` in the output directory; not `*.sql`, so `docker-entrypoint-initdb.d` ignores it). Only when every database has been written does the run **commit**: it renames the temporary files into place (each rename replaces the old file atomically) and deletes the files from last time that were not written again.
 
-- **Failure in the check phase** (a file name over 255 bytes, a case-only collision, an entry with one of the database's file names that is not a regular file such as a symlink or directory, and so on): nothing is deleted or created for the failing database.
-- **Failure after deletion has started** (a read error, a lost connection, a write error, Ctrl-C and so on): that database's output is **incomplete**. Old files are already gone and some tables may have no data file. A file that fails mid-write is removed, so no truncated file is left behind. However, even with data files missing, `docker-entrypoint-initdb.d` restores the database without any error, with some tables empty. **Do not use it as is**: re-run the dump, or, if the output directory is under Git, restore the previous state from Git.
-- **Multiple databases**: the databases processed earlier have already been rewritten.
+- **Failure before the commit** (a file name over 255 bytes, a case-only collision, an entry with one of the database's file names that is not a regular file such as a symlink or directory, a read error, a lost connection, a write error, Ctrl-C and so on): nothing at a final path changes, whichever database fails. The previous dump stays complete, and the temporary files are removed.
+- **Failure during the commit** (a rename or delete error): the output directory can hold a mix of new and old files. File systems have no atomic update of several files, so this window cannot be closed; it is only as long as the renames take. Re-run the dump, or, if the output directory is under Git, restore the previous state from Git.
+- **Killed processes** (`SIGKILL`, power loss): the process cannot clean up. Temporary files may remain, and the next run deletes them before it starts. Only if the kill lands in the commit window is the output a mix as described above.
 
-In both cases the exit code is 1.
+In all cases the exit code is 1.
+
+Because the old files stay until the commit, the output directory needs room for the old and the new dump at the same time. Temporary files are synced to disk before the renames, so a crash does not leave empty files in place of the previous dump. Do not run two dumps into the same output directory at once.
 
 ## Security
 

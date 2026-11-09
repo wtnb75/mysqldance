@@ -32,8 +32,11 @@ type Options struct {
 
 // Run dumps every database in opt.DBs into opt.OutDir, creating the
 // directory if needed. For each database it validates all output file names,
-// removes the files the database owned from an earlier dump, then writes the
-// schema file and one data file per table. Other files are left alone.
+// then writes the schema file and one data file per table under temporary
+// names. Only when every database has been written are the files renamed into
+// place and the files of earlier dumps that were not written again removed, so
+// a failure before that leaves the previous dump untouched. Other files are
+// left alone.
 func Run(ctx context.Context, opt Options) (err error) {
 	if opt.OutDir == "" {
 		return errors.New("no output directory")
@@ -47,6 +50,11 @@ func Run(ctx context.Context, opt Options) (err error) {
 	if err := os.MkdirAll(opt.OutDir, 0o755); err != nil {
 		return err
 	}
+	if err := sweepTemps(opt.OutDir); err != nil {
+		return err
+	}
+	st := &stage{dir: opt.OutDir}
+	defer func() { err = errors.Join(err, st.discard()) }()
 	// Lower-cased output file name -> what it was generated for, across the
 	// whole run, so names that differ only in case are rejected.
 	seen := map[string]string{}
@@ -63,14 +71,38 @@ func Run(ctx context.Context, opt Options) (err error) {
 				return fmt.Errorf("database %q: %w", db, err)
 			}
 		}
-		if err := dumpDB(ctx, opt, snap, db, seen); err != nil {
+		if err := dumpDB(ctx, opt, snap, db, seen, st); err != nil {
+			return fmt.Errorf("database %q: %w", db, err)
+		}
+	}
+	// Everything was read and written. From here on the output directory
+	// changes, so stop only for a cancel that arrived before this point.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The dump may have taken long, so check the owned names again before the
+	// first rename.
+	for _, db := range opt.DBs {
+		if _, err := ownedEntries(opt.OutDir, db); err != nil {
+			return fmt.Errorf("database %q: %w", db, err)
+		}
+	}
+	if err := st.commit(); err != nil {
+		return err
+	}
+	written := map[string]bool{}
+	for _, f := range st.files {
+		written[filepath.Base(f.final)] = true
+	}
+	for _, db := range opt.DBs {
+		if err := removeStale(opt.OutDir, db, written); err != nil {
 			return fmt.Errorf("database %q: %w", db, err)
 		}
 	}
 	return nil
 }
 
-func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, seen map[string]string) error {
+func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, seen map[string]string, st *stage) error {
 	createDB, err := snap.CreateDatabase(ctx)
 	if err != nil {
 		return err
@@ -100,7 +132,8 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		}
 	}
 
-	if err := removeOwned(opt.OutDir, db); err != nil {
+	// Refuse owned entries that are not regular files before writing anything.
+	if _, err := ownedEntries(opt.OutDir, db); err != nil {
 		return err
 	}
 
@@ -119,7 +152,7 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		v := byName[n]
 		ordered = append(ordered, schemafile.View{Name: v.Name, Create: schemafile.StripDefiner(v.Create)})
 	}
-	if err := writeFile(filepath.Join(opt.OutDir, schemaName), func(w io.Writer) error {
+	if err := st.create(filepath.Join(opt.OutDir, schemaName), func(w io.Writer) error {
 		return schemafile.Write(w, db, createDB, schemaTables, ordered)
 	}); err != nil {
 		return err
@@ -134,7 +167,7 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		for j, c := range t.Columns {
 			cols[j] = c.Name
 		}
-		if err := writeFile(filepath.Join(opt.OutDir, dataNames[i]), func(w io.Writer) error {
+		if err := st.create(filepath.Join(opt.OutDir, dataNames[i]), func(w io.Writer) error {
 			return datafile.Write(w, db, t.Name, cols, t.ListColumns, rows, opt.Data)
 		}); err != nil {
 			return err
@@ -160,49 +193,141 @@ func claim(seen map[string]string, name, what string) error {
 	return nil
 }
 
-// removeOwned deletes the files in dir that belong to db's dump. An entry
-// with an owned name that is not a regular file (a symlink, a directory, ...)
-// is an error, reported before anything is removed.
-func removeOwned(dir, db string) error {
+// ownedEntries returns the names of the entries in dir that belong to db's
+// dump. An entry with an owned name that is not a regular file (a symlink, a
+// directory, ...) is an error.
+func ownedEntries(dir, db string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var owned []string
 	for _, e := range entries {
 		if !naming.IsOwnedBy(e.Name(), db) {
 			continue
 		}
-		path := filepath.Join(dir, e.Name())
 		if !e.Type().IsRegular() {
-			return fmt.Errorf("refusing to replace %s: not a regular file", path)
+			return nil, fmt.Errorf("refusing to replace %s: not a regular file", filepath.Join(dir, e.Name()))
 		}
-		owned = append(owned, path)
+		owned = append(owned, e.Name())
 	}
-	for _, path := range owned {
-		if err := os.Remove(path); err != nil {
+	return owned, nil
+}
+
+// removeStale deletes the files of db's earlier dump that this run did not
+// write again.
+func removeStale(dir, db string, written map[string]bool) error {
+	owned, err := ownedEntries(dir, db)
+	if err != nil {
+		return err
+	}
+	for _, name := range owned {
+		if written[name] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// writeFile creates path, which must not exist (O_EXCL never follows a
-// symlink), and fills it with write. Permissions follow the umask. On
-// failure the partial file (the path created here, nothing else) is removed.
-func writeFile(path string, write func(io.Writer) error) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+// Temporary files live in the output directory, so that renaming them into
+// place never crosses a file system. The names are short (a final name can
+// already be 255 bytes), not *.sql (so docker-entrypoint-initdb.d skips them)
+// and recognizable, so a run killed before it could clean up is swept by the
+// next one.
+const (
+	tmpPrefix = ".mysqldance-"
+	tmpSuffix = ".tmp"
+)
+
+// sweepTemps removes the temporary files an earlier run left behind.
+func sweepTemps(dir string) error {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
-	err = write(fileWriter(path, f))
-	err = errors.Join(err, f.Close())
-	if err != nil {
-		return errors.Join(fmt.Errorf("write %s: %w", path, err), os.Remove(path))
+	for _, e := range entries {
+		n := e.Name()
+		if e.Type().IsRegular() && strings.HasPrefix(n, tmpPrefix) && strings.HasSuffix(n, tmpSuffix) {
+			if err := os.Remove(filepath.Join(dir, n)); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
-// fileWriter wraps the writer of an output file; tests replace it to inject
-// write failures.
+// stage collects the output of a run under temporary names. Nothing at a
+// final path changes until commit, so a run that fails earlier leaves the
+// previous dump as it was.
+type stage struct {
+	dir   string
+	files []stagedFile
+}
+
+type stagedFile struct {
+	tmp, final string
+	renamed    bool
+}
+
+// create writes a new temporary file with write, destined for the final path.
+// The temporary file must not exist (O_EXCL never follows a symlink).
+// Permissions follow the umask.
+func (s *stage) create(final string, write func(io.Writer) error) error {
+	tmp := filepath.Join(s.dir, fmt.Sprintf("%s%04d%s", tmpPrefix, len(s.files)+1, tmpSuffix))
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	if err != nil {
+		return err
+	}
+	// Recorded before writing, so a partial file is removed by discard.
+	s.files = append(s.files, stagedFile{tmp: tmp, final: final})
+	err = write(fileWriter(final, f))
+	// Sync before the rename can become durable, or a crash could leave an
+	// empty file in place of the previous dump.
+	if err == nil {
+		err = f.Sync()
+	}
+	if err = errors.Join(err, f.Close()); err != nil {
+		return fmt.Errorf("write %s: %w", final, err)
+	}
+	return nil
+}
+
+// commit renames every temporary file to its final path, replacing the file
+// of the previous dump atomically. The renames are the only step after which
+// a failure can leave a mix of old and new files.
+func (s *stage) commit() error {
+	for i := range s.files {
+		f := &s.files[i]
+		if err := os.Rename(f.tmp, f.final); err != nil {
+			return err
+		}
+		f.renamed = true
+	}
+	// Make the renames durable.
+	d, err := os.Open(s.dir)
+	if err != nil {
+		return err
+	}
+	return errors.Join(d.Sync(), d.Close())
+}
+
+// discard removes the temporary files that were not renamed.
+func (s *stage) discard() error {
+	var errs []error
+	for _, f := range s.files {
+		if f.renamed {
+			continue
+		}
+		if err := os.Remove(f.tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// fileWriter wraps the writer of an output file, given the file's final path;
+// tests replace it to inject write failures.
 var fileWriter = func(path string, f *os.File) io.Writer { return f }
