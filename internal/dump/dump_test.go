@@ -410,6 +410,42 @@ func TestNoLockWarnsAboutNonInnoDB(t *testing.T) {
 	}
 }
 
+// TestOutputModes checks that FileMode applies to every output file and
+// DirMode to a created output directory only.
+func TestOutputModes(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t, "CREATE TABLE t (id INT PRIMARY KEY)", "INSERT INTO t VALUES (1)")
+
+	run := func(dir string) {
+		t.Helper()
+		opt := Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, FileMode: 0o600, DirMode: 0o700}
+		if err := Run(context.Background(), opt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	created := filepath.Join(t.TempDir(), "out")
+	run(created)
+	if got := modeOf(t, created); got != 0o700 {
+		t.Errorf("created dir mode = %o, want 700", got)
+	}
+	for _, name := range sqlFiles(t, created) {
+		if got := modeOf(t, filepath.Join(created, name)); got != 0o600 {
+			t.Errorf("%s mode = %o, want 600", name, got)
+		}
+	}
+
+	existing := t.TempDir()
+	if err := os.Chmod(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run(existing)
+	if got := modeOf(t, existing); got != 0o755 {
+		t.Errorf("existing dir mode = %o, want 755 (unchanged)", got)
+	}
+}
+
 func TestDeterministicAndMinimalDiff(t *testing.T) {
 	e := newEnv(t)
 	db := uniqueName(t)

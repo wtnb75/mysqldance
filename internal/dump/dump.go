@@ -3,10 +3,12 @@
 package dump
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,6 +30,13 @@ type Options struct {
 	DBs    []string
 	OutDir string
 	Data   datafile.Options
+	// FileMode is the exact permission of the output files; 0 means 0666
+	// filtered by the umask.
+	FileMode os.FileMode
+	// DirMode is the exact permission of the output directory when this run
+	// creates it; 0 means 0755 filtered by the umask. An existing directory
+	// is never changed.
+	DirMode os.FileMode
 	// Log receives warnings; nil discards them.
 	Log io.Writer
 }
@@ -49,13 +58,13 @@ func Run(ctx context.Context, opt Options) (err error) {
 	if opt.Log == nil {
 		opt.Log = io.Discard
 	}
-	if err := os.MkdirAll(opt.OutDir, 0o755); err != nil {
+	if err := prepareOutDir(opt.OutDir, opt.DirMode); err != nil {
 		return err
 	}
 	if err := sweepTemps(opt.OutDir); err != nil {
 		return err
 	}
-	st := &stage{dir: opt.OutDir}
+	st := &stage{dir: opt.OutDir, mode: opt.FileMode}
 	defer func() { err = errors.Join(err, st.discard()) }()
 	// Lower-cased output file name -> what it was generated for, across the
 	// whole run, so names that differ only in case are rejected.
@@ -104,6 +113,35 @@ func Run(ctx context.Context, opt Options) (err error) {
 		}
 	}
 	return nil
+}
+
+// prepareOutDir creates dir if it is missing. A directory it creates gets
+// exactly mode (0 = 0755 filtered by the umask); its missing parents always
+// get the default. An existing directory is left as it is.
+func prepareOutDir(dir string, mode os.FileMode) error {
+	dir = filepath.Clean(dir)
+	fi, err := os.Stat(dir)
+	switch {
+	case err == nil:
+		if !fi.IsDir() {
+			return fmt.Errorf("output path %s is not a directory", dir)
+		}
+		return nil
+	case !errors.Is(err, fs.ErrNotExist):
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return err
+	}
+	// The umask only removes bits, so the directory is never more open than
+	// mode, even before the chmod that makes the mode exact.
+	if err := os.Mkdir(dir, cmp.Or(mode, 0o755)); err != nil {
+		return err
+	}
+	if mode == 0 {
+		return nil
+	}
+	return os.Chmod(dir, mode)
 }
 
 func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, seen map[string]string, st *stage) error {
@@ -296,6 +334,7 @@ func sweepTemps(dir string) error {
 // previous dump as it was.
 type stage struct {
 	dir   string
+	mode  os.FileMode // 0 = 0666 filtered by the umask
 	files []stagedFile
 }
 
@@ -306,16 +345,22 @@ type stagedFile struct {
 
 // create writes a new temporary file with write, destined for the final path.
 // The temporary file must not exist (O_EXCL never follows a symlink).
-// Permissions follow the umask.
+// Permissions follow the umask unless s.mode is set, which is applied exactly.
 func (s *stage) create(final string, write func(io.Writer) error) error {
 	tmp := filepath.Join(s.dir, fmt.Sprintf("%s%04d%s", tmpPrefix, len(s.files)+1, tmpSuffix))
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, cmp.Or(s.mode, 0o666))
 	if err != nil {
 		return err
 	}
 	// Recorded before writing, so a partial file is removed by discard.
 	s.files = append(s.files, stagedFile{tmp: tmp, final: final})
-	err = write(fileWriter(final, f))
+	if s.mode != 0 {
+		// The umask filtered the mode given to OpenFile.
+		err = f.Chmod(s.mode)
+	}
+	if err == nil {
+		err = write(fileWriter(final, f))
+	}
 	// Sync before the rename can become durable, or a crash could leave an
 	// empty file in place of the previous dump.
 	if err == nil {
