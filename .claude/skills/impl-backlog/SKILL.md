@@ -24,7 +24,7 @@ description: Use when the user asks to implement, work on, start, or pick up an 
 
 ### 後半: 自動実行（質問しない）
 
-5. **ブランチを用意する**: 下の「ブランチ名」に従う。
+5. **ブランチを用意する**: 下の「ブランチ名」に従う（先に `git fetch origin main`。起点は `origin/main`）。
 6. **実装**: TDDで、受け入れ条件を1つずつテストに落として満たす。区切りごとに `task check` を実行する（下の「チェック」）。
 7. **整理**: `simplify` スキルで差分を整理する（再利用、単純化、効率）。コードが変わったら `task check` を通し直す。
 8. **レビューと判断**: 下の「レビューの判断」に従う。
@@ -79,8 +79,9 @@ description: Use when the user asks to implement, work on, start, or pick up an 
 ## PR
 
 1. **commit**: 英語で `feat(B-NNN): ...` や `fix(B-NNN): ...` の形式（goreleaser の変更履歴の分類に効く）。1〜数個にまとめる。
-2. **push**: `git push -u origin <ブランチ>`。force push はしない。
-3. **作成**: `gh pr create --base main --title "B-NNN: <項目のタイトル>"`。本文は日本語で、次の順に書く。
+2. **`origin/main` に追従する**: push の前に `git fetch origin main` を実行し、`git log --oneline HEAD..origin/main` に commit があれば `git merge origin/main` で取り込む（rebase や force push はしない）。衝突したら解消する。`BACKLOG.md` の `# Done` 節は、他の項目の完了記録と必ず衝突するので、両方の項目を残す。解消したら `task check` を通し直し、マーカーが残っていないことを `rg '^(<<<<<<<|=======|>>>>>>>)'` で確かめる。
+3. **push**: `git push -u origin <ブランチ>`。force push はしない。
+4. **作成**: `gh pr create --base main --title "B-NNN: <項目のタイトル>"`。本文は日本語で、次の順に書く。
    - 概要（項目の内容と、何を変えたか）
    - 確定した仕様と、置いた前提
    - 受け入れ条件の結果（1つずつ）
@@ -88,7 +89,8 @@ description: Use when the user asks to implement, work on, start, or pick up an 
    - レビューの判断（指摘 / 判断 / 理由の表。台帳で却下したものは台帳の ID）
    - 別項目にしたもの（ID）
    - 確認していないこと
-4. **報告**: PR の URL と、本文の要点を日本語で報告する。
+5. **マージ可能の確認**: 作成後に `gh pr view <番号> --json mergeable` が `MERGEABLE` であることを確かめる（`UNKNOWN` なら少し待って再実行する）。`CONFLICTING` なら 2. に戻る。
+6. **報告**: PR の URL と、本文の要点を日本語で報告する。
 
 マージはしない。他のブランチへの push もしない。この commit・push・PR は、ユーザーが「PR の作成まで自動で進める」と指示した流れの中で行う。
 
@@ -96,11 +98,13 @@ description: Use when the user asks to implement, work on, start, or pick up an 
 
 形式は `backlog/B-NNN-<slug>`（例: `backlog/B-012-tls-support`）。`<slug>` は項目の内容を表す英語の小文字・ハイフン区切りで、40文字以内。
 
+先に `git fetch origin main` を実行する。ローカルの `main` は古いことがあるので、**ブランチの起点は常に `origin/main`** とし、ローカルの `main` は使わない。
+
 1. **着手済みの確認**: 同じ ID のブランチが既にあれば（`git branch -a --list '*B-NNN*'`、必要なら `gh pr list --search 'B-NNN'`）、別の作業が進んでいる。新しく作らず、止まって報告する。
-2. **現在のブランチが `backlog/B-NNN-` で始まる場合**: そのまま使う。
-3. **`main` の場合**: `backlog/B-NNN-<slug>` を作って切り替える。
-4. **それ以外で、まだ push していないブランチ**（worktree の自動名など）: `git branch -m` で改名する。
-5. **それ以外で、push 済みのブランチ**: 改名せず、`main` から新しいブランチを作る。
+2. **現在のブランチが、今回の項目と同じ ID の `backlog/B-NNN-` で始まる場合**: そのまま使う。`origin/main` に新しい commit があれば、PR の前（「PR」の 2.）に取り込む。
+3. **現在のブランチが `main` の場合**: `git switch -c backlog/B-NNN-<slug> origin/main` で作って切り替える。
+4. **それ以外で、まだ push していないブランチ**（worktree の自動名など）: `git branch -m` で改名する。起点が古ければ、`origin/main` を取り込む。
+5. **それ以外で、push 済みのブランチ**（別項目のブランチを含む。マージ済みでも同じ）: 改名せず、`git switch -c backlog/B-NNN-<slug> origin/main` で新しいブランチを作る。
 
 ## 守ること
 
