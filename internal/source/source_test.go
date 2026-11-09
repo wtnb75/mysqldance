@@ -285,6 +285,7 @@ func TestWarningsNonInnoDB(t *testing.T) {
 		"CREATE TABLE inno (id INT PRIMARY KEY) ENGINE=InnoDB",
 		"CREATE TABLE my (id INT PRIMARY KEY) ENGINE=MyISAM",
 	)
+	cfg.NoLock = true
 	s := openSnapshot(t, cfg, db)
 	if ti := tableByName(t, s, "my"); ti.Engine != "MyISAM" {
 		t.Errorf("Engine = %q, want MyISAM", ti.Engine)

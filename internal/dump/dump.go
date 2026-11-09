@@ -60,9 +60,11 @@ func Run(ctx context.Context, opt Options) (err error) {
 	seen := map[string]string{}
 	// One connection and one transaction for all databases, so they all
 	// come from the same point in time.
-	snap, err := source.Open(ctx, opt.Source, opt.DBs[0])
+	snap, err := source.Open(ctx, opt.Source, opt.DBs...)
 	if err != nil {
-		return fmt.Errorf("database %q: %w", opt.DBs[0], err)
+		// Open covers every database (system-database check, lock decision),
+		// so the error is not attributed to the first one.
+		return err
 	}
 	defer func() { err = errors.Join(err, snap.Close()) }()
 	for i, db := range opt.DBs {

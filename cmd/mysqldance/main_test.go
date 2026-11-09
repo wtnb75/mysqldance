@@ -101,6 +101,15 @@ func TestParseArgsFlags(t *testing.T) {
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 			},
 		},
+		{
+			"no-lock flag",
+			[]string{"--no-lock", "-o", "out", "d"},
+			dump.Options{
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", NoLock: true},
+				DBs:    []string{"d"}, OutDir: "out",
+				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
+			},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := parseArgs(tt.args, env)

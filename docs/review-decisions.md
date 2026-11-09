@@ -123,3 +123,45 @@
 - 却下の理由: 確定を途中で止めると新旧が混在するので、止めないのが確定した仕様（BACKLOG の B-004 の前提）。確定はリネームと削除だけで、読み出しや書き込みはない。
 - 初出: B-004
 - 再出: 0
+
+## R-016 ロックの要否を判断した後にテーブルが非 InnoDB になると、ダンプが失敗する（TOCTOU）
+- 対象: internal/source/source.go の start（firstNonInnoDB）と Tables の `!s.locked` の検査
+- 指摘: 判断とロックの間に非 InnoDB のテーブルができると、偽の失敗になる。
+- 却下の理由: 失敗は必ずエラーとして返り、黙って非一貫にはならない（不変条件を満たす）。MySQL 8 のデータディクショナリはスナップショットの下で読まれるため、実際にはそのテーブルは見えない（TestNonInnoDBTableWithoutLock のコメント）。再実行か `--no-lock` で回避できる。
+- 初出: B-005
+- 再出: 0
+
+## R-017 ENGINE が NULL のテーブルや DB 名の大文字小文字で、ロックの判断を外す
+- 対象: internal/source/source.go の firstNonInnoDB
+- 指摘: ENGINE が NULL の基本テーブルは `<>` で除かれ、IN の比較も大文字小文字に影響されうる。
+- 却下の理由: 壊れたテーブルは Tables がエラーにする。DB 名の比較は `Use`（SCHEMATA の完全一致）と同じ規則で、判断と読み出しで食い違わない。失敗のシナリオを再現できない。
+- 初出: B-005
+- 再出: 0
+
+## R-018 既定でロックを取るため、RELOAD 権限が無いアカウントの既存の運用が失敗する
+- 対象: internal/source/source.go の start（FLUSH TABLES WITH READ LOCK）
+- 指摘: 以前は警告して続行したのが、エラーになる。
+- 却下の理由: B-005 の仕様確定でユーザーが選んだ（非 InnoDB があるとき自動でロックし、取れなければエラー。回避は `--no-lock`）。黙って非一貫にしない不変条件に沿う。README に記載済み。
+- 初出: B-005
+- 再出: 0
+
+## R-019 `Use` で `Open` に渡していない DB を読むと、非 InnoDB のテーブルでエラーになる
+- 対象: internal/source/source.go の Open の契約と Tables の検査
+- 指摘: 契約（dbs に全 DB を渡す）がコメントだけで保証されていない。
+- 却下の理由: 呼び出し元は dump.Run だけで、全 DB を渡している。誤用してもエラーで止まり、黙って非一貫にはならない。
+- 初出: B-005
+- 再出: 0
+
+## R-020 FTWRL 後の失敗経路で、ロックを明示的に解除しない
+- 対象: internal/source/source.go の start のエラー経路
+- 指摘: `conn.Close()` はプールに返すだけで、ロックが残りうる。
+- 却下の理由: `Open` は失敗時に `sdb.Close()` で全接続を閉じ、接続の終了でロックは解除される。`start` を使うのは `Open` と同じパッケージのテストだけ。
+- 初出: B-005
+- 再出: 0
+
+## R-021 dump の TestRoundTrip がロックの取得を確かめない
+- 対象: internal/dump/dump_test.go の TestRoundTrip
+- 指摘: ロックが退行しても、警告が出ないことだけを見るので通る。
+- 却下の理由: ロックの取得と解除は internal/source/lock_test.go（TestLockHeldForNonInnoDB ほか）が、他接続の書き込みが待たされることで確かめている。dump 層は DB の一覧を Open に渡すだけ。
+- 初出: B-005
+- 再出: 0

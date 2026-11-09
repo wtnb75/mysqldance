@@ -35,6 +35,10 @@ type Config struct {
 	SSLMode string
 	// SSLCA is a PEM file of CA certificates used to verify the server.
 	SSLCA string
+	// NoLock skips the global read lock that is otherwise taken when a
+	// database has a non-InnoDB table; such tables are then read without
+	// consistency (a warning is reported).
+	NoLock bool
 }
 
 // TableInfo describes a base table.
@@ -56,11 +60,14 @@ type TableInfo struct {
 // connection inside one transaction. It reads one database at a time (the
 // current one); Use switches databases without leaving the snapshot.
 type Snapshot struct {
-	db       *sql.DB
-	conn     *sql.Conn
-	name     string
-	dialect  dialect
-	warnings []string
+	db      *sql.DB
+	conn    *sql.Conn
+	name    string
+	dialect dialect
+	// locked is true while the global read lock is held; noLock is the NoLock
+	// option. A non-InnoDB table read with neither is an error.
+	locked, noLock bool
+	warnings       []string
 	// columns caches the column catalog (table -> columns) read by Tables.
 	columns map[string][]columnRow
 }
@@ -76,11 +83,19 @@ func checkNotSystem(db string) error {
 	return nil
 }
 
-// Open connects, starts a consistent snapshot and selects database db. Use
-// switches to further databases within the same snapshot.
-func Open(ctx context.Context, cfg Config, db string) (*Snapshot, error) {
-	if err := checkNotSystem(db); err != nil {
-		return nil, err
+// Open connects, starts a consistent snapshot and selects the first of dbs.
+// Use switches to the others within the same snapshot. dbs must list every
+// database that will be read: when any of them has a non-InnoDB table, a
+// global read lock is taken before the snapshot starts and held until Close
+// (unless cfg.NoLock), so those tables are consistent with the rest.
+func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
+	if len(dbs) == 0 {
+		return nil, errors.New("no database to read")
+	}
+	for _, db := range dbs {
+		if err := checkNotSystem(db); err != nil {
+			return nil, err
+		}
 	}
 
 	mc := mysql.NewConfig()
@@ -115,7 +130,7 @@ func Open(ctx context.Context, cfg Config, db string) (*Snapshot, error) {
 		return nil, err
 	}
 	sdb := sql.OpenDB(connector)
-	s, err := start(ctx, sdb, db)
+	s, err := start(ctx, sdb, dbs, cfg.NoLock)
 	if err != nil {
 		_ = sdb.Close()
 		return nil, err
@@ -123,12 +138,12 @@ func Open(ctx context.Context, cfg Config, db string) (*Snapshot, error) {
 	return s, nil
 }
 
-func start(ctx context.Context, sdb *sql.DB, db string) (*Snapshot, error) {
+func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool) (*Snapshot, error) {
 	conn, err := sdb.Conn(ctx)
 	if err != nil {
 		return nil, err
 	}
-	s := &Snapshot{db: sdb, conn: conn}
+	s := &Snapshot{db: sdb, conn: conn, noLock: noLock}
 	// Pin every session setting that changes SHOW CREATE output or value
 	// text, so the dump never depends on server or account defaults:
 	// ANSI_QUOTES would quote identifiers with '"', PAD_CHAR_TO_FULL_LENGTH
@@ -141,7 +156,6 @@ func start(ctx context.Context, sdb *sql.DB, db string) (*Snapshot, error) {
 		"SET time_zone = '+00:00'",
 		"SET NAMES utf8mb4",
 		"SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ",
-		"START TRANSACTION WITH CONSISTENT SNAPSHOT",
 	} {
 		if _, err := conn.ExecContext(ctx, stmt); err != nil {
 			_ = conn.Close()
@@ -159,7 +173,32 @@ func start(ctx context.Context, sdb *sql.DB, db string) (*Snapshot, error) {
 		return nil, err
 	}
 
-	if err := s.Use(ctx, db); err != nil {
+	// MVCC does not cover non-transactional tables (MyISAM and so on). When
+	// there are any, hold a global read lock across the start of the snapshot
+	// and the whole read, so they are from the same point in time. LOCK TABLES
+	// is no option: it commits the snapshot transaction implicitly. Writes
+	// elsewhere wait until Close.
+	if !noLock {
+		first, err := s.firstNonInnoDB(ctx, dbs)
+		if err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		if first != "" {
+			if _, err := conn.ExecContext(ctx, "FLUSH TABLES WITH READ LOCK"); err != nil {
+				_ = conn.Close()
+				return nil, fmt.Errorf("FLUSH TABLES WITH READ LOCK (needed because %s is not InnoDB; "+
+					"it requires the RELOAD privilege, or pass --no-lock to read without consistency): %w", first, err)
+			}
+			s.locked = true
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "START TRANSACTION WITH CONSISTENT SNAPSHOT"); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("START TRANSACTION WITH CONSISTENT SNAPSHOT: %w", err)
+	}
+
+	if err := s.Use(ctx, dbs[0]); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
@@ -195,7 +234,30 @@ func (s *Snapshot) Use(ctx context.Context, db string) error {
 	return nil
 }
 
-// Close ends the snapshot transaction and closes the connection.
+// firstNonInnoDB describes the first base table of dbs (by database, then
+// table name) that is not InnoDB, or returns "" if there is none.
+func (s *Snapshot) firstNonInnoDB(ctx context.Context, dbs []string) (string, error) {
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(dbs)), ",")
+	args := make([]any, len(dbs))
+	for i, db := range dbs {
+		args[i] = db
+	}
+	var schema, name, engine string
+	err := s.conn.QueryRowContext(ctx,
+		"SELECT TABLE_SCHEMA, TABLE_NAME, ENGINE FROM information_schema.TABLES"+
+			" WHERE TABLE_SCHEMA IN ("+marks+") AND TABLE_TYPE = 'BASE TABLE' AND UPPER(ENGINE) <> 'INNODB'"+
+			" ORDER BY TABLE_SCHEMA, TABLE_NAME LIMIT 1", args...).Scan(&schema, &name, &engine)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("table %s.%s (%s)", quoteIdent(schema), quoteIdent(name), engine), nil
+}
+
+// Close ends the snapshot transaction and closes the connection, which also
+// releases the global read lock if one is held.
 func (s *Snapshot) Close() error {
 	_, rbErr := s.conn.ExecContext(context.Background(), "ROLLBACK")
 	return errors.Join(rbErr, s.conn.Close(), s.db.Close())
@@ -374,7 +436,13 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, error) {
 		if ti.Columns, err = s.columnTypes(ctx, r.name, names); err != nil {
 			return nil, fmt.Errorf("table %s: %w", quoteIdent(r.name), err)
 		}
-		if !strings.EqualFold(ti.Engine, "InnoDB") {
+		if !strings.EqualFold(ti.Engine, "InnoDB") && !s.locked {
+			if !s.noLock {
+				// Created after Open decided that no lock was needed.
+				return nil, fmt.Errorf("table %s uses the %s engine and appeared after the dump started "+
+					"without a global read lock; run again, or pass --no-lock to read without consistency",
+					quoteIdent(ti.Name), ti.Engine)
+			}
 			warnings = append(warnings, fmt.Sprintf(
 				"table %s uses the %s engine; its data is not covered by the consistent snapshot",
 				quoteIdent(ti.Name), ti.Engine))
