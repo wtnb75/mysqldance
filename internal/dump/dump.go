@@ -154,25 +154,37 @@ func claim(seen map[string]string, name, what string) error {
 	return nil
 }
 
-// removeOwned deletes the regular files in dir that belong to db's dump.
+// removeOwned deletes the files in dir that belong to db's dump. An entry
+// with an owned name that is not a regular file (a symlink, a directory, ...)
+// is an error, reported before anything is removed.
 func removeOwned(dir, db string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
+	var owned []string
 	for _, e := range entries {
-		if !e.Type().IsRegular() || !naming.IsOwnedBy(e.Name(), db) {
+		if !naming.IsOwnedBy(e.Name(), db) {
 			continue
 		}
-		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+		path := filepath.Join(dir, e.Name())
+		if !e.Type().IsRegular() {
+			return fmt.Errorf("refusing to replace %s: not a regular file", path)
+		}
+		owned = append(owned, path)
+	}
+	for _, path := range owned {
+		if err := os.Remove(path); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// writeFile creates path, which must not exist (O_EXCL never follows a
+// symlink), and fills it with write. Permissions follow the umask.
 func writeFile(path string, write func(io.Writer) error) error {
-	f, err := os.Create(path)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 	if err != nil {
 		return err
 	}

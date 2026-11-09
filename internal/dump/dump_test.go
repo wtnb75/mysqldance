@@ -472,6 +472,32 @@ func TestStaleFilesRemoved(t *testing.T) {
 	}
 }
 
+func TestOwnedNameSymlinkRefused(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t, "CREATE TABLE t1 (id INT PRIMARY KEY)", "INSERT INTO t1 VALUES (1)")
+	sentinel := filepath.Join(t.TempDir(), "sentinel")
+	if err := os.WriteFile(sentinel, []byte("sentinel\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	link := filepath.Join(dir, naming.DataFile(db, "t1"))
+	if err := os.Symlink(sentinel, link); err != nil {
+		t.Fatal(err)
+	}
+	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir})
+	if err == nil || !strings.Contains(err.Error(), link) {
+		t.Fatalf("Run = %v, want an error naming %s", err, link)
+	}
+	if b, err := os.ReadFile(sentinel); err != nil || string(b) != "sentinel\n" {
+		t.Errorf("sentinel changed: %q, %v", b, err)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("symlink %s was replaced: %v, %v", link, fi, err)
+	}
+}
+
 func TestOddNamesAndCaseCollision(t *testing.T) {
 	e := newEnv(t)
 
