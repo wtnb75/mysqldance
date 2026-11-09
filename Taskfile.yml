@@ -1,6 +1,9 @@
 version: "3"
 
 tasks:
+  default:
+    cmds:
+      - task -l --sort=alphanumeric
   test:
     desc: Run unit tests
     cmds:
@@ -14,7 +17,47 @@ tasks:
   fmt:
     desc: Format Go sources
     cmds:
-      - gofmt -w .
+      - go fmt ./...
+      - go fix ./...
+
+  check:
+    desc: Run fmt (go fmt, go fix), lint and unit tests in order
+    cmds:
+      - task: fmt
+      - task: lint
+      - task: test
+
+  update:
+    desc: update dependencies
+    cmds:
+      - go get -u ./...
+
+  # Backlog helpers. BACKLOG.md format: see .claude/skills/mgmt-backlog.
+  #   FILE  backlog file (default BACKLOG.md)
+  #   N     number of candidates shown by backlog:next (default 5)
+  backlog:stats:
+    desc: Show backlog item counts per priority and status
+    vars:
+      FILE: '{{.FILE | default "BACKLOG.md"}}'
+    preconditions:
+      - sh: test -f {{.FILE}}
+        msg: "{{.FILE}} not found"
+    cmds:
+      - awk -v mode=stats -f scripts/backlog.awk {{.FILE}}
+
+  backlog:next:
+    desc: Show the top todo candidates (highest priority, lowest ID first) and items blocked by dependencies
+    vars:
+      FILE: '{{.FILE | default "BACKLOG.md"}}'
+      N: '{{.N | default "5"}}'
+    preconditions:
+      - sh: test -f {{.FILE}}
+        msg: "{{.FILE}} not found"
+    cmds:
+      - echo "== next candidates (first one is picked automatically) =="
+      - awk -v mode=ready -f scripts/backlog.awk {{.FILE}} | sort | head -n {{.N}}
+      - echo "== blocked (unmet dependencies) =="
+      - awk -v mode=blocked -f scripts/backlog.awk {{.FILE}} | sort
 
   # Overridable variables (pass on the command line, e.g.
   # `task test:integration PORT=33999 HOST=host.docker.internal`):
