@@ -165,3 +165,31 @@
 - 却下の理由: ロックの取得と解除は internal/source/lock_test.go（TestLockHeldForNonInnoDB ほか）が、他接続の書き込みが待たされることで確かめている。dump 層は DB の一覧を Open に渡すだけ。
 - 初出: B-005
 - 再出: 0
+
+## R-022 確定済みのダンプでも、`Close` の ROLLBACK のタイムアウトで終了コード 1 になる
+- 対象: internal/source/source.go の Close / internal/dump/dump.go の Run（`snap.Close()` を errors.Join する）
+- 指摘: 出力が確定した後にサーバーが止まると、ROLLBACK のタイムアウトで失敗として報告される。
+- 却下の理由: `Close` のエラーを Run のエラーに含めるのは B-014 以前からの挙動（接続が切れていれば ROLLBACK は元から失敗していた）。変わったのは、待ち続けずにタイムアウトで返す点だけ。ロックやトランザクションの後始末に失敗したことを黙って成功にしない（不変条件）。READMEの「どの失敗でも終了コード 1」とも一致する。
+- 初出: B-014
+- 再出: 0
+
+## R-023 SIGTERM から終了コード 1・一時ファイルの削除までを通しで確かめるテストがない
+- 対象: cmd/mysqldance/signal_unix_test.go
+- 指摘: テストは `notifyContext` が ctx を閉じることしか確かめていない。
+- 却下の理由: SIGINT と SIGTERM は同じ ctx に流れ、その先の経路は SIGINT のときと同一。ctx の中断で古いファイルを残し一時ファイルを消すことは dump の TestCancelKeepsPreviousDump が確かめている。終了コード 1 は `run` が `dump.Run` のエラーを返すだけの分岐。経路が分かれる点（シグナルから ctx）を新しいテストで押さえた。
+- 初出: B-014
+- 再出: 0
+
+## R-024 `closeTimeout` の書き換えがテスト間で競合し、MySQL なしの単体テストでは検証されない
+- 対象: internal/source/close_test.go の TestCloseTimesOutWhenServerStalls
+- 指摘: パッケージ変数を同期なしで書き換える。MySQL が無いと skip される。
+- 却下の理由: このパッケージのテストに `t.Parallel` はなく、競合する読み手がいない。統合テストが `task test:integration` と CI で 8.0 / 8.4 に対して実行される。ハンドシェイクを偽装する単体テストは、得るものに対して重い（好みの問題）。
+- 初出: B-014
+- 再出: 0
+
+## R-025 ROLLBACK の中断後、`conn.Close()` / `db.Close()` が待ち続けうる
+- 対象: internal/source/source.go の Close
+- 指摘: 上限は `ExecContext` にしか掛かっておらず、後続の Close が長引く可能性がある。
+- 却下の理由: 推測。ドライバーは接続を閉じるときにソケットを閉じるだけで、応答を待たない。サーバーが応答しない状態を再現する統合テスト（TestCloseTimesOutWhenServerStalls）で、`Close` 全体が約 0.35 秒（上限 0.3 秒）で返ることを確認している。
+- 初出: B-014
+- 再出: 0

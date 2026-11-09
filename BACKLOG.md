@@ -12,12 +12,6 @@
   - [ ] ファイルとディレクトリのモードを指定するフラグを追加する（既定は現状維持か絞るかを決めて README に書く）
   - [ ] 既存の出力ディレクトリのモードは変えない
 
-## B-014 [todo|P2] SIGTERM を処理し、終了時のクリーンアップを確実にする
-- 概要: `signal.NotifyContext` は `os.Interrupt` だけを受ける。`docker stop` や `kill` が送る SIGTERM では、書き込み中のファイルが途中で切れたまま残り、トランザクションもサーバー側のタイムアウトまで残る。また `Snapshot.Close` の `ROLLBACK` は `context.Background()` で実行するため、接続が切れていると待ち続ける可能性がある。B-004 のアトミック化とは別に、プロセス終了時の振る舞いとして直す。
-- 受け入れ条件:
-  - [ ] SIGTERM でも Ctrl-C と同じ経路で中断し、書き込み中のファイルを削除して終了コード 1 で終わる
-  - [ ] `Close` の `ROLLBACK` にタイムアウトを設ける
-
 ## B-015 [todo|P3] 接続と読み取りのタイムアウトを設定できるようにする
 - 概要: `mysql.Config` に `Timeout` / `ReadTimeout` / `WriteTimeout` を設定していないため、サーバーが応答しなくなるとダンプが待ち続ける。
 - 受け入れ条件:
@@ -296,6 +290,15 @@
   - [ ] README に書く
 
 # Done
+
+## B-014 [done|P2] SIGTERM を処理し、終了時のクリーンアップを確実にする
+- 概要: `signal.NotifyContext` は `os.Interrupt` だけを受ける。`docker stop` や `kill` が送る SIGTERM では、書き込み中のファイルが途中で切れたまま残り、トランザクションもサーバー側のタイムアウトまで残る。また `Snapshot.Close` の `ROLLBACK` は `context.Background()` で実行するため、接続が切れていると待ち続ける可能性がある。B-004 のアトミック化とは別に、プロセス終了時の振る舞いとして直す。
+- 確定した仕様:
+  - SIGINT と SIGTERM を同じ経路（`signal.NotifyContext`）で受ける。
+  - `Close` の `ROLLBACK` は 5 秒で打ち切る。超えても接続を閉じるので、サーバー側のトランザクションはそこで終わる。
+- 受け入れ条件:
+  - [x] SIGTERM でも Ctrl-C と同じ経路で中断し、書き込み中のファイルを削除して終了コード 1 で終わる
+  - [x] `Close` の `ROLLBACK` にタイムアウトを設ける
 
 ## B-005 [done|P2] 非トランザクションテーブル（MyISAM など）の一貫性を確保する
 - 概要: MVP は警告して続行する。`FLUSH TABLES WITH READ LOCK`（FTWRL）で取得する（`LOCK TABLES` は InnoDB のスナップショットのトランザクションを暗黙にコミットするため使わない）。対象の DB に非 InnoDB の基本テーブルがあるときだけ、FTWRL → `START TRANSACTION WITH CONSISTENT SNAPSHOT` の順に開始し、ダンプが終わる（`Close`）までロックを保持する。非 InnoDB が無ければ従来どおりロックしない。古いバージョンのデータを持ってくる話と合わせて扱う（設計書 12 節）。

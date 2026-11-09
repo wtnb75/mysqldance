@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/dump"
@@ -38,13 +39,27 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	}
 	opt.Log = stderr
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := notifyContext(context.Background())
 	defer stop()
 	if err := dump.Run(ctx, opt); err != nil {
 		_, _ = fmt.Fprintf(stderr, "mysqldance: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// notifyContext returns a context canceled by Ctrl-C (SIGINT) or SIGTERM, the
+// signal sent by docker stop and kill, so both take the same cleanup path.
+// Once the first signal has canceled the context, the signals go back to
+// their default action, so a second one terminates the process even if the
+// cleanup is stuck.
+func notifyContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
 }
 
 // parseArgs parses the command line into dump options without connecting.

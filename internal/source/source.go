@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 
@@ -256,10 +257,21 @@ func (s *Snapshot) firstNonInnoDB(ctx context.Context, dbs []string) (string, er
 	return fmt.Sprintf("table %s.%s (%s)", quoteIdent(schema), quoteIdent(name), engine), nil
 }
 
+// closeTimeout bounds the ROLLBACK in Close. It is a variable for tests.
+var closeTimeout = 5 * time.Second
+
 // Close ends the snapshot transaction and closes the connection, which also
-// releases the global read lock if one is held.
+// releases the global read lock if one is held. The ROLLBACK is bounded by
+// closeTimeout; closing the connection ends the transaction anyway, so a
+// stalled server cannot make Close hang.
 func (s *Snapshot) Close() error {
-	_, rbErr := s.conn.ExecContext(context.Background(), "ROLLBACK")
+	// Not derived from a caller context: Close must still run after the
+	// dump was canceled.
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+	defer cancel()
+	// A failed or timed-out ROLLBACK is reported like any other cleanup
+	// error; the dump is not silently treated as clean (see R-022).
+	_, rbErr := s.conn.ExecContext(ctx, "ROLLBACK")
 	return errors.Join(rbErr, s.conn.Close(), s.db.Close())
 }
 
