@@ -88,6 +88,8 @@ The password is read from --password-file, else from MYSQL_PWD.
   -o, --output DIR           output directory (required)
       --rows-per-insert N    average rows per INSERT statement (default 1000)
       --max-insert-bytes N   size cap of one INSERT statement (default 1048576)
+      --rows-per-file N      split a table into files of N rows on average,
+                             named TABLE.0001.sql, ... (default 0 = no split)
       --no-lock              do not take FLUSH TABLES WITH READ LOCK when a
                              table is not InnoDB (warn instead)
 `)
@@ -98,7 +100,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 		sslMode, sslCA                           string
 		noLock                                   bool
 		port                                     int
-		rowsPerInsert                            uint64
+		rowsPerInsert, rowsPerFile               uint64
 		maxInsertBytes                           int
 	)
 	fs.StringVar(&host, "h", "127.0.0.1", "")
@@ -115,6 +117,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.StringVar(&output, "output", "", "")
 	fs.Uint64Var(&rowsPerInsert, "rows-per-insert", 1000, "")
 	fs.IntVar(&maxInsertBytes, "max-insert-bytes", 1048576, "")
+	fs.Uint64Var(&rowsPerFile, "rows-per-file", 0, "")
 	fs.BoolVar(&noLock, "no-lock", false, "")
 
 	if err := fs.Parse(args); err != nil {
@@ -135,6 +138,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 		return usage("at least one database name is required")
 	case rowsPerInsert == 0 || rowsPerInsert > math.MaxUint32:
 		return usage("--rows-per-insert must be between 1 and %d", uint64(math.MaxUint32))
+	case rowsPerFile > math.MaxUint32:
+		return usage("--rows-per-file must be between 0 and %d", uint64(math.MaxUint32))
 	case maxInsertBytes <= 0:
 		return usage("--max-insert-bytes must be positive")
 	case port <= 0 || port > 65535:
@@ -147,7 +152,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	opt := dump.Options{
 		DBs:    fs.Args(),
 		OutDir: output,
-		Data:   datafile.Options{RowsPerInsert: uint32(rowsPerInsert), MaxInsertBytes: maxInsertBytes},
+		Data:   datafile.Options{RowsPerInsert: uint32(rowsPerInsert), MaxInsertBytes: maxInsertBytes, RowsPerFile: uint32(rowsPerFile)},
 	}
 	opt.Source.Host, opt.Source.Port, opt.Source.Socket, opt.Source.User = host, port, socket, user
 	opt.Source.SSLMode, opt.Source.SSLCA = sslMode, sslCA

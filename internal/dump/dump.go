@@ -9,12 +9,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/naming"
 	"mysqldance/internal/schemafile"
 	"mysqldance/internal/source"
+	"mysqldance/internal/sqlvalue"
 )
 
 // maxFileNameBytes is the common file-name length limit of file systems.
@@ -160,7 +162,7 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		return err
 	}
 
-	for i, t := range tables {
+	for _, t := range tables {
 		rows, err := snap.Rows(ctx, t)
 		if err != nil {
 			return fmt.Errorf("table %q: %w", t.Name, err)
@@ -169,13 +171,41 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		for j, c := range t.Columns {
 			cols[j] = c.Name
 		}
-		if err := st.create(filepath.Join(opt.OutDir, dataNames[i]), func(w io.Writer) error {
-			return datafile.Write(w, db, t.Name, cols, t.ListColumns, rows, opt.Data)
-		}); err != nil {
-			return err
+		groups := datafile.Split(rows, keyColumns(t), opt.Data.RowsPerFile)
+		names := naming.DataFileParts(db, t.Name, len(groups))
+		if len(groups) > 1 {
+			// The part names are known only now. Claim them like the others,
+			// before anything is committed.
+			for _, n := range names {
+				if err := claim(seen, n, fmt.Sprintf("table %q of database %q", t.Name, db)); err != nil {
+					return err
+				}
+			}
+		}
+		for g, group := range groups {
+			if err := st.create(filepath.Join(opt.OutDir, names[g]), func(w io.Writer) error {
+				return datafile.Write(w, db, t.Name, cols, t.ListColumns, group, opt.Data)
+			}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// keyColumns returns the indexes in a row of the columns the rows of t are
+// ordered by, or nil when t has no such key or a key column is not part of the
+// row (a generated column), in which case the whole row is used.
+func keyColumns(t source.TableInfo) []int {
+	idx := make([]int, 0, len(t.OrderBy))
+	for _, k := range t.OrderBy {
+		at := slices.IndexFunc(t.Columns, func(c sqlvalue.Column) bool { return c.Name == k })
+		if at < 0 {
+			return nil
+		}
+		idx = append(idx, at)
+	}
+	return idx
 }
 
 // claim checks the length of an output file name and records it in seen,

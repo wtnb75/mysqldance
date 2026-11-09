@@ -466,6 +466,107 @@ func TestDeterministicAndMinimalDiff(t *testing.T) {
 	}
 }
 
+// dumpSplit runs Run with RowsPerFile set.
+func (e *env) dumpSplit(t *testing.T, dir string, rowsPerFile uint32, dbs ...string) {
+	t.Helper()
+	opt := Options{Source: e.cfg, DBs: dbs, OutDir: dir, Data: datafile.Options{RowsPerFile: rowsPerFile}}
+	if err := Run(context.Background(), opt); err != nil {
+		t.Fatalf("Run(%v): %v", dbs, err)
+	}
+}
+
+func TestSplitLargeTable(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	var vals []string
+	for i := 1; i <= 2000; i++ {
+		vals = append(vals, fmt.Sprintf("(%d, 'row-%04d')", i, i))
+	}
+	var nokeyVals []string
+	for i := 0; i < 600; i++ {
+		nokeyVals = append(nokeyVals, fmt.Sprintf("(%d, 'k%d')", i%450, i%450))
+	}
+	e.exec(t,
+		"CREATE TABLE big (id INT PRIMARY KEY, v VARCHAR(20))",
+		"INSERT INTO big VALUES "+strings.Join(vals, ", "),
+		"CREATE TABLE small (id INT PRIMARY KEY)",
+		"INSERT INTO small VALUES (1), (2), (3)",
+		"CREATE TABLE empty_t (id INT PRIMARY KEY)",
+		"CREATE TABLE nokey (a INT, b VARCHAR(10))",
+		// No key, with duplicates: split by the hash of the whole row.
+		"INSERT INTO nokey VALUES "+strings.Join(nokeyVals, ", ")+", (1, 'x'), (1, 'x'), (NULL, NULL)",
+	)
+
+	dir := t.TempDir()
+	e.dumpSplit(t, dir, 100, db)
+	files := readFiles(t, dir)
+	var parts []string
+	for name := range files {
+		if strings.HasPrefix(name, naming.EscapeName(db)+".10-data.big.") {
+			parts = append(parts, name)
+		}
+	}
+	sort.Strings(parts)
+	if len(parts) < 5 {
+		t.Fatalf("big was split into %d files, want several: %q", len(parts), parts)
+	}
+	if want := naming.DataFileParts(db, "big", len(parts)); !reflect.DeepEqual(parts, want) {
+		t.Errorf("part names = %q, want %q", parts, want)
+	}
+	for _, tbl := range []string{"small", "empty_t"} {
+		if _, ok := files[naming.DataFile(db, tbl)]; !ok {
+			t.Errorf("table %s should keep its unnumbered file", tbl)
+		}
+	}
+	if _, ok := files[naming.DataFileParts(db, "nokey", 2)[0]]; !ok {
+		t.Error("the keyless table was not split")
+	}
+	for _, p := range parts {
+		if !strings.HasPrefix(files[p], datafile.Header(db)) {
+			t.Errorf("%s does not start with the fixed header", p)
+		}
+	}
+
+	// Loading the files in lexicographic order restores the same data.
+	e.roundTrip(t, dir, db)
+
+	// Updating one row changes only that row, and no boundary moves.
+	// The round trip dropped and recreated the database, so select it again.
+	e.exec(t, "USE "+quote(db), "UPDATE big SET v = 'CHANGED' WHERE id = 1000")
+	dir2 := t.TempDir()
+	e.dumpSplit(t, dir2, 100, db)
+	files2 := readFiles(t, dir2)
+	if len(files2) != len(files) {
+		t.Fatalf("file sets differ: %d vs %d files", len(files), len(files2))
+	}
+	var del, add int
+	for name, old := range files {
+		cur, ok := files2[name]
+		if !ok {
+			t.Fatalf("file %s missing after the update", name)
+		}
+		d, a := lineDiff(old, cur)
+		del += d
+		add += a
+	}
+	if del != 1 || add != 1 {
+		t.Errorf("diff after updating one row = -%d +%d, want -1 +1", del, add)
+	}
+
+	// Dumping again without a split replaces the numbered files.
+	e.dumpSplit(t, dir2, 0, db)
+	files3 := readFiles(t, dir2)
+	for _, p := range parts {
+		if _, ok := files3[p]; ok {
+			t.Errorf("numbered file %s was not removed", p)
+		}
+	}
+	if _, ok := files3[naming.DataFile(db, "big")]; !ok {
+		t.Error("unnumbered file of big is missing")
+	}
+}
+
 func TestStaleFilesRemoved(t *testing.T) {
 	e := newEnv(t)
 	db := uniqueName(t)

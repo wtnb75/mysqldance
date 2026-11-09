@@ -32,6 +32,7 @@ Put flags **before** the database names (Go's standard `flag` package stops pars
 | `-o`, `--output` | (required) | Output directory. Created if missing |
 | `--rows-per-insert` | `1000` | Average number of rows per `INSERT` statement |
 | `--max-insert-bytes` | `1048576` | Upper bound on the size of one `INSERT` statement, in bytes. The statement is split right after the row that exceeds it |
+| `--rows-per-file` | `0` | Average number of rows per data file. A table with more rows is split into several files (see "Splitting large tables" below). `0` never splits |
 | `--no-lock` | off | Do not take the global read lock when a table is not InnoDB; warn instead (see "Non-InnoDB tables and the read lock" below) |
 | positional | (at least one required) | Names of the databases to dump |
 
@@ -86,6 +87,20 @@ USE `<db>`;
 ```
 
 A data file has ``INSERT INTO `t` VALUES`` followed by the values, one record per line. Generated columns are not written, and column names are listed explicitly (``INSERT INTO `t` (`c1`, ...) VALUES``) only for tables that have a generated or `INVISIBLE` column. A table with zero rows produces a file containing only the header.
+
+### Splitting large tables
+
+With `--rows-per-file N`, the rows of a table (already in the order described under "Determinism and ordering") are cut into several data files, so that one huge file does not have to be reviewed or stored as a whole. By default (`0`) nothing is split.
+
+| File | Content |
+| --- | --- |
+| `<db>.10-data.<table>.sql` | The table in one file: no split requested, or the cut produced only one file |
+| `<db>.10-data.<table>.0001.sql`, `.0002.sql`, ... | The table in two or more files, in row order |
+
+- Each file has the same fixed header, so it also runs on its own, and ends with a closed `INSERT`. Loading the files in lexicographic file name order restores the table, as before.
+- The part number has at least four digits. With 10,000 parts or more, every part of that table uses the wider width, so the lexicographic order stays the numeric order.
+- A file ends after a row whose primary key hash (FNV-1a, mixed) modulo `N` is zero, so on average a file holds `N` rows (the sizes vary; there is no upper bound, because a cap would make the cuts depend on position). A table without a primary key uses the columns it is ordered by instead, and a table with no usable key hashes the whole row. Updating a non-key column therefore never moves a boundary, and the diff is that one row. Adding or deleting a row moves only the boundary next to it (changing the key counts as a delete plus an add).
+- Growth changes names: a table that grows from one file to several is written as `<table>.0001.sql`, `.0002.sql`, ..., and `<table>.sql` is removed as a stale file. The part numbers of the later parts shift when a boundary appears or disappears, so a Git diff may show them as renames.
 
 ### File name escaping
 
@@ -148,7 +163,7 @@ A dump contains the table data itself, which may include personal information or
 ## Limitations (out of scope for the MVP)
 
 - Parallel fetching, DBMSs other than MySQL (including MariaDB), and 5.7 and earlier.
-- Range-split output for huge tables. All rows are read into memory before being written (the intended scale is about 10 tables per database and up to about 100,000 rows).
+- Streaming for huge tables. `--rows-per-file` splits the output, but all rows of a table are still read into memory before being written (the intended scale is about 10 tables per database and up to about 100,000 rows).
 - Triggers, stored routines, events, and users and privileges.
 - Flags must be placed before the database names.
 
