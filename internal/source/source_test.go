@@ -158,20 +158,6 @@ func TestEmptyTable(t *testing.T) {
 
 func TestValueLiterals(t *testing.T) {
 	cfg, db, conn := testDB(t)
-	// The server default is UTC, which would hide a missing time_zone setting
-	// in Open. Make new sessions start at +09:00 so only the snapshot's own
-	// SET time_zone yields UTC. This changes a global setting: tests using
-	// the server must not run in parallel with this one.
-	var globalTZ string
-	if err := conn.QueryRowContext(context.Background(), "SELECT @@GLOBAL.time_zone").Scan(&globalTZ); err != nil {
-		t.Fatal(err)
-	}
-	mustExec(t, conn, "SET GLOBAL time_zone = '+09:00'")
-	t.Cleanup(func() {
-		if _, err := conn.ExecContext(context.Background(), "SET GLOBAL time_zone = ?", globalTZ); err != nil {
-			t.Errorf("restore global time_zone: %v", err)
-		}
-	})
 	mustExec(t, conn,
 		"CREATE TABLE v (id INT PRIMARY KEY,"+
 			" b BLOB, bin BINARY(3), vb VARBINARY(8), bit5 BIT(5),"+
@@ -188,6 +174,15 @@ func TestValueLiterals(t *testing.T) {
 		"INSERT INTO v (id) VALUES (2)",
 	)
 	s := openSnapshot(t, cfg, db)
+	// The server default may already be UTC, so the ts literal alone cannot
+	// prove that Open pins the session time zone; check the session directly.
+	var tz string
+	if err := s.conn.QueryRowContext(context.Background(), "SELECT @@session.time_zone").Scan(&tz); err != nil {
+		t.Fatal(err)
+	}
+	if tz != "+00:00" {
+		t.Errorf("snapshot session time_zone = %q, want +00:00", tz)
+	}
 	want := [][]string{
 		{"1",
 			"0x00FF41", "0x616200", "0x0001", "b'10101'",
