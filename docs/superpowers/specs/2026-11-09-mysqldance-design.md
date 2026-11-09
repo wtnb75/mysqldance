@@ -46,7 +46,7 @@
 
 ### 4.1 ファイルレイアウト
 
-【決定】出力は1つのフラットなディレクトリ。サブディレクトリは使わない（MySQL 公式イメージの `docker-entrypoint-initdb.d` はサブディレクトリを辿らないため【要確認】）。ファイル名の辞書順にロードすれば正しく復元できること。複数 DB を同じディレクトリに入れられること。
+【決定】出力は1つのフラットなディレクトリ。サブディレクトリは使わない（MySQL 公式イメージの `docker-entrypoint-initdb.d` はサブディレクトリを辿らないため。11 節で確認済み）。ファイル名の辞書順にロードすれば正しく復元できること。複数 DB を同じディレクトリに入れられること。
 
 ```
 dump/
@@ -79,7 +79,7 @@ INSERT INTO `t` VALUES
 
 - `SHOW CREATE TABLE` の結果（外部キー・制約を含む）をそのまま使う。【決定】外部キーはテーブル定義内にインラインで含める。mysqldump と同じ考え方。
 - テーブルは名前順に並べる（依存関係順にはしない）。ヘッダーで `FOREIGN_KEY_CHECKS=0` にするので順序は問題にならず、循環参照する外部キーも許容される。
-- テーブルを先に、ビューを後に並べる。ビュー同士の依存は依存関係順に並べる必要がある。【要確認】`information_schema.VIEW_TABLE_USAGE` は MySQL 8.0.13 以降のはずだが未確認。使えない環境でのフォールバックは実装者が決める（例: 定義の文字列解析、または制限事項として明記）。
+- テーブルを先に、ビューを後に並べる。ビュー同士の依存は依存関係順に並べる必要がある。`information_schema.VIEW_TABLE_USAGE` は MySQL 8.0.13 以降で使える（8.0.46 / 8.4.13 で確認済み。11 節）。使えない環境でのフォールバックは実装者が決める（例: 定義の文字列解析、または制限事項として明記）。
 - `AUTO_INCREMENT=N` の現在値は、テーブル定義に含まれると差分の原因になる。【判断】定義からは除き、データから導ける形にするか、方針を決めて README に書く。実装者が決めてよい（要レビュー）。
 
 ## 5. 決定的な出力（最重要要件）
@@ -92,7 +92,7 @@ INSERT INTO `t` VALUES
   3. どちらもなければ全列の値でソートして順序を固定する。大きなテーブルで遅くなる場合は警告を出す。
 - 出力に、ダンプ時刻・サーバーバージョン・ホスト名など毎回変わる行を含めない。
 - 参考: mysqldump はデフォルトで `ORDER BY` を付けず、InnoDB ではクラスタ化インデックス順（主キーがなければ隠し行 ID 順＝ほぼ挿入順）で返る。`OPTIMIZE TABLE`・再構築・レプリカ・リストアし直しで順序が変わりうるため、本ツールは明示的に `ORDER BY` を使う。
-- 値の表現（数値、文字列のエスケープ、NULL、日時、BLOB/BINARY は 16 進、BIT、JSON、浮動小数点の表記）は実行ごとに同一でなければならない。【判断】mysqldump の表記に合わせる（BLOB は hex、`BIT` は `b'...'` 形式のはずだが【要確認】）。
+- 値の表現（数値、文字列のエスケープ、NULL、日時、BLOB/BINARY は 16 進、BIT、JSON、浮動小数点の表記）は実行ごとに同一でなければならない。【判断】基本は mysqldump の表記に合わせる（BLOB / BINARY / VARBINARY は `0x` + 16 進）。ただし `BIT` は mysqldump が 16 進（`0x15`）で出すのに対し、本ツールは `b'10101'` 形式で出す【差異あり。mysqldump は `--hex-blob` の有無によらず BIT を 16 進にする。どちらも復元結果は同じ。11 節】。空の BLOB は mysqldump が `_binary ''`、本ツールは `''`。
 - 注: `BOOLEAN` は `TINYINT(1)` の別名で、データ部分は `0`/`1` の数値。型の情報は `CREATE TABLE` 側にしか残らない。
 
 ## 6. 一貫性
@@ -141,9 +141,19 @@ MySQL ドライバ・CLI ライブラリの選定、パッケージ構成、フ�
 
 ## 11. 未確認事項（実機で確かめる）
 
-- 公式イメージが `docker-entrypoint-initdb.d` のサブディレクトリを辿らず、辞書順で実行すること。
-- `BIT`・`BLOB` などの mysqldump における表記。
-- `information_schema.VIEW_TABLE_USAGE` の利用可能バージョン。
+確認日: 2026-11-09。確認には `mysqldance` 本体（Task 1〜6 の実装）を使った。
+
+- 【確認済み】公式イメージが `docker-entrypoint-initdb.d` のサブディレクトリを辿らず、辞書順で実行すること。
+  - 確認したバージョン: `mysql:8.0`（8.0.46）と `mysql:8.4`（8.4.13）。
+  - 方法: テスト用 DB（改行・引用符・バックスラッシュ・日本語を含む文字列、BLOB / VARBINARY / BIT、外部キー、依存する 2 段のビュー）を持つ MySQL を起動し、本ツールで出力ディレクトリを作り、新しい（空の）`mysql` コンテナの `/docker-entrypoint-initdb.d` に渡して初回起動した。
+  - 結果（平置き）: エントリポイントのログが `vdb.00-schema.sql` → `vdb.10-data.blobs.sql` → `vdb.10-data.orders.sql` → `vdb.10-data.users.sql` の順に `running` を出し、エラーなしで完了した。テーブル 3 つとビュー 2 つが作られ、全行が入り、`mysqldump --hex-blob --skip-extended-insert` で元の DB と復元後の DB を比べて差分なし（文字列のエスケープ、BLOB、BIT、外部キー、ビュー経由の SELECT も一致）。
+  - 結果（サブディレクトリ）: 同じファイルを `/docker-entrypoint-initdb.d/dump/` の下に置くと `[Warn] ... ignoring /docker-entrypoint-initdb.d/dump` が出て何も実行されず、データベースは作られない。4.1 節の「フラットな 1 ディレクトリ」の前提は正しい。
+  - 注: この環境の Docker デーモンは別ホストにあり、ホストのディレクトリのバインドマウント（`-v <dir>:/docker-entrypoint-initdb.d`）では中身が空になった。そのため `docker create` + `docker cp <dir>/. <container>:/docker-entrypoint-initdb.d/` + `docker start` で渡した。ローカルの Docker なら通常のバインドマウントで同じ結果になるはずだが、バインドマウント自体は今回の環境では未確認。
+- 【差異あり】`BIT`・`BLOB` などの mysqldump における表記（8.0.46 / 8.4.13 の `mysqldump` で確認）。5 節の本文を直した。
+  - `BLOB` / `VARBINARY`: `--hex-blob` ありなら `0x00FF10` のように `0x` + 16 進で、本ツールと同じ。`--hex-blob` なしだと `_binary '...'`（バイナリがそのまま入る）になる。空の BLOB は `--hex-blob` ありでも `_binary ''`（本ツールは `''`）。
+  - `BIT(5)`: 設計時の想定（`b'...'`）と違い、mysqldump は `--hex-blob` ありなら `0x15`、なしなら `_binary '\x15'`（生バイト）で出す。`b'10101'` 形式にはならない。本ツールは `b'10101'`（`b'1'` のように先頭の 0 は省く）で出す。両方とも復元後の値は同じ（`BIN(bits)` で確認）。本ツールの `b'...'` は 16 進より値が読みやすく、バイナリ文字を含まないので意図的な差異として残す。
+  - 文字列（`'...'`）の `\n` `\'` `\"` `\\` のエスケープ、NULL は mysqldump と本ツールで一致した。
+- 【確認済み】`information_schema.VIEW_TABLE_USAGE` は MySQL 8.0.46 と 8.4.13 の両方で使え、2 段のビュー（`v_top` → `v_users` → `users`）の依存が取れた（`SELECT view_name, table_name FROM information_schema.VIEW_TABLE_USAGE`）。Task 5 の統合テスト（`internal/source`）も同じ 2 バージョンで通っている。8.0.13 より前の版は確認していない（対象外）。
 - 対象バージョンは MySQL 8.0 系以降で決定済み（10.5 節）。MariaDB・5.7 系は対象外。
 
 ## 12. バックログ（MVP の範囲外。後で課題として積む）
