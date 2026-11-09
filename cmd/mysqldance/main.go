@@ -14,6 +14,7 @@ import (
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/dump"
+	"mysqldance/internal/source"
 )
 
 func main() {
@@ -65,6 +66,10 @@ The password is read from --password-file, else from MYSQL_PWD.
   -u, --user USER            user name
       --socket PATH          Unix socket (overrides host and port)
       --password-file FILE   file holding the password
+      --ssl-mode MODE        disabled, preferred, required, verify-ca or
+                             verify-identity (default preferred)
+      --ssl-ca FILE          PEM file of CA certificates to verify the server
+                             (with required, verify-ca or verify-identity)
   -o, --output DIR           output directory (required)
       --rows-per-insert N    average rows per INSERT statement (default 1000)
       --max-insert-bytes N   size cap of one INSERT statement (default 1048576)
@@ -73,6 +78,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 
 	var (
 		host, user, socket, passwordFile, output string
+		sslMode, sslCA                           string
 		port                                     int
 		rowsPerInsert                            uint64
 		maxInsertBytes                           int
@@ -85,6 +91,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.StringVar(&user, "user", "", "")
 	fs.StringVar(&socket, "socket", "", "")
 	fs.StringVar(&passwordFile, "password-file", "", "")
+	fs.StringVar(&sslMode, "ssl-mode", source.SSLPreferred, "")
+	fs.StringVar(&sslCA, "ssl-ca", "", "")
 	fs.StringVar(&output, "o", "", "")
 	fs.StringVar(&output, "output", "", "")
 	fs.Uint64Var(&rowsPerInsert, "rows-per-insert", 1000, "")
@@ -113,6 +121,9 @@ The password is read from --password-file, else from MYSQL_PWD.
 	case port <= 0 || port > 65535:
 		return usage("--port must be between 1 and 65535")
 	}
+	if err := (source.Config{Socket: socket, SSLMode: sslMode, SSLCA: sslCA}).ValidateSSL(); err != nil {
+		return usage("%v", err)
+	}
 
 	opt := dump.Options{
 		DBs:    fs.Args(),
@@ -120,6 +131,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 		Data:   datafile.Options{RowsPerInsert: uint32(rowsPerInsert), MaxInsertBytes: maxInsertBytes},
 	}
 	opt.Source.Host, opt.Source.Port, opt.Source.Socket, opt.Source.User = host, port, socket, user
+	opt.Source.SSLMode, opt.Source.SSLCA = sslMode, sslCA
 	opt.Source.Password = getenv("MYSQL_PWD")
 	if passwordFile != "" {
 		b, err := os.ReadFile(passwordFile)

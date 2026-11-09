@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,6 +27,10 @@ func TestRunUsageErrors(t *testing.T) {
 		{"unknown flag", []string{"--bogus", "-o", t.TempDir(), "db1"}},
 		{"zero rows per insert", []string{"--rows-per-insert", "0", "-o", t.TempDir(), "db1"}},
 		{"zero max insert bytes", []string{"--max-insert-bytes", "0", "-o", t.TempDir(), "db1"}},
+		{"unknown ssl mode", []string{"--ssl-mode", "bogus", "-o", t.TempDir(), "db1"}},
+		{"verify-ca without ssl-ca", []string{"--ssl-mode", "verify-ca", "-o", t.TempDir(), "db1"}},
+		{"ssl-ca with default mode", []string{"--ssl-ca", "ca.pem", "-o", t.TempDir(), "db1"}},
+		{"ssl-ca with disabled", []string{"--ssl-mode", "disabled", "--ssl-ca", "ca.pem", "-o", t.TempDir(), "db1"}},
 		{"missing password file", []string{"--password-file", filepath.Join(t.TempDir(), "none"), "-o", t.TempDir(), "db1"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -46,7 +51,7 @@ func TestParseArgsDefaults(t *testing.T) {
 		t.Fatalf("parseArgs: %v", err)
 	}
 	want := dump.Options{
-		Source: source.Config{Host: "127.0.0.1", Port: 3306},
+		Source: source.Config{Host: "127.0.0.1", Port: 3306, SSLMode: "preferred"},
 		DBs:    []string{"db1", "db2"},
 		OutDir: "out",
 		Data:   datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
@@ -72,7 +77,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"short flags",
 			[]string{"-h", "db.example", "-P", "3307", "-u", "alice", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "db.example", Port: 3307, User: "alice", Password: "envpw"},
+				Source: source.Config{Host: "db.example", Port: 3307, User: "alice", Password: "envpw", SSLMode: "preferred"},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 			},
@@ -82,9 +87,18 @@ func TestParseArgsFlags(t *testing.T) {
 			[]string{"--host", "db.example", "--port", "3307", "--user", "alice", "--socket", "/tmp/s.sock",
 				"--output", "out", "--rows-per-insert", "5", "--max-insert-bytes", "4096", "d"},
 			dump.Options{
-				Source: source.Config{Host: "db.example", Port: 3307, Socket: "/tmp/s.sock", User: "alice", Password: "envpw"},
+				Source: source.Config{Host: "db.example", Port: 3307, Socket: "/tmp/s.sock", User: "alice", Password: "envpw", SSLMode: "preferred"},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 5, MaxInsertBytes: 4096},
+			},
+		},
+		{
+			"ssl flags",
+			[]string{"--ssl-mode", "verify-ca", "--ssl-ca", "/etc/ca.pem", "-o", "out", "d"},
+			dump.Options{
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "verify-ca", SSLCA: "/etc/ca.pem"},
+				DBs:    []string{"d"}, OutDir: "out",
+				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 			},
 		},
 	} {
@@ -97,6 +111,20 @@ func TestParseArgsFlags(t *testing.T) {
 				t.Errorf("parseArgs = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseArgsSSLValidation(t *testing.T) {
+	for _, args := range [][]string{
+		{"--ssl-mode", "bogus"},
+		{"--ssl-mode", "verify-ca"},
+		{"--ssl-mode", "disabled", "--ssl-ca", "ca.pem"},
+		{"--ssl-ca", "ca.pem"},
+		{"--ssl-mode", "verify-identity", "--socket", "/tmp/s.sock"},
+	} {
+		if _, err := parseArgs(append(args, "-o", "out", "d"), noEnv); !errors.Is(err, errUsage) {
+			t.Errorf("parseArgs(%q) error = %v, want usage error", args, err)
+		}
 	}
 }
 

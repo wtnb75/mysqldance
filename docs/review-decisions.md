@@ -18,3 +18,45 @@
 - 再出が 1 以上の項目は、指摘された箇所に理由のコメント（英語）が足りていない。コメントを足す。
 
 ## 却下した指摘
+
+## R-001 既定の `--ssl-mode=preferred` は証明書を検証せず、ダウングレードや既存利用の失敗がありうる
+- 対象: internal/source/tls.go の tlsConfig（preferred）
+- 指摘: 既定が平文から証明書検証なしの TLS に変わり、能動的な中間者にダウングレードされる。TLS 1.2 未満のサーバーでは失敗する。
+- 却下の理由: 既定を `preferred` にするのは B-012 の仕様確定でユーザーが選んだ（mysql クライアントと同じ）。ダウングレードされうることは README の TLS 節に明記している（盗聴対策のみ）。MySQL 8.0 / 8.4 は TLS 1.2 以上に対応し、統合テストで確認済み。検証が要る利用者は `verify-ca` / `verify-identity` を選ぶ。
+- 初出: B-012
+- 再出: 0
+
+## R-002 `required` に `--ssl-ca` を付けると `verify-ca` と同じになる
+- 対象: internal/source/tls.go の tlsConfig（`mode == SSLVerifyCA || roots != nil`）
+- 指摘: `required` + CA が `verify-ca` の別名になり、モードを区別できない。
+- 却下の理由: 確定した仕様そのもの（「`required` は検証しないが、`--ssl-ca` を指定したときは CA で検証する」）。CA を渡したのに検証しない方が「黙って落とす」ことになる。README に記載済み。
+- 初出: B-012
+- 再出: 0
+
+## R-003 `verifyChain` のエラーに文脈が付かない
+- 対象: internal/source/tls.go の verifyChain
+- 指摘: 検証失敗のエラーが x509 の素のメッセージで、どの設定で失敗したか分かりにくい。期限切れや中間 CA のテストがない。
+- 却下の理由: 失敗はエラーとして必ず返り、握りつぶされない（不変条件は満たす）。メッセージの好みの問題。検証ロジックは標準の `x509.Verify` で、信頼できる CA / 別の CA / 証明書なしをテスト済み。
+- 初出: B-012
+- 再出: 0
+
+## R-004 `--ssl-ca` の不備が `Open` まで分からず、処理開始後に失敗する
+- 対象: internal/source/source.go の Open / internal/dump/dump.go の dumpDB
+- 指摘: CA ファイルの不備が、dump が作業を始めた後に見つかる。
+- 却下の理由: `dumpDB` は最初に `source.Open` を呼び、古いファイルの削除はその後。設定の誤りは 1 つ目の DB の `Open` で、削除の前に失敗する。モードと CA の組み合わせはフラグ解析時に `ValidateSSL` で先に弾いている。
+- 初出: B-012
+- 再出: 1（CA を DB ごとに読み直す点として再出。source.go の Open にコメントを足した）
+
+## R-005 `--ssl-mode` が大文字や `VERIFY_CA` を受け付けない
+- 対象: cmd/mysqldance/main.go の `--ssl-mode`
+- 指摘: mysql クライアントは大文字・アンダースコアを受け付けるが、このツールは小文字のハイフン形式のみ。
+- 却下の理由: 不正な値は使い方のエラーとして明示的に拒否され、黙って別の動作にはならない。好みの問題で、`CLAUDE.md` に規約はない。README は小文字の値を列挙している。
+- 初出: B-012
+- 再出: 0
+
+## R-006 `preferred` の TLS 1.2 下限で、古い TLS しか話せないサーバーへの接続が失敗する
+- 対象: internal/source/tls.go の tlsConfig（`MinVersion: tls.VersionTLS12`）
+- 指摘: TLS 1.0/1.1 しか使えないサーバーで、以前は平文で繋がったものがハンドシェイク失敗になる。
+- 却下の理由: 対象は MySQL 8.0 系以降（CLAUDE.md）で、8.0.28 以降は TLS 1.0/1.1 が無効。Go のクライアント既定の下限も TLS 1.2 で、明示は既定と同じ。失敗は黙って落とさずエラーになり、`--ssl-mode disabled` で従来の動作に戻せる（README に記載）。
+- 初出: B-012
+- 再出: 0
