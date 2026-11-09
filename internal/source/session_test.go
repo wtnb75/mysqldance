@@ -31,6 +31,8 @@ func TestSessionSettingsPinned(t *testing.T) {
 	mc.Params = map[string]string{
 		"sql_mode":              "'ANSI_QUOTES,PAD_CHAR_TO_FULL_LENGTH'",
 		"sql_quote_show_create": "0",
+		// Adds ROW_FORMAT=DYNAMIC (the default) to SHOW CREATE TABLE.
+		"show_create_table_verbosity": "1",
 	}
 	connector, err := mysql.NewConnector(mc)
 	if err != nil {
@@ -50,18 +52,21 @@ func TestSessionSettingsPinned(t *testing.T) {
 	})
 
 	var mode string
-	var quote int
+	var quote, verbosity int
 	if err := s.conn.QueryRowContext(ctx,
-		"SELECT @@session.sql_mode, @@session.sql_quote_show_create").Scan(&mode, &quote); err != nil {
+		"SELECT @@session.sql_mode, @@session.sql_quote_show_create, @@session.show_create_table_verbosity").
+		Scan(&mode, &quote, &verbosity); err != nil {
 		t.Fatal(err)
 	}
-	if mode != "" || quote != 1 {
-		t.Errorf("snapshot session sql_mode = %q, sql_quote_show_create = %d; want '' and 1", mode, quote)
+	if mode != "" || quote != 1 || verbosity != 0 {
+		t.Errorf("snapshot session sql_mode = %q, sql_quote_show_create = %d, show_create_table_verbosity = %d; want '', 1, 0",
+			mode, quote, verbosity)
 	}
 
 	ti := tableByName(t, s, "t")
-	if !strings.HasPrefix(ti.Create, "CREATE TABLE `t` (\n  `id` int") || strings.Contains(ti.Create, `"`) {
-		t.Errorf("table Create = %q, want backtick-quoted identifiers", ti.Create)
+	if !strings.HasPrefix(ti.Create, "CREATE TABLE `t` (\n  `id` int") || strings.Contains(ti.Create, `"`) ||
+		strings.Contains(ti.Create, "ROW_FORMAT=") {
+		t.Errorf("table Create = %q, want backtick-quoted identifiers and no default ROW_FORMAT", ti.Create)
 	}
 	views, _, err := s.Views(ctx)
 	if err != nil {
