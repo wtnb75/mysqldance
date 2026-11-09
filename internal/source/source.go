@@ -18,9 +18,10 @@ import (
 	"mysqldance/internal/sqlvalue"
 )
 
-// largeUnkeyedRows is the TABLE_ROWS estimate above which a table without a
-// usable key triggers a warning (its rows are sorted in memory).
-const largeUnkeyedRows = 500000
+// largeTableRows is the TABLE_ROWS estimate above which a table triggers a
+// warning: every table is read fully into memory (and sorted there when it
+// has no usable key). A variable so tests can lower it.
+var largeTableRows int64 = 500000
 
 // Config holds connection parameters. Socket, when set, takes precedence
 // over Host/Port. Empty Host means 127.0.0.1 and zero Port means 3306.
@@ -107,7 +108,15 @@ func start(ctx context.Context, sdb *sql.DB, db string) (*Snapshot, error) {
 		return nil, err
 	}
 	s := &Snapshot{db: sdb, conn: conn, name: db}
+	// Pin every session setting that changes SHOW CREATE output or value
+	// text, so the dump never depends on server or account defaults:
+	// ANSI_QUOTES would quote identifiers with '"', PAD_CHAR_TO_FULL_LENGTH
+	// would pad CHAR values, NO_BACKSLASH_ESCAPES would change how SHOW
+	// CREATE escapes strings (schemafile relies on backslash escapes).
 	for _, stmt := range []string{
+		"SET SESSION sql_mode = ''",
+		"SET SESSION sql_quote_show_create = 1",
+		"SET SESSION show_create_table_verbosity = 0",
 		"SET time_zone = '+00:00'",
 		"SET NAMES utf8mb4",
 		"SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ",
@@ -321,26 +330,63 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, error) {
 			}
 		}
 		ti.OrderBy = chooseKey(keys[r.name], columns[r.name])
-		if ti.Columns, err = s.columnTypes(ctx, r.name, names); err != nil {
-			return nil, err
-		}
 		if ti.Create, err = s.showCreate(ctx, "TABLE", r.name); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("table %s: %w", quoteIdent(r.name), err)
+		}
+		if err := checkAllColumnsVisible(ti.Create, columns[r.name]); err != nil {
+			return nil, fmt.Errorf("table %s: %w", quoteIdent(r.name), err)
+		}
+		if ti.Columns, err = s.columnTypes(ctx, r.name, names); err != nil {
+			return nil, fmt.Errorf("table %s: %w", quoteIdent(r.name), err)
 		}
 		if !strings.EqualFold(ti.Engine, "InnoDB") {
 			warnings = append(warnings, fmt.Sprintf(
 				"table %s uses the %s engine; its data is not covered by the consistent snapshot",
 				quoteIdent(ti.Name), ti.Engine))
 		}
-		if len(ti.OrderBy) == 0 && ti.ApproxRows > largeUnkeyedRows {
+		if ti.ApproxRows > largeTableRows {
+			how := "all its rows are held in memory while its data file is written"
+			if len(ti.OrderBy) == 0 {
+				how += ", and sorted there because it has no primary key or NOT NULL unique key"
+			}
 			warnings = append(warnings, fmt.Sprintf(
-				"table %s has no primary key or NOT NULL unique key and about %d rows; its rows are sorted in memory",
-				quoteIdent(ti.Name), ti.ApproxRows))
+				"table %s has about %d rows, far beyond the scale this tool is designed for; %s",
+				quoteIdent(ti.Name), ti.ApproxRows, how))
 		}
 		out = append(out, ti)
 	}
 	s.warnings = warnings
 	return out, nil
+}
+
+// checkAllColumnsVisible fails unless the catalog lists every column that
+// SHOW CREATE TABLE defines. information_schema.COLUMNS only shows columns the
+// account has a privilege on, while SHOW CREATE TABLE shows them all, so a
+// mismatch means column-level privileges hide data that would otherwise be
+// dropped silently (INVISIBLE columns even pass SELECT *).
+func checkAllColumnsVisible(create string, catalog []columnRow) error {
+	defined, err := schemafile.ColumnNames(create)
+	if err != nil {
+		return err
+	}
+	visible := make(map[string]bool, len(catalog))
+	for _, c := range catalog {
+		visible[c.name] = true
+	}
+	var missing []string
+	for _, name := range defined {
+		if !visible[name] {
+			missing = append(missing, quoteIdent(name))
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("the account cannot read column(s) %s (column-level privileges); refusing to dump the table partially",
+			strings.Join(missing, ", "))
+	}
+	if len(defined) != len(catalog) {
+		return fmt.Errorf("SHOW CREATE TABLE defines %d columns but information_schema lists %d", len(defined), len(catalog))
+	}
+	return nil
 }
 
 // columnTypes reads the driver's type names for the given columns.
@@ -543,7 +589,7 @@ func (s *Snapshot) dataTypes(ctx context.Context, table string) (map[string]stri
 }
 
 // Warnings returns the warnings found by the last call to Tables: tables
-// not using InnoDB, and large tables without a usable key.
+// not using InnoDB, and tables whose row estimate exceeds largeTableRows.
 func (s *Snapshot) Warnings() []string {
 	return append([]string(nil), s.warnings...)
 }

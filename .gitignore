@@ -1,0 +1,8 @@
+# Binary built by `go build ./cmd/mysqldance` at the repository root.
+/mysqldance
+# Release artifacts (goreleaser).
+/dist/
+# Dump output used for local trials.
+/dump/
+# Scratch notes and reports of agent sessions.
+.superpowers/

@@ -235,6 +235,50 @@ func TestViewsAndDeps(t *testing.T) {
 	}
 }
 
+func TestCheckAllColumnsVisible(t *testing.T) {
+	create := "CREATE TABLE `t` (\n  `id` int NOT NULL,\n  `h` int DEFAULT NULL /*!80023 INVISIBLE */,\n" +
+		"  `s` int DEFAULT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB"
+	all := []columnRow{{name: "id"}, {name: "h", invisible: true}, {name: "s"}}
+	if err := checkAllColumnsVisible(create, all); err != nil {
+		t.Errorf("all columns visible: %v", err)
+	}
+	err := checkAllColumnsVisible(create, []columnRow{{name: "id"}, {name: "s"}})
+	if err == nil || !strings.Contains(err.Error(), "`h`") {
+		t.Errorf("hidden column: err = %v, want an error naming `h`", err)
+	}
+	if err := checkAllColumnsVisible("CREATE TABLE `t`", all); err == nil {
+		t.Error("unparsable statement: err = nil, want an error")
+	}
+}
+
+func TestWarningsLargeTable(t *testing.T) {
+	cfg, db, conn := testDB(t)
+	mustExec(t, conn,
+		"CREATE TABLE keyed (id INT PRIMARY KEY)",
+		"CREATE TABLE loose (n INT)",
+	)
+	// TABLE_ROWS of a new table is usually 0, so lower the threshold below
+	// it instead of loading 500k rows.
+	orig := largeTableRows
+	largeTableRows = -1
+	t.Cleanup(func() { largeTableRows = orig })
+	s := openSnapshot(t, cfg, db)
+	if _, err := s.Tables(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	w := s.Warnings()
+	if len(w) != 2 {
+		t.Fatalf("Warnings = %q, want one per table", w)
+	}
+	// Warnings follow table name order.
+	if !strings.Contains(w[0], "`keyed`") || !strings.Contains(w[0], "in memory") || strings.Contains(w[0], "sorted") {
+		t.Errorf("keyed warning = %q", w[0])
+	}
+	if !strings.Contains(w[1], "`loose`") || !strings.Contains(w[1], "sorted") {
+		t.Errorf("loose warning = %q", w[1])
+	}
+}
+
 func TestWarningsNonInnoDB(t *testing.T) {
 	cfg, db, conn := testDB(t)
 	mustExec(t, conn,

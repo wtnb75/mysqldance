@@ -26,14 +26,26 @@ func quoteIdent(s string) string {
 	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
 }
 
-// Header returns the fixed preamble of every dump file for the given database.
+// Header returns the fixed preamble of every dump file for the given database:
+// HeaderSettings followed by HeaderUse.
 func Header(db string) string {
+	return HeaderSettings() + HeaderUse(db)
+}
+
+// HeaderSettings returns the session settings of the header. They come first
+// in every file, so SET NAMES precedes any non-ASCII name (the schema file
+// puts CREATE DATABASE between this part and HeaderUse).
+func HeaderSettings() string {
 	return "SET NAMES utf8mb4;\n" +
 		"SET TIME_ZONE='+00:00';\n" +
 		"SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';\n" +
 		"SET FOREIGN_KEY_CHECKS=0;\n" +
-		"SET UNIQUE_CHECKS=0;\n" +
-		"USE " + quoteIdent(db) + ";\n"
+		"SET UNIQUE_CHECKS=0;\n"
+}
+
+// HeaderUse returns the USE statement that ends the header.
+func HeaderUse(db string) string {
+	return "USE " + quoteIdent(db) + ";\n"
 }
 
 // Write writes the header and the rows of one table as INSERT statements.

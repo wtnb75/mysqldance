@@ -25,25 +25,124 @@ type Table struct{ Name, Create string }
 // View is a view name with its CREATE VIEW statement (without a trailing semicolon).
 type View struct{ Name, Create string }
 
+// createParts locates the pieces of a SHOW CREATE TABLE statement: the
+// top-level items of the definition list (columns, keys, constraints) and the
+// byte range [optStart, optEnd) of the table options that follow its closing
+// parenthesis, up to the end of that line. ok is false if s cannot be parsed.
+//
+// The scan skips backtick identifiers (printed raw, so they may hold newlines
+// and parentheses) and single- or double-quoted strings (backslash escapes,
+// as printed under an empty sql_mode). Strings inside the definition list and the
+// table options are escaped, so the first newline after the closing
+// parenthesis ends the options; partition clauses come after it and may
+// contain raw newlines in partition COMMENTs.
+func createParts(s string) (items []string, optStart, optEnd int, ok bool) {
+	depth, itemStart := 0, 0
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '`', '\'', '"':
+			end := skipQuoted(s, i)
+			if end < 0 {
+				return nil, 0, 0, false
+			}
+			i = end
+		case '(':
+			depth++
+			if depth == 1 {
+				itemStart = i + 1
+			}
+		case ',':
+			if depth == 1 {
+				items = append(items, s[itemStart:i])
+				itemStart = i + 1
+			}
+		case ')':
+			if depth == 0 {
+				return nil, 0, 0, false
+			}
+			depth--
+			if depth == 0 {
+				items = append(items, s[itemStart:i])
+				optStart = i + 1
+				optEnd = strings.IndexByte(s[optStart:], '\n')
+				if optEnd < 0 {
+					optEnd = len(s)
+				} else {
+					optEnd += optStart
+				}
+				return items, optStart, optEnd, true
+			}
+		}
+	}
+	return nil, 0, 0, false
+}
+
+// skipQuoted returns the index of the quote closing the quoted token that
+// starts at s[i], or -1 if it is unterminated. A doubled quote continues the
+// token; inside strings a backslash escapes the next byte.
+func skipQuoted(s string, i int) int {
+	q := s[i]
+	for j := i + 1; j < len(s); j++ {
+		switch s[j] {
+		case '\\':
+			if q != '`' {
+				j++
+			}
+		case q:
+			if j+1 < len(s) && s[j+1] == q {
+				j++
+				continue
+			}
+			return j
+		}
+	}
+	return -1
+}
+
 // StripAutoIncrement removes the table option " AUTO_INCREMENT=<n>".
-// The AUTO_INCREMENT keyword in column definitions is kept.
+// The AUTO_INCREMENT keyword in column definitions is kept, and so is any
+// such text in identifiers, strings, comments and partition clauses.
+// Input that cannot be parsed is returned unchanged.
 func StripAutoIncrement(createTable string) string {
-	// Only the table-options tail (the last line, starting with ")") is
-	// touched, and only before the first quote so COMMENT text is kept.
-	nl := strings.LastIndexByte(createTable, '\n')
-	head, last := createTable[:nl+1], createTable[nl+1:]
-	if !strings.HasPrefix(last, ")") {
+	_, start, end, ok := createParts(createTable)
+	if !ok {
 		return createTable
 	}
-	opts, rest := last, ""
-	if q := strings.IndexByte(last, '\''); q >= 0 {
-		opts, rest = last[:q], last[q:]
+	// Only the options before the first quote are touched, so COMMENT text
+	// is kept (AUTO_INCREMENT always precedes COMMENT).
+	opts := createTable[start:end]
+	if q := strings.IndexByte(opts, '\''); q >= 0 {
+		opts = opts[:q]
 	}
 	loc := autoIncrementOption.FindStringIndex(opts)
 	if loc == nil {
 		return createTable
 	}
-	return head + opts[:loc[0]] + opts[loc[1]:] + rest
+	return createTable[:start+loc[0]] + createTable[start+loc[1]:]
+}
+
+// ColumnNames returns the names of all columns, generated and INVISIBLE ones
+// included, defined by a SHOW CREATE TABLE statement, in definition order.
+// It requires identifiers quoted with backticks (sql_quote_show_create=1 and
+// no ANSI_QUOTES): items not starting with a backtick are keys and constraints.
+func ColumnNames(createTable string) ([]string, error) {
+	items, _, _, ok := createParts(createTable)
+	if !ok {
+		return nil, fmt.Errorf("cannot parse CREATE TABLE statement: %q", createTable)
+	}
+	var names []string
+	for _, item := range items {
+		item = strings.TrimLeft(item, " \t\n")
+		if !strings.HasPrefix(item, "`") {
+			continue
+		}
+		end := skipQuoted(item, 0)
+		if end < 0 {
+			return nil, fmt.Errorf("cannot parse column definition %q", item)
+		}
+		names = append(names, strings.ReplaceAll(item[1:end], "``", "`"))
+	}
+	return names, nil
 }
 
 // StripDefiner removes the DEFINER=`u`@`h` clause and one following space.
@@ -99,13 +198,16 @@ func quoteIdent(s string) string {
 }
 
 // Write writes the schema file. createDatabase is the result of
-// SHOW CREATE DATABASE; IF NOT EXISTS is inserted into it. Tables are written
-// sorted by name, views in the given order.
+// SHOW CREATE DATABASE; IF NOT EXISTS is inserted into it. It goes between
+// the header's settings (so SET NAMES applies to the database name) and its
+// USE statement. Tables are written sorted by name, views in the given order.
 func Write(w io.Writer, db, createDatabase string, tables []Table, views []View) error {
 	var b strings.Builder
+	b.WriteString(datafile.HeaderSettings())
+	b.WriteString("\n")
 	b.WriteString(strings.Replace(createDatabase, "CREATE DATABASE ", "CREATE DATABASE IF NOT EXISTS ", 1))
-	b.WriteString(";\n\n")
-	b.WriteString(datafile.Header(db))
+	b.WriteString(";\n")
+	b.WriteString(datafile.HeaderUse(db))
 
 	sorted := append([]Table(nil), tables...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })

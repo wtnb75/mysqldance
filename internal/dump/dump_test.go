@@ -643,6 +643,92 @@ func TestOddNamesAndCaseCollision(t *testing.T) {
 	})
 }
 
+func TestPartitionedTablesDeterministic(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE pr (id INT AUTO_INCREMENT, v VARCHAR(10), PRIMARY KEY (id))"+
+			" PARTITION BY RANGE (id) (PARTITION p0 VALUES LESS THAN (10) COMMENT 'p\n) x',"+
+			" PARTITION p1 VALUES LESS THAN MAXVALUE)",
+		"CREATE TABLE ph (id INT AUTO_INCREMENT PRIMARY KEY, v INT) PARTITION BY HASH (id) PARTITIONS 3",
+		"CREATE TABLE pk (id INT AUTO_INCREMENT PRIMARY KEY, v INT) PARTITION BY KEY (id) PARTITIONS 2",
+		"INSERT INTO pr (v) VALUES ('a'), ('b'), ('c')",
+		"INSERT INTO ph (v) VALUES (1), (2)",
+		"INSERT INTO pk (v) VALUES (1)",
+	)
+	d1, d2 := t.TempDir(), t.TempDir()
+	e.dump(t, d1, db)
+	// Advance every AUTO_INCREMENT counter without changing the data.
+	for _, tbl := range []string{"pr", "ph", "pk"} {
+		e.exec(t, "INSERT INTO "+tbl+" (v) VALUES ('99')", "DELETE FROM "+tbl+" WHERE v = '99'")
+	}
+	e.dump(t, d2, db)
+	f1, f2 := readFiles(t, d1), readFiles(t, d2)
+	schema := f1[naming.SchemaFile(db)]
+	if strings.Contains(schema, "AUTO_INCREMENT=") || !strings.Contains(schema, "PARTITION BY HASH") {
+		t.Errorf("schema file keeps a counter or lost the partitioning:\n%s", schema)
+	}
+	if !reflect.DeepEqual(f1, f2) {
+		t.Fatalf("dumps differ after advancing the counters:\n%s\n---\n%s", schema, f2[naming.SchemaFile(db)])
+	}
+	e.roundTrip(t, d2, db)
+}
+
+// TestColumnPrivilegesRefused dumps as an account that lacks SELECT on some
+// columns. With another privilege on the table (here the database-level
+// SHOW VIEW that dump accounts usually hold) SHOW CREATE TABLE succeeds while
+// information_schema hides the columns; that must be an error rather than a
+// dump that silently drops them. With column grants alone SHOW CREATE TABLE
+// itself is denied.
+func TestColumnPrivilegesRefused(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE cp (id INT PRIMARY KEY, a INT, g INT AS (a * 2) VIRTUAL, h INT INVISIBLE, s INT)",
+		"INSERT INTO cp (id, a, h, s) VALUES (1, 2, 3, 4)",
+		"CREATE TABLE ok (id INT PRIMARY KEY)",
+	)
+	showView := "SHOW VIEW ON " + quote(db) + ".*"
+	for name, c := range map[string]struct {
+		grants  []string
+		missing string // column the error must name, if any
+	}{
+		// Every visible column but the INVISIBLE one: SELECT * would succeed.
+		"invisible missing":  {[]string{"SELECT (id, a, g, s) ON " + quote(db) + ".cp", showView}, "`h`"},
+		"visible missing":    {[]string{"SELECT (id, a, g) ON " + quote(db) + ".cp", showView}, "`s`"},
+		"column grants only": {[]string{"SELECT (id, a, g, s) ON " + quote(db) + ".cp"}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			user := "md_" + uniqueName(t)[len("mysqldance_dump_"):]
+			account := quote(user) + "@'%'"
+			if _, err := e.admin.ExecContext(context.Background(), "CREATE USER "+account+" IDENTIFIED BY 'pw'"); err != nil {
+				t.Skipf("cannot create a test user with this DSN: %v", err)
+			}
+			t.Cleanup(func() {
+				if _, err := e.admin.ExecContext(context.Background(), "DROP USER IF EXISTS "+account); err != nil {
+					t.Errorf("drop user %s: %v", account, err)
+				}
+			})
+			for _, g := range append(c.grants, "SELECT ON "+quote(db)+".ok") {
+				e.exec(t, "GRANT "+g+" TO "+account)
+			}
+			cfg := e.cfg
+			cfg.User, cfg.Password = user, "pw"
+			dir := t.TempDir()
+			err := Run(context.Background(), Options{Source: cfg, DBs: []string{db}, OutDir: dir})
+			if err == nil || !strings.Contains(err.Error(), "`cp`") || !strings.Contains(err.Error(), c.missing) {
+				t.Fatalf("Run = %v, want an error naming table `cp` and column %s", err, c.missing)
+			}
+			t.Logf("Run error: %v", err)
+			if got := readFiles(t, dir); len(got) != 0 {
+				t.Errorf("files written despite the error: %q", got)
+			}
+		})
+	}
+}
+
 func TestMultipleDatabases(t *testing.T) {
 	e := newEnv(t)
 	db1 := uniqueName(t)
