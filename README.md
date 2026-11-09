@@ -27,6 +27,8 @@ Put flags **before** the database names (Go's standard `flag` package stops pars
 | `-u`, `--user` | (none) | User name |
 | `--socket` | (none) | Unix socket. Takes precedence over host and port |
 | `--password-file` | (none) | File containing the password. One trailing newline is stripped |
+| `--ssl-mode` | `preferred` | TLS mode: `disabled`, `preferred`, `required`, `verify-ca` or `verify-identity` (see "TLS" below) |
+| `--ssl-ca` | (none) | PEM file of CA certificates used to verify the server. Only with `required`, `verify-ca` or `verify-identity`; required by `verify-ca` |
 | `-o`, `--output` | (required) | Output directory. Created if missing |
 | `--rows-per-insert` | `1000` | Average number of rows per `INSERT` statement |
 | `--max-insert-bytes` | `1048576` | Upper bound on the size of one `INSERT` statement, in bytes. The statement is split right after the row that exceeds it |
@@ -35,6 +37,24 @@ Put flags **before** the database names (Go's standard `flag` package stops pars
 - The password is never accepted on the command line. If `--password-file` is given its contents are used; otherwise the `MYSQL_PWD` environment variable is used.
 - The exit code is 0 on success and 1 on any error (including usage errors). Errors and warnings go to standard error.
 - Naming a system database (`information_schema`, `mysql`, `performance_schema`, `sys`) is an error.
+
+### TLS
+
+The dump can contain personal data, and the password exchange and every row travel over the connection, so use TLS for any server that is not on the same host. The modes are modeled on the `mysql` client's `--ssl-mode` (values are lowercase, with hyphens):
+
+| `--ssl-mode` | Behavior |
+| --- | --- |
+| `disabled` | Never use TLS |
+| `preferred` (default) | Use TLS if the server supports it, otherwise fall back to clear text. The certificate is not verified, so this protects against eavesdropping only |
+| `required` | Use TLS; fail if the server does not support it. The certificate is not verified unless `--ssl-ca` is given, in which case its chain is checked against that CA |
+| `verify-ca` | Like `required`, and always verify the certificate chain against the CAs in `--ssl-ca` (required). The host name is not checked |
+| `verify-identity` | Verify the certificate chain and that the certificate matches `--host`. Uses `--ssl-ca` if given, otherwise the system CAs. Cannot be combined with `--socket` |
+
+- Before this option existed, connections were always clear text. The default `preferred` encrypts when the server allows it; use `--ssl-mode disabled` to get the old behavior.
+- Only `preferred` can fall back to clear text. A server that does not support TLS makes every stricter mode fail before credentials are sent.
+- Over a Unix socket (`--socket`), `preferred` does not use TLS, as in the `mysql` client. The other modes still apply.
+- `verify-identity` uses Go's host name check, which needs the server certificate to carry a Subject Alternative Name matching `--host`; a certificate with only a Common Name is rejected.
+- `--ssl-ca` with `disabled` or `preferred` is a usage error, because the file would be ignored. Client certificates are not supported.
 
 ### Restoring with Docker
 

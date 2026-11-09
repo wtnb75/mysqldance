@@ -31,6 +31,10 @@ type Config struct {
 	Socket   string
 	User     string
 	Password string
+	// SSLMode is one of the SSL* constants; empty means SSLPreferred.
+	SSLMode string
+	// SSLCA is a PEM file of CA certificates used to verify the server.
+	SSLCA string
 }
 
 // TableInfo describes a base table.
@@ -73,10 +77,11 @@ func Open(ctx context.Context, cfg Config, db string) (*Snapshot, error) {
 	mc := mysql.NewConfig()
 	mc.User = cfg.User
 	mc.Passwd = cfg.Password
+	host := cfg.Host
 	if cfg.Socket != "" {
 		mc.Net, mc.Addr = "unix", cfg.Socket
 	} else {
-		host, port := cfg.Host, cfg.Port
+		port := cfg.Port
 		if host == "" {
 			host = "127.0.0.1"
 		}
@@ -84,6 +89,13 @@ func Open(ctx context.Context, cfg Config, db string) (*Snapshot, error) {
 			port = 3306
 		}
 		mc.Net, mc.Addr = "tcp", net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	// A bad ssl setting must fail here, as the first thing dumpDB does, so it
+	// aborts before any output file is touched (the CA is re-read per database
+	// on purpose: Config stays a plain value).
+	var err error
+	if mc.TLS, mc.AllowFallbackToPlaintext, err = tlsConfig(cfg, host); err != nil {
+		return nil, err
 	}
 	// Interpolate parameters client-side so no statement is ever prepared:
 	// everything, including rows, travels over the text protocol. ParseTime

@@ -24,14 +24,6 @@
   - [ ] 分割後のファイルを辞書順にロードして、元と同じデータに復元できる
   - [ ] 1 行を更新したときの差分が該当する 1 行だけである
 
-## B-012 [todo|P1] TLS で MySQL に接続できるようにする
-- 概要: `source.Open` は `mysql.NewConfig()` に TLS を設定しておらず、フラグもない（コードを読んだ範囲。`rg -i 'tls|ssl'` でヒットなし）。リモートの MySQL に TCP で繋ぐと、パスワード認証の交換と全行のデータが平文で流れる可能性がある。個人情報を含みうるダンプなので優先度を上げる。着手時に、現状の接続が平文であることをパケットまたはサーバー側の `Ssl_cipher` で確かめる。
-- 受け入れ条件:
-  - [ ] TLS の使用を指定するフラグ（例: `--ssl-mode`、CA 証明書のパス）を追加する
-  - [ ] TLS を必須にした場合、TLS 非対応のサーバーへは接続せずエラーにする
-  - [ ] 統合テストで、TLS 接続時に `Ssl_cipher` が空でないことを確認する
-  - [ ] README の使い方に追記する
-
 ## B-013 [todo|P2] 出力ファイルのパーミッションを指定できるようにする
 - 概要: 出力ファイルは `0o666`（umask 適用）、ディレクトリは `0o755` で作られ、既定では同じホストの他ユーザーが読める。README に注意は書いてあるが、ツール側に絞る手段がない。ただし絞りすぎると `docker-entrypoint-initdb.d` として使うとき、コンテナ内の `mysql` ユーザーが読めなくなる。
 - 受け入れ条件:
@@ -317,6 +309,14 @@
   - [ ] 同じ指定で 2 回作ったデータが一致する（行のチェックサムで確認する）
 
 # Done
+
+## B-012 [done|P1] TLS で MySQL に接続できるようにする
+- 概要: `source.Open` は `mysql.NewConfig()` に TLS を設定しておらず、フラグもない（コードを読んだ範囲。`rg -i 'tls|ssl'` でヒットなし）。リモートの MySQL に TCP で繋ぐと、パスワード認証の交換と全行のデータが平文で流れる可能性がある。個人情報を含みうるダンプなので優先度を上げる。着手時に、現状の接続が平文であることをパケットまたはサーバー側の `Ssl_cipher` で確かめる。
+- 受け入れ条件:
+  - [x] `--ssl-mode`（`disabled` / `preferred` / `required` / `verify-ca` / `verify-identity`。既定は `preferred`）と `--ssl-ca FILE` を追加する。`preferred` はサーバーが TLS 対応なら暗号化し、非対応なら平文にフォールバックする（証明書は検証しない）。`required` は検証しないが、`--ssl-ca` を指定したときは CA で検証する。`verify-ca` は CA チェーンを検証する（`--ssl-ca` 必須）。`verify-identity` はチェーンとホスト名を検証する（`--ssl-ca` 省略時はシステムの CA。`--socket` とは併用不可）。Unix ソケットで `preferred` のときは TLS を使わない。クライアント証明書は対象外
+  - [x] TLS を必須にした場合（`required` 以上）、TLS 非対応のサーバーへは接続せずエラーにする
+  - [x] 統合テストで、TLS 接続時に `Ssl_cipher` が空でないこと、`disabled` では空であることを確認する
+  - [x] README の使い方に追記する（既定が `preferred` になったことを含む）
 
 ## B-025 [done|P1] GitHub Actions で lint とテストを実行する CI を作る
 - 概要: `wtnb75/mcprt` の `branch.yml` / `main.yml` と同じ構成にする。`.github/workflows/branch.yml`（`main` 以外へのプッシュ）と `main.yml`（`main` へのプッシュ）を作り、`wtnb75/actions/golang@v1`（gofmt、`go vet`、golangci-lint）と `wtnb75/actions/gotest@v1`（カバレッジ付きの `go test`、レポート）を使う。他の action は参照元と同じく SHA で固定し、`permissions` は `contents: read` から始める。`workflow_dispatch` も付ける。
