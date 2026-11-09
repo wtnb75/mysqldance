@@ -93,15 +93,6 @@
   - [ ] グループまたは他ユーザーが読めるパスワードファイルを指定したときに警告を出す
   - [ ] README の使い方に `MYSQL_PWD` の注意を追記する
 
-## B-025 [todo|P1] GitHub Actions で lint とテストを実行する CI を作る
-- 概要: `wtnb75/mcprt` の `branch.yml` / `main.yml` と同じ構成にする。`.github/workflows/branch.yml`（`main` 以外へのプッシュ）と `main.yml`（`main` へのプッシュ）を作り、`wtnb75/actions/golang@v1`（gofmt、`go vet`、golangci-lint）と `wtnb75/actions/gotest@v1`（カバレッジ付きの `go test`、レポート）を使う。他の action は参照元と同じく SHA で固定し、`permissions` は `contents: read` から始める。`workflow_dispatch` も付ける。
-- 前提: 参照元の `docker` / `deploy` ジョブは含めない（B-028、B-029 で扱う）。`wtnb75/actions/*` は参照元と同じく `@v1` で参照し、直接使う外部 action（`actions/checkout`）は SHA で固定する。Go のバージョンは `wtnb75/actions/golang` の既定（stable）に任せる。ブランチ用と `main` 用は、後で `main` 用にだけ公開処理（B-029）を足すため、別ファイルにする。
-- 受け入れ条件:
-  - [ ] ブランチへのプッシュで、フォーマット・`go vet`・lint・単体テストが実行され、失敗したら CI が失敗する
-  - [ ] カバレッジの要約がジョブのサマリーに出る
-  - [ ] action は SHA で固定し、バージョンをコメントに残す
-  - [ ] README にバッジを追加する
-
 ## B-026 [todo|P1] CI で MySQL 8.0 / 8.4 に対する統合テストを実行する
 - 依存: B-025
 - 概要: 統合テストは `MYSQLDANCE_TEST_DSN` があるときだけ動く。手元では `task test:integration` が Docker で起動するが、CI ではジョブの `services`（またはマトリクス）で MySQL 8.0 と 8.4 を起動して同じテストを実行する。参照元の `mcprt` には統合テストがないため、この部分は参照できず、新規に設計する。
@@ -326,3 +317,12 @@
   - [ ] 同じ指定で 2 回作ったデータが一致する（行のチェックサムで確認する）
 
 # Done
+
+## B-025 [done|P1] GitHub Actions で lint とテストを実行する CI を作る
+- 概要: `wtnb75/mcprt` の `branch.yml` / `main.yml` と同じ構成にする。`.github/workflows/branch.yml`（`main` 以外へのプッシュ）と `main.yml`（`main` へのプッシュ）を作り、`wtnb75/actions/golang@v1`（gofmt、`go vet`、golangci-lint）と `wtnb75/actions/gotest@v1`（カバレッジ付きの `go test`、レポート）を使う。他の action は参照元と同じく SHA で固定し、`permissions` は `contents: read` から始める。`workflow_dispatch` も付ける。
+- 前提: 参照元の `docker` / `deploy` ジョブは含めない（B-028、B-029 で扱う）。`wtnb75/actions/*` は参照元と同じく `@v1` で参照し、直接使う外部 action（`actions/checkout`）は SHA で固定する。Go のバージョンは `wtnb75/actions/golang` の既定（stable）に任せる。ブランチ用と `main` 用は、後で `main` 用にだけ公開処理（B-029）を足すため、別ファイルにする。
+- 受け入れ条件:
+  - [x] ブランチへのプッシュで、フォーマット・`go vet`・lint・単体テストが実行され、失敗したら CI が失敗する
+  - [x] カバレッジの要約がジョブのサマリーに出る
+  - [x] action は SHA で固定し、バージョンをコメントに残す
+  - [x] README にバッジを追加する
