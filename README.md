@@ -100,7 +100,7 @@ In file names, database and table names keep only ASCII letters, digits, `_` and
 - `INSERT` statement boundaries are decided by row content (a hash), so updating one row normally changes just that row in the diff (one deletion plus one addition). Adding or deleting rows only changes the area around them.
 - Value formats: strings are `'...'` (with `\`, `'`, `"`, newlines, NUL and so on escaped); `BLOB`, `BINARY`, `VARBINARY` and `GEOMETRY` are `0x` followed by hex (empty is `''`); `BIT` is `b'...'`; NULL is `NULL`. Times are read and written with `TIME_ZONE='+00:00'`.
 - The `DEFINER=...` clause of views is not written (views are created as the restoring user).
-- Reads use one connection per database with `REPEATABLE READ` and `START TRANSACTION WITH CONSISTENT SNAPSHOT` (see "Limitations" for consistency across databases).
+- Reads use a single connection and a single transaction (`REPEATABLE READ` with `START TRANSACTION WITH CONSISTENT SNAPSHOT`) for all databases, so every table of every database is from the same point in time. Schema objects are read from the catalog (`information_schema`, `SHOW CREATE`), which the snapshot does not cover, so DDL run during the dump may still show up.
 - The reading connection pins `sql_mode=''`, `sql_quote_show_create=1` and `show_create_table_verbosity=0` at session level, so output does not change even if the server's default `sql_mode` has `ANSI_QUOTES` (identifiers would become `"t"`, which cannot be restored) or `PAD_CHAR_TO_FULL_LENGTH` (`CHAR` values would be padded with spaces).
 - A table with a column that cannot be read because only column-level privileges exist (`GRANT SELECT (c1, c2) ON ...`) is an error rather than silently dropping the column (the columns of `SHOW CREATE TABLE` are cross-checked against `information_schema.COLUMNS`).
 
@@ -137,7 +137,6 @@ A dump contains the table data itself, which may include personal information or
 - Parallel fetching, DBMSs other than MySQL (including MariaDB), and 5.7 and earlier.
 - Range-split output for huge tables. All rows are read into memory before being written (the intended scale is about 10 tables per database and up to about 100,000 rows).
 - Triggers, stored routines, events, and users and privileges.
-- Consistency across databases: when several databases are given, each is read over its own connection with its own consistent snapshot. The contents of each database are from a single point in time, but different databases can be from different times, so integrity of foreign keys or views that span databases is not guaranteed.
 - Flags must be placed before the database names.
 
 ## Development

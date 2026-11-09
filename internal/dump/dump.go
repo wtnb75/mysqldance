@@ -34,7 +34,7 @@ type Options struct {
 // directory if needed. For each database it validates all output file names,
 // removes the files the database owned from an earlier dump, then writes the
 // schema file and one data file per table. Other files are left alone.
-func Run(ctx context.Context, opt Options) error {
+func Run(ctx context.Context, opt Options) (err error) {
 	if opt.OutDir == "" {
 		return errors.New("no output directory")
 	}
@@ -50,21 +50,27 @@ func Run(ctx context.Context, opt Options) error {
 	// Lower-cased output file name -> what it was generated for, across the
 	// whole run, so names that differ only in case are rejected.
 	seen := map[string]string{}
-	for _, db := range opt.DBs {
-		if err := dumpDB(ctx, opt, db, seen); err != nil {
+	// One connection and one transaction for all databases, so they all
+	// come from the same point in time.
+	snap, err := source.Open(ctx, opt.Source, opt.DBs[0])
+	if err != nil {
+		return fmt.Errorf("database %q: %w", opt.DBs[0], err)
+	}
+	defer func() { err = errors.Join(err, snap.Close()) }()
+	for i, db := range opt.DBs {
+		if i > 0 {
+			if err := snap.Use(ctx, db); err != nil {
+				return fmt.Errorf("database %q: %w", db, err)
+			}
+		}
+		if err := dumpDB(ctx, opt, snap, db, seen); err != nil {
 			return fmt.Errorf("database %q: %w", db, err)
 		}
 	}
 	return nil
 }
 
-func dumpDB(ctx context.Context, opt Options, db string, seen map[string]string) (err error) {
-	snap, err := source.Open(ctx, opt.Source, db)
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, snap.Close()) }()
-
+func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, seen map[string]string) error {
 	createDB, err := snap.CreateDatabase(ctx)
 	if err != nil {
 		return err
