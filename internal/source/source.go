@@ -1,0 +1,612 @@
+// Package source reads a consistent snapshot of one MySQL database: its
+// CREATE statements, table metadata and rows formatted as SQL literals.
+package source
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"net"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/go-sql-driver/mysql"
+
+	"mysqldance/internal/schemafile"
+	"mysqldance/internal/sqlvalue"
+)
+
+// largeTableRows is the TABLE_ROWS estimate above which a table triggers a
+// warning: every table is read fully into memory (and sorted there when it
+// has no usable key). A variable so tests can lower it.
+var largeTableRows int64 = 500000
+
+// Config holds connection parameters. Socket, when set, takes precedence
+// over Host/Port. Empty Host means 127.0.0.1 and zero Port means 3306.
+type Config struct {
+	Host     string
+	Port     int
+	Socket   string
+	User     string
+	Password string
+}
+
+// TableInfo describes a base table.
+type TableInfo struct {
+	Name, Create, Engine string
+	// Columns lists the non-generated columns in ordinal order.
+	Columns []sqlvalue.Column
+	// ListColumns is true when the table has generated or INVISIBLE columns,
+	// so INSERT statements must name their columns.
+	ListColumns bool
+	// OrderBy is the primary key, else the first NOT NULL unique key by
+	// index name, else empty.
+	OrderBy []string
+	// ApproxRows is the TABLE_ROWS estimate.
+	ApproxRows int64
+}
+
+// Snapshot is a read-only consistent snapshot of one database, held on a
+// single pinned connection inside one transaction.
+type Snapshot struct {
+	db       *sql.DB
+	conn     *sql.Conn
+	name     string
+	dialect  dialect
+	warnings []string
+	// columns caches the column catalog (table -> columns) read by Tables.
+	columns map[string][]columnRow
+}
+
+var systemDatabases = []string{"information_schema", "mysql", "performance_schema", "sys"}
+
+// Open connects and starts a consistent snapshot of database db.
+func Open(ctx context.Context, cfg Config, db string) (*Snapshot, error) {
+	for _, sys := range systemDatabases {
+		if strings.EqualFold(db, sys) {
+			return nil, fmt.Errorf("refusing to dump system database %q", db)
+		}
+	}
+
+	mc := mysql.NewConfig()
+	mc.User = cfg.User
+	mc.Passwd = cfg.Password
+	if cfg.Socket != "" {
+		mc.Net, mc.Addr = "unix", cfg.Socket
+	} else {
+		host, port := cfg.Host, cfg.Port
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		if port == 0 {
+			port = 3306
+		}
+		mc.Net, mc.Addr = "tcp", net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	// Interpolate parameters client-side so no statement is ever prepared:
+	// everything, including rows, travels over the text protocol. ParseTime
+	// stays false so temporal values arrive as the server's text.
+	mc.InterpolateParams = true
+	connector, err := mysql.NewConnector(mc)
+	if err != nil {
+		return nil, err
+	}
+	sdb := sql.OpenDB(connector)
+	s, err := start(ctx, sdb, db)
+	if err != nil {
+		_ = sdb.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func start(ctx context.Context, sdb *sql.DB, db string) (*Snapshot, error) {
+	conn, err := sdb.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s := &Snapshot{db: sdb, conn: conn, name: db}
+	// Pin every session setting that changes SHOW CREATE output or value
+	// text, so the dump never depends on server or account defaults:
+	// ANSI_QUOTES would quote identifiers with '"', PAD_CHAR_TO_FULL_LENGTH
+	// would pad CHAR values, NO_BACKSLASH_ESCAPES would change how SHOW
+	// CREATE escapes strings (schemafile relies on backslash escapes).
+	for _, stmt := range []string{
+		"SET SESSION sql_mode = ''",
+		"SET SESSION sql_quote_show_create = 1",
+		"SET SESSION show_create_table_verbosity = 0",
+		"SET time_zone = '+00:00'",
+		"SET NAMES utf8mb4",
+		"SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+		"START TRANSACTION WITH CONSISTENT SNAPSHOT",
+	} {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("%s: %w", stmt, err)
+		}
+	}
+
+	var version string
+	if err := conn.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if s.dialect, err = dialectFor(version); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+
+	var found string
+	err = conn.QueryRowContext(ctx,
+		"SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?", db).Scan(&found)
+	if err == nil && found != db {
+		err = sql.ErrNoRows
+	}
+	if err != nil {
+		_ = conn.Close()
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("database %q not found", db)
+		}
+		return nil, err
+	}
+	// With db as the default database, SHOW CREATE VIEW leaves names in that
+	// database unqualified, so the dump can be restored under another name.
+	if _, err := conn.ExecContext(ctx, "USE "+quoteIdent(db)); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// Close ends the snapshot transaction and closes the connection.
+func (s *Snapshot) Close() error {
+	_, rbErr := s.conn.ExecContext(context.Background(), "ROLLBACK")
+	return errors.Join(rbErr, s.conn.Close(), s.db.Close())
+}
+
+// CreateDatabase returns the statement from SHOW CREATE DATABASE.
+func (s *Snapshot) CreateDatabase(ctx context.Context) (string, error) {
+	var name, create string
+	err := s.conn.QueryRowContext(ctx, "SHOW CREATE DATABASE "+quoteIdent(s.name)).Scan(&name, &create)
+	return create, err
+}
+
+type tableRow struct {
+	name, typ, engine string
+	rows              int64
+}
+
+func (s *Snapshot) listTables(ctx context.Context) ([]tableRow, error) {
+	rows, err := s.conn.QueryContext(ctx, s.dialect.tables, s.name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []tableRow
+	for rows.Next() {
+		var r tableRow
+		var engine sql.NullString
+		var n sql.NullInt64
+		if err := rows.Scan(&r.name, &r.typ, &engine, &n); err != nil {
+			return nil, err
+		}
+		r.engine, r.rows = engine.String, n.Int64
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out, nil
+}
+
+type columnRow struct {
+	name, dataType string
+	nullable       bool
+	generated      bool
+	invisible      bool
+}
+
+func (s *Snapshot) listColumns(ctx context.Context) (map[string][]columnRow, error) {
+	rows, err := s.conn.QueryContext(ctx, s.dialect.columns, s.name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string][]columnRow{}
+	for rows.Next() {
+		var table, nullable, extra string
+		var c columnRow
+		if err := rows.Scan(&table, &c.name, &c.dataType, &nullable, &extra); err != nil {
+			return nil, err
+		}
+		c.nullable = nullable == "YES"
+		// Match the exact markers: expression defaults show up as
+		// DEFAULT_GENERATED and are ordinary columns.
+		c.generated = strings.Contains(extra, "VIRTUAL GENERATED") || strings.Contains(extra, "STORED GENERATED")
+		c.invisible = strings.Contains(extra, "INVISIBLE")
+		out[table] = append(out[table], c)
+	}
+	return out, rows.Err()
+}
+
+// listUniqueKeys returns, per table, unique index name -> key columns.
+// Indexes with functional key parts are left out.
+func (s *Snapshot) listUniqueKeys(ctx context.Context) (map[string]map[string][]string, error) {
+	rows, err := s.conn.QueryContext(ctx, s.dialect.uniqueKeys, s.name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]map[string][]string{}
+	functional := map[[2]string]bool{}
+	for rows.Next() {
+		var table, index string
+		var col sql.NullString
+		if err := rows.Scan(&table, &index, &col); err != nil {
+			return nil, err
+		}
+		if !col.Valid {
+			functional[[2]string{table, index}] = true
+			continue
+		}
+		if out[table] == nil {
+			out[table] = map[string][]string{}
+		}
+		out[table][index] = append(out[table][index], col.String)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for k := range functional {
+		delete(out[k[0]], k[1])
+	}
+	return out, nil
+}
+
+// chooseKey returns the primary key, else the NOT NULL unique key whose
+// index name sorts first (byte order), else nil.
+func chooseKey(keys map[string][]string, cols []columnRow) []string {
+	if pk, ok := keys["PRIMARY"]; ok {
+		return pk
+	}
+	nullable := map[string]bool{}
+	for _, c := range cols {
+		nullable[c.name] = c.nullable
+	}
+	names := make([]string, 0, len(keys))
+	for name := range keys {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		ok := true
+		for _, c := range keys[name] {
+			if nullable[c] {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return keys[name]
+		}
+	}
+	return nil
+}
+
+// Tables returns the base tables sorted by name. It also recomputes the
+// warnings reported by Warnings.
+func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, error) {
+	list, err := s.listTables(ctx)
+	if err != nil {
+		return nil, err
+	}
+	columns, err := s.listColumns(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.columns = columns
+	keys, err := s.listUniqueKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []TableInfo
+	var warnings []string
+	for _, r := range list {
+		if r.typ != "BASE TABLE" {
+			continue
+		}
+		ti := TableInfo{Name: r.name, Engine: r.engine, ApproxRows: r.rows}
+		var names []string
+		for _, c := range columns[r.name] {
+			if c.generated || c.invisible {
+				ti.ListColumns = true
+			}
+			if !c.generated {
+				names = append(names, c.name)
+			}
+		}
+		ti.OrderBy = chooseKey(keys[r.name], columns[r.name])
+		if ti.Create, err = s.showCreate(ctx, "TABLE", r.name); err != nil {
+			return nil, fmt.Errorf("table %s: %w", quoteIdent(r.name), err)
+		}
+		if err := checkAllColumnsVisible(ti.Create, columns[r.name]); err != nil {
+			return nil, fmt.Errorf("table %s: %w", quoteIdent(r.name), err)
+		}
+		if ti.Columns, err = s.columnTypes(ctx, r.name, names); err != nil {
+			return nil, fmt.Errorf("table %s: %w", quoteIdent(r.name), err)
+		}
+		if !strings.EqualFold(ti.Engine, "InnoDB") {
+			warnings = append(warnings, fmt.Sprintf(
+				"table %s uses the %s engine; its data is not covered by the consistent snapshot",
+				quoteIdent(ti.Name), ti.Engine))
+		}
+		if ti.ApproxRows > largeTableRows {
+			how := "all its rows are held in memory while its data file is written"
+			if len(ti.OrderBy) == 0 {
+				how += ", and sorted there because it has no primary key or NOT NULL unique key"
+			}
+			warnings = append(warnings, fmt.Sprintf(
+				"table %s has about %d rows, far beyond the scale this tool is designed for; %s",
+				quoteIdent(ti.Name), ti.ApproxRows, how))
+		}
+		out = append(out, ti)
+	}
+	s.warnings = warnings
+	return out, nil
+}
+
+// checkAllColumnsVisible fails unless the catalog lists every column that
+// SHOW CREATE TABLE defines. information_schema.COLUMNS only shows columns the
+// account has a privilege on, while SHOW CREATE TABLE shows them all, so a
+// mismatch means column-level privileges hide data that would otherwise be
+// dropped silently (INVISIBLE columns even pass SELECT *).
+func checkAllColumnsVisible(create string, catalog []columnRow) error {
+	defined, err := schemafile.ColumnNames(create)
+	if err != nil {
+		return err
+	}
+	visible := make(map[string]bool, len(catalog))
+	for _, c := range catalog {
+		visible[c.name] = true
+	}
+	var missing []string
+	for _, name := range defined {
+		if !visible[name] {
+			missing = append(missing, quoteIdent(name))
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("the account cannot read column(s) %s (column-level privileges); refusing to dump the table partially",
+			strings.Join(missing, ", "))
+	}
+	if len(defined) != len(catalog) {
+		return fmt.Errorf("SHOW CREATE TABLE defines %d columns but information_schema lists %d", len(defined), len(catalog))
+	}
+	return nil
+}
+
+// columnTypes reads the driver's type names for the given columns.
+func (s *Snapshot) columnTypes(ctx context.Context, table string, names []string) ([]sqlvalue.Column, error) {
+	rows, err := s.conn.QueryContext(ctx, "SELECT "+columnList(names)+" FROM "+s.qualified(table)+" LIMIT 0")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sqlvalue.Column, len(types))
+	for i, ct := range types {
+		out[i] = sqlvalue.Column{Name: names[i], TypeName: ct.DatabaseTypeName()}
+	}
+	return out, rows.Err()
+}
+
+func (s *Snapshot) showCreate(ctx context.Context, kind, name string) (string, error) {
+	rows, err := s.conn.QueryContext(ctx, "SHOW CREATE "+kind+" "+s.qualified(name))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+	cols, err := rows.Columns()
+	if err != nil {
+		return "", err
+	}
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("SHOW CREATE %s %s returned no rows", kind, name)
+	}
+	// The statement is the second column; SHOW CREATE VIEW adds more after it.
+	vals := make([]sql.RawBytes, len(cols))
+	dest := make([]any, len(cols))
+	for i := range vals {
+		dest[i] = &vals[i]
+	}
+	if err := rows.Scan(dest...); err != nil {
+		return "", err
+	}
+	return string(vals[1]), rows.Err()
+}
+
+// Views returns the views sorted by name with their SHOW CREATE VIEW
+// statements, and deps[v]: the other views of this database that v
+// references, sorted. Views without such references have no entry.
+func (s *Snapshot) Views(ctx context.Context) ([]schemafile.View, map[string][]string, error) {
+	list, err := s.listTables(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	var views []schemafile.View
+	isView := map[string]bool{}
+	for _, r := range list {
+		if r.typ != "VIEW" {
+			continue
+		}
+		create, err := s.showCreate(ctx, "VIEW", r.name)
+		if err != nil {
+			return nil, nil, err
+		}
+		views = append(views, schemafile.View{Name: r.name, Create: create})
+		isView[r.name] = true
+	}
+
+	rows, err := s.conn.QueryContext(ctx, s.dialect.viewDeps, s.name, s.name)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	deps := map[string][]string{}
+	for rows.Next() {
+		var view, ref string
+		if err := rows.Scan(&view, &ref); err != nil {
+			return nil, nil, err
+		}
+		if isView[view] && isView[ref] && view != ref {
+			deps[view] = append(deps[view], ref)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	for v, ds := range deps {
+		sort.Strings(ds)
+		deps[v] = compact(ds)
+	}
+	return views, deps, nil
+}
+
+// compact removes adjacent duplicates from a sorted slice.
+func compact(ss []string) []string {
+	out := ss[:0]
+	for i, v := range ss {
+		if i == 0 || v != ss[i-1] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// stringKeyTypes are the DATA_TYPE values of key columns compared as binary
+// in ORDER BY, so collations cannot change the order. Values distinct under a
+// unique key's collation always differ in bytes, so the order stays total.
+// ENUM/SET sort by their member index, which is already collation-independent.
+var stringKeyTypes = map[string]bool{
+	"char": true, "varchar": true,
+	"tinytext": true, "text": true, "mediumtext": true, "longtext": true,
+}
+
+// Rows returns the rows of t formatted as SQL literals, one []string per row
+// in t.Columns order. With a key the server orders them; otherwise they are
+// sorted in memory by their comma-joined text in byte order.
+func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]string, error) {
+	names := make([]string, len(t.Columns))
+	for i, c := range t.Columns {
+		names[i] = c.Name
+	}
+	query := "SELECT " + columnList(names) + " FROM " + s.qualified(t.Name)
+	if len(t.OrderBy) > 0 {
+		types, err := s.dataTypes(ctx, t.Name)
+		if err != nil {
+			return nil, err
+		}
+		terms := make([]string, len(t.OrderBy))
+		for i, c := range t.OrderBy {
+			terms[i] = quoteIdent(c)
+			if stringKeyTypes[types[c]] {
+				terms[i] = "CAST(" + terms[i] + " AS BINARY)"
+			}
+		}
+		query += " ORDER BY " + strings.Join(terms, ", ")
+	}
+
+	// No query arguments: the text protocol delivers values as the server
+	// formats them, and sql.RawBytes keeps them unconverted.
+	rows, err := s.conn.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	raw := make([]sql.RawBytes, len(t.Columns))
+	dest := make([]any, len(raw))
+	for i := range raw {
+		dest[i] = &raw[i]
+	}
+	var out [][]string
+	for rows.Next() {
+		if err := rows.Scan(dest...); err != nil {
+			return nil, err
+		}
+		row := make([]string, len(raw))
+		for i, b := range raw {
+			row[i] = sqlvalue.Literal(t.Columns[i].TypeName, b, b == nil)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(t.OrderBy) == 0 {
+		keys := make([]string, len(out))
+		for i, row := range out {
+			keys[i] = strings.Join(row, ",")
+		}
+		idx := make([]int, len(out))
+		for i := range idx {
+			idx[i] = i
+		}
+		sort.Slice(idx, func(a, b int) bool { return keys[idx[a]] < keys[idx[b]] })
+		sorted := make([][]string, len(out))
+		for i, j := range idx {
+			sorted[i] = out[j]
+		}
+		out = sorted
+	}
+	return out, nil
+}
+
+// dataTypes returns COLUMN_NAME -> DATA_TYPE for one table, from the
+// catalog read by Tables (or read now if Tables has not seen the table).
+func (s *Snapshot) dataTypes(ctx context.Context, table string) (map[string]string, error) {
+	if s.columns == nil || s.columns[table] == nil {
+		all, err := s.listColumns(ctx)
+		if err != nil {
+			return nil, err
+		}
+		s.columns = all
+	}
+	out := map[string]string{}
+	for _, c := range s.columns[table] {
+		out[c.name] = c.dataType
+	}
+	return out, nil
+}
+
+// Warnings returns the warnings found by the last call to Tables: tables
+// not using InnoDB, and tables whose row estimate exceeds largeTableRows.
+func (s *Snapshot) Warnings() []string {
+	return append([]string(nil), s.warnings...)
+}
+
+func (s *Snapshot) qualified(name string) string {
+	return quoteIdent(s.name) + "." + quoteIdent(name)
+}
+
+func columnList(names []string) string {
+	q := make([]string, len(names))
+	for i, n := range names {
+		q[i] = quoteIdent(n)
+	}
+	return strings.Join(q, ", ")
+}
+
+// quoteIdent quotes a MySQL identifier, doubling embedded backticks.
+func quoteIdent(s string) string {
+	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
+}

@@ -16,7 +16,7 @@
 - 対象は MySQL 8.0 系以降のみ（MariaDB・5.7 は対象外）。バージョン依存の処理は `internal/source` の 1 か所にまとめる。
 - 出力は 1 つのフラットなディレクトリ。ファイル名は `<db>.00-schema.sql` と `<db>.10-data.<table>.sql`。使ってよい文字は ASCII 英数字と `_` `-`（区切りの `.` を除く）。他はエスケープする。
 - データファイルは `INSERT INTO \`t\` VALUES` の後に 1 レコード 1 行（extended-insert）。同じデータなら同じバイト列。
-- 固定ヘッダー（全 SQL ファイル共通。スキーマファイルは `USE` の前に `CREATE DATABASE` 行が入る）:
+- 固定ヘッダー（全 SQL ファイル共通。スキーマファイルは `SET` 群と `USE` の間に `CREATE DATABASE` 行が入る。非 ASCII の DB 名を正しく読ませるため、`SET NAMES utf8mb4` を `CREATE DATABASE` より先に実行する）:
   ```
   SET NAMES utf8mb4;
   SET TIME_ZONE='+00:00';
@@ -25,7 +25,7 @@
   SET UNIQUE_CHECKS=0;
   USE `<db>`;
   ```
-- ダンプ接続も `time_zone='+00:00'`、`utf8mb4`、`REPEATABLE READ` + `START TRANSACTION WITH CONSISTENT SNAPSHOT`。
+- ダンプ接続も `time_zone='+00:00'`、`utf8mb4`、`REPEATABLE READ` + `START TRANSACTION WITH CONSISTENT SNAPSHOT`。さらに `sql_mode=''`・`sql_quote_show_create=1`・`show_create_table_verbosity=0` をセッションで固定する（サーバー既定の `ANSI_QUOTES` や `PAD_CHAR_TO_FULL_LENGTH` で `SHOW CREATE` や値の出力が変わらないように）。
 - 行順: 主キー → NOT NULL ユニークキー（インデックス名順で最初の 1 つ）→ キーなしは各行の出力文字列をバイト昇順ソート。文字列キーはバイナリ比較。
 - ビューの `DEFINER=...` 句は除く。`CREATE TABLE` の ` AUTO_INCREMENT=N` は除く。スキーマファイルは `DROP TABLE/VIEW IF EXISTS` を `CREATE` の前に置き、テーブル→ビュー（ビュー間は依存順、同順位は名前順）。
 - BLOB / BINARY / GEOMETRY は常に `0x` + hex（空は `''`）、BIT は `b'...'`、NULL は `NULL`。
@@ -148,9 +148,9 @@ internal/dump/dump_test.go
   - `func StripDefiner(createView string) string` — `` DEFINER=`u`@`h` `` と後続の空白 1 つを除く。
   - `func OrderViews(views []string, deps map[string][]string) []string` — `deps[v]` は `v` が参照する同一 DB 内のビュー名。依存先が先、同順位は名前の昇順（カーン法）。
   - `type Table struct { Name, Create string }`、`type View struct { Name, Create string }`
-  - `func Write(w io.Writer, db, createDatabase string, tables []Table, views []View) error` — `createDatabase` は `SHOW CREATE DATABASE` の結果（`IF NOT EXISTS` を挿入して使う）。出力順: `CREATE DATABASE` 行 → 固定ヘッダー（`USE` 含む）→ テーブル（名前順、各 `DROP TABLE IF EXISTS` + `CREATE`）→ ビュー（渡された順。順序づけは呼び出し側の `OrderViews`）。
+  - `func Write(w io.Writer, db, createDatabase string, tables []Table, views []View) error` — `createDatabase` は `SHOW CREATE DATABASE` の結果（`IF NOT EXISTS` を挿入して使う）。出力順: 固定ヘッダーの `SET` 群（`datafile.HeaderSettings`）→ `CREATE DATABASE` 行 → `USE`（`datafile.HeaderUse`）→ テーブル（名前順、各 `DROP TABLE IF EXISTS` + `CREATE`）→ ビュー（渡された順。順序づけは呼び出し側の `OrderViews`）。
 
-- [ ] **Step 1: テストを書く**: `StripAutoIncrement("... ) ENGINE=InnoDB AUTO_INCREMENT=42 DEFAULT CHARSET=utf8mb4")` が ` AUTO_INCREMENT=42` だけ除く。列定義 ``` `id` int NOT NULL AUTO_INCREMENT``` は変わらない。`StripDefiner("CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `v` AS select 1")` が `CREATE ALGORITHM=UNDEFINED SQL SECURITY DEFINER VIEW ...`。`OrderViews`: `c` が `a` に、`a` が `b` に依存、`x` は独立 → `[b a c x]`、同順位の別名順入力でも結果が同一。`Write` の出力の先頭が `CREATE DATABASE IF NOT EXISTS` で、テーブルがビューより前、テーブルが名前順。
+- [ ] **Step 1: テストを書く**: `StripAutoIncrement("... ) ENGINE=InnoDB AUTO_INCREMENT=42 DEFAULT CHARSET=utf8mb4")` が ` AUTO_INCREMENT=42` だけ除く。列定義 ``` `id` int NOT NULL AUTO_INCREMENT``` は変わらない。`StripDefiner("CREATE ALGORITHM=UNDEFINED DEFINER=`root`@`%` SQL SECURITY DEFINER VIEW `v` AS select 1")` が `CREATE ALGORITHM=UNDEFINED SQL SECURITY DEFINER VIEW ...`。`OrderViews`: `c` が `a` に、`a` が `b` に依存、`x` は独立 → `[b a c x]`、同順位の別名順入力でも結果が同一。`Write` の出力の先頭が `SET NAMES utf8mb4;` で、`SET` 群 → `CREATE DATABASE IF NOT EXISTS` → `USE` の順、テーブルがビューより前、テーブルが名前順。
 - [ ] **Step 2: 失敗を確認** — FAIL。
 - [ ] **Step 3: 実装**（上記シグネチャ）。
 - [ ] **Step 4: 成功を確認** — PASS。
