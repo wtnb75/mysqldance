@@ -132,11 +132,12 @@ A table hidden from the dump account by missing privileges is indistinguishable 
 
 A run has two phases. Databases are processed one at a time, in the order given, and every file is written under a temporary name (`.mysqldance-NNNN.tmp` in the output directory; not `*.sql`, so `docker-entrypoint-initdb.d` ignores it). Only when every database has been written does the run **commit**: it renames the temporary files into place (each rename replaces the old file atomically) and deletes the files from last time that were not written again.
 
-- **Failure before the commit** (a file name over 255 bytes, a case-only collision, an entry with one of the database's file names that is not a regular file such as a symlink or directory, a read error, a lost connection, a write error, Ctrl-C and so on): nothing at a final path changes, whichever database fails. The previous dump stays complete, and the temporary files are removed.
+- **Failure before the commit** (a file name over 255 bytes, a case-only collision, an entry with one of the database's file names that is not a regular file such as a symlink or directory, a read error, a lost connection, a write error, Ctrl-C (`SIGINT`), `SIGTERM` as sent by `docker stop` and `kill`, and so on): nothing at a final path changes, whichever database fails. The previous dump stays complete, and the temporary files are removed.
 - **Failure during the commit** (a rename or delete error): the output directory can hold a mix of new and old files. File systems have no atomic update of several files, so this window cannot be closed; it is only as long as the renames take. Re-run the dump, or, if the output directory is under Git, restore the previous state from Git.
+- **A second signal** (a second Ctrl-C or `SIGTERM` while the run is cleaning up) is not caught: it terminates the process at once, as `SIGKILL` would, so the next run sweeps any leftover temporary files.
 - **Killed processes** (`SIGKILL`, power loss): the process cannot clean up. Temporary files may remain, and the next run deletes them before it starts. Only if the kill lands in the commit window is the output a mix as described above.
 
-In all cases the exit code is 1.
+In all cases the exit code is 1. On exit, the snapshot transaction is rolled back with a 5-second limit; if the server does not answer in time, the connection is closed instead, which ends the transaction on the server.
 
 Because the old files stay until the commit, the output directory needs room for the old and the new dump at the same time. Temporary files are synced to disk before the renames, so a crash does not leave empty files in place of the previous dump. Do not run two dumps into the same output directory at once.
 
