@@ -1,57 +1,57 @@
 # mysqldance
 
-MySQL に直接接続し、データベースを **1 レコード 1 行・決定的な出力** の SQL ファイル群としてフラットなディレクトリに書き出す CLI です。同じデータからは常に同じバイト列が出るので、ダンプを Git で管理して差分を見たり、MySQL 公式 Docker イメージの `/docker-entrypoint-initdb.d` にそのまま渡して復元したりできます。
+A CLI that connects directly to MySQL and writes databases to a flat directory of SQL files with **one record per line and fully deterministic output**. The same data always produces the same bytes, so you can keep dumps in Git and review diffs, or hand them straight to the official MySQL Docker image's `/docker-entrypoint-initdb.d` to restore.
 
-対象は MySQL 8.0 系以降（8.4 を含む）です。MariaDB・5.7 系は対象外です。
+Targets MySQL 8.0 and later (including 8.4). MariaDB and 5.7 are not supported.
 
-## ビルド
+## Build
 
 ```sh
 go build ./cmd/mysqldance
 ```
 
-## 使い方
+## Usage
 
 ```sh
 MYSQL_PWD=secret mysqldance -h 127.0.0.1 -P 3306 -u root -o ./dump mydb otherdb
 ```
 
-フラグはデータベース名より **前** に書いてください（Go 標準の `flag` パッケージは最初の位置引数で解析を止めます）。
+Put flags **before** the database names (Go's standard `flag` package stops parsing at the first positional argument).
 
-| フラグ | 既定値 | 説明 |
+| Flag | Default | Description |
 | --- | --- | --- |
-| `-h`, `--host` | `127.0.0.1` | 接続先ホスト |
-| `-P`, `--port` | `3306` | 接続先ポート |
-| `-u`, `--user` | （なし） | ユーザー名 |
-| `--socket` | （なし） | Unix ソケット。指定するとホスト・ポートより優先 |
-| `--password-file` | （なし） | パスワードを書いたファイル。末尾の改行 1 つは取り除く |
-| `-o`, `--output` | （必須） | 出力ディレクトリ。なければ作る |
-| `--rows-per-insert` | `1000` | 1 つの `INSERT` 文に入る行数の平均 |
-| `--max-insert-bytes` | `1048576` | 1 つの `INSERT` 文の大きさの上限（バイト）。超えた行の直後で文を区切る |
-| 位置引数 | （1 つ以上必須） | ダンプするデータベース名 |
+| `-h`, `--host` | `127.0.0.1` | Host to connect to |
+| `-P`, `--port` | `3306` | Port to connect to |
+| `-u`, `--user` | (none) | User name |
+| `--socket` | (none) | Unix socket. Takes precedence over host and port |
+| `--password-file` | (none) | File containing the password. One trailing newline is stripped |
+| `-o`, `--output` | (required) | Output directory. Created if missing |
+| `--rows-per-insert` | `1000` | Average number of rows per `INSERT` statement |
+| `--max-insert-bytes` | `1048576` | Upper bound on the size of one `INSERT` statement, in bytes. The statement is split right after the row that exceeds it |
+| positional | (at least one required) | Names of the databases to dump |
 
-- パスワードはコマンドラインでは受け付けません。`--password-file` を指定すればそのファイルの内容を、なければ環境変数 `MYSQL_PWD` を使います。
-- 終了コードは成功で 0、エラー（使い方の誤りを含む）で 1 です。エラーと警告は標準エラー出力に出ます。
-- システムデータベース（`information_schema` `mysql` `performance_schema` `sys`）を指定するとエラーになります。
+- The password is never accepted on the command line. If `--password-file` is given its contents are used; otherwise the `MYSQL_PWD` environment variable is used.
+- The exit code is 0 on success and 1 on any error (including usage errors). Errors and warnings go to standard error.
+- Naming a system database (`information_schema`, `mysql`, `performance_schema`, `sys`) is an error.
 
-### Docker で復元する
+### Restoring with Docker
 
 ```sh
 docker run -d -e MYSQL_ROOT_PASSWORD=root -v ./dump:/docker-entrypoint-initdb.d mysql:8.4
 ```
 
-要は `docker run -v ./dump:/docker-entrypoint-initdb.d mysql` の形です（公式イメージは `MYSQL_ROOT_PASSWORD` などの指定がないと起動しないので上の例では付けています）。初回起動時に、エントリポイントがファイル名の辞書順に `*.sql` を流し込み、データベースが復元されます。`mysql` クライアントで手で流す場合も、ファイル名の辞書順に 1 ファイルずつ実行してください。
+In essence this is `docker run -v ./dump:/docker-entrypoint-initdb.d mysql` (the official image refuses to start without something like `MYSQL_ROOT_PASSWORD`, hence the extra flag above). On first start the entrypoint feeds the `*.sql` files in lexicographic file name order, restoring the databases. When loading by hand with the `mysql` client, also run the files one at a time in lexicographic file name order.
 
-## 出力の形式
+## Output format
 
-出力ディレクトリはフラット（サブディレクトリなし）で、データベースごとに次のファイルを作ります。
+The output directory is flat (no subdirectories). For each database, these files are written:
 
-| ファイル | 内容 |
+| File | Content |
 | --- | --- |
-| `<db>.00-schema.sql` | 固定ヘッダー（`SET` 群と `USE` の間に `CREATE DATABASE IF NOT EXISTS`）、テーブル（名前順）、ビュー（依存順）の `DROP ... IF EXISTS` と `CREATE` |
-| `<db>.10-data.<table>.sql` | 固定ヘッダーと、そのテーブルの `INSERT` 文 |
+| `<db>.00-schema.sql` | The fixed header (with `CREATE DATABASE IF NOT EXISTS` between the `SET` statements and `USE`), then `DROP ... IF EXISTS` and `CREATE` for tables (by name) and views (in dependency order) |
+| `<db>.10-data.<table>.sql` | The fixed header, then the table's `INSERT` statements |
 
-固定ヘッダーはすべてのファイルに入ります。スキーマファイルでは `SET` 群と `USE` の間に `CREATE DATABASE IF NOT EXISTS ...;` が入ります（クライアントの既定の文字コードが `utf8mb4` でなくても非 ASCII の DB 名を正しく読ませるため、`SET NAMES utf8mb4` を先に実行します）。
+Every file starts with the same fixed header. In the schema file, `CREATE DATABASE IF NOT EXISTS ...;` goes between the `SET` statements and `USE` (`SET NAMES utf8mb4` runs first so that non-ASCII database names are read correctly even when the client's default character set is not `utf8mb4`).
 
 ```sql
 SET NAMES utf8mb4;
@@ -62,69 +62,69 @@ SET UNIQUE_CHECKS=0;
 USE `<db>`;
 ```
 
-データファイルは ``INSERT INTO `t` VALUES`` の後に 1 行 1 レコードで値を並べます。生成列は出力せず、生成列か `INVISIBLE` 列を持つテーブルだけ列名を明示します（``INSERT INTO `t` (`c1`, ...) VALUES``）。0 行のテーブルはヘッダーだけのファイルになります。
+A data file has ``INSERT INTO `t` VALUES`` followed by the values, one record per line. Generated columns are not written, and column names are listed explicitly (``INSERT INTO `t` (`c1`, ...) VALUES``) only for tables that have a generated or `INVISIBLE` column. A table with zero rows produces a file containing only the header.
 
-### ファイル名のエスケープ
+### File name escaping
 
-ファイル名中の DB 名・テーブル名は、ASCII 英数字と `_` `-` だけをそのまま残し、それ以外のバイト（`.` `%` 空白、非 ASCII の UTF-8 の各バイトなど）を `%XX`（大文字の 16 進）にします。例: `my.db` → `my%2Edb`、`日本` → `%E6%97%A5%E6%9C%AC`。区切りの `.` は名前の中に現れないので、`mydb` と `mydb2` のように接頭辞を共有する DB を同じディレクトリに置いても、ファイル名の辞書順で各 DB のスキーマ → データの並びが崩れません。
+In file names, database and table names keep only ASCII letters, digits, `_` and `-` as they are; every other byte (`.`, `%`, spaces, each byte of non-ASCII UTF-8, and so on) becomes `%XX` (uppercase hex). Examples: `my.db` → `my%2Edb`, `日本` → `%E6%97%A5%E6%9C%AC`. Because the separator `.` never appears inside a name, databases that share a prefix, such as `mydb` and `mydb2`, can live in one directory without breaking the lexicographic order of each database's schema → data files.
 
-- **255 バイト制限**: エスケープ後のファイル名が 255 バイトを超えるとエラーになり、その DB のファイルは何も書きません（例: 非 ASCII のテーブル名は 1 文字が 9 バイト前後に膨らみます）。
-- **大文字小文字だけが違う名前**: `Users` と `users` のように、出力ファイル名を小文字にして同じになるものが（1 回の実行の中の全 DB を通して）あるとエラーになります。大文字小文字を区別しないファイルシステムで上書きし合うのを防ぐためです。
+- **255-byte limit**: if an escaped file name exceeds 255 bytes the run fails and nothing is written for that database (a non-ASCII table name grows to roughly 9 bytes per character).
+- **Names differing only in case**: if two output file names become identical when lowercased, such as `Users` and `users` (across all databases in one run), the run fails. This prevents files from overwriting each other on case-insensitive file systems.
 
-## 決定性と並び順
+## Determinism and ordering
 
-- 同じデータなら、何度ダンプしても全ファイルがバイト単位で一致します。
-- 行の並び: 主キー順 → 主キーがなければ NOT NULL のユニークキー（インデックス名の辞書順で最初の 1 つ）順 → どちらもなければ各行の出力文字列のバイト順。文字列のキーは照合順序でなくバイナリで比べます。
-- `INSERT` 文の区切りは行の内容（ハッシュ）で決まるので、1 行を更新すると差分はふつうその 1 行（削除 1 + 追加 1）だけです。行の追加・削除でも、変わるのはその行の近くだけです。
-- 値の書式: 文字列は `'...'`（`\` `'` `"` 改行・NUL などはエスケープ）、`BLOB` / `BINARY` / `VARBINARY` / `GEOMETRY` は `0x` + 16 進（空は `''`）、`BIT` は `b'...'`、NULL は `NULL`。時刻は `TIME_ZONE='+00:00'` で読み書きします。
-- ビューの `DEFINER=...` 句は出力しません（復元先のユーザーで作られます）。
-- 読み出しは DB ごとに 1 接続・`REPEATABLE READ` + `START TRANSACTION WITH CONSISTENT SNAPSHOT` で行います（複数 DB 間の一貫性は「制限事項」を参照）。
-- 読み出し側の接続では `sql_mode=''`・`sql_quote_show_create=1`・`show_create_table_verbosity=0` をセッションで固定します。サーバーの既定 `sql_mode` に `ANSI_QUOTES`（識別子が `"t"` になり復元できない）や `PAD_CHAR_TO_FULL_LENGTH`（`CHAR` の値が空白で埋まる）があっても出力は変わりません。
-- 列単位の権限（`GRANT SELECT (c1, c2) ON ...`）しかなく読めない列があるテーブルは、列を黙って落とさずエラーにします（`SHOW CREATE TABLE` の列と `information_schema.COLUMNS` の列を突き合わせます）。
+- For the same data, every file is byte-for-byte identical across runs.
+- Row order: primary key; if there is none, the first NOT NULL unique key (by index name in lexicographic order); if there is neither, the byte order of each row's output string. String keys are compared as binary, not by collation.
+- `INSERT` statement boundaries are decided by row content (a hash), so updating one row normally changes just that row in the diff (one deletion plus one addition). Adding or deleting rows only changes the area around them.
+- Value formats: strings are `'...'` (with `\`, `'`, `"`, newlines, NUL and so on escaped); `BLOB`, `BINARY`, `VARBINARY` and `GEOMETRY` are `0x` followed by hex (empty is `''`); `BIT` is `b'...'`; NULL is `NULL`. Times are read and written with `TIME_ZONE='+00:00'`.
+- The `DEFINER=...` clause of views is not written (views are created as the restoring user).
+- Reads use one connection per database with `REPEATABLE READ` and `START TRANSACTION WITH CONSISTENT SNAPSHOT` (see "Limitations" for consistency across databases).
+- The reading connection pins `sql_mode=''`, `sql_quote_show_create=1` and `show_create_table_verbosity=0` at session level, so output does not change even if the server's default `sql_mode` has `ANSI_QUOTES` (identifiers would become `"t"`, which cannot be restored) or `PAD_CHAR_TO_FULL_LENGTH` (`CHAR` values would be padded with spaces).
+- A table with a column that cannot be read because only column-level privileges exist (`GRANT SELECT (c1, c2) ON ...`) is an error rather than silently dropping the column (the columns of `SHOW CREATE TABLE` are cross-checked against `information_schema.COLUMNS`).
 
-### AUTO_INCREMENT は復元しない
+### AUTO_INCREMENT is not restored
 
-`CREATE TABLE` から `AUTO_INCREMENT=N`（カウンタの現在値）を取り除きます。カウンタだけが動いても差分が出ないようにするためです。復元後は「既存の最大値 + 1」から採番されるので、末尾の行を削除した履歴があると元のサーバーとは次の採番がずれます。パーティションテーブルも同じです。
+`AUTO_INCREMENT=N` (the counter's current value) is removed from `CREATE TABLE` so that a counter moving by itself does not produce a diff. After restoring, numbering continues from "existing maximum + 1", so if rows at the end were deleted in the past, the next number differs from the original server. The same applies to partitioned tables.
 
-### 警告
+### Warnings
 
-InnoDB 以外（MyISAM など）のテーブルはスナップショットの一貫性が保証されないため、警告を出したうえでダンプを続けます。また、推定行数（`information_schema.TABLES.TABLE_ROWS`）が 50 万行を超えるテーブルは、キーの有無にかかわらず、想定規模を大きく超えていて全行をメモリに載せる旨を警告します（キーがなければメモリ内でソートすることも併せて出します）。
+Tables that are not InnoDB (MyISAM and so on) cannot guarantee snapshot consistency, so a warning is printed and the dump continues. A table whose estimated row count (`information_schema.TABLES.TABLE_ROWS`) exceeds 500,000 gets a warning, regardless of keys, that it is far beyond the intended scale and that all rows will be loaded into memory (and, if it has no key, that it will be sorted in memory).
 
-## 再ダンプと古いファイルの削除
+## Re-dumping and removing stale files
 
-同じ出力先に再ダンプすると、各 DB を書く前に **その DB のファイル**（`<db>.00-schema.sql` と `<db>.10-data.*.sql`）だけを削除してから書き直します。そのため、前回あって今回消えたテーブルのデータファイルは残りません。他の DB のファイルや、`README.txt` など無関係なファイルには触れません。ファイルは常に新規作成（既存のパスはたどらない）で書きます。
+Re-dumping into the same output directory deletes **that database's files** (`<db>.00-schema.sql` and `<db>.10-data.*.sql`) before writing each database again. Data files of tables that existed last time but are gone now therefore do not remain. Files of other databases and unrelated files such as `README.txt` are left alone. Files are always created new (existing paths are never followed).
 
-ダンプに使うアカウントに権限がなく見えないテーブルは、削除されたテーブルと区別できません。前回は見えていたテーブルが権限の変更で見えなくなると、そのデータファイルは古いファイルとして削除され、今回の出力にも入りません。毎回同じ権限のアカウントでダンプしてください。
+A table hidden from the dump account by missing privileges is indistinguishable from a dropped table. If a table that was visible last time becomes invisible after a privilege change, its data file is deleted as stale and is not part of the new output. Always dump with an account that has the same privileges.
 
-### 途中で失敗したとき
+### Failure handling
 
-DB は指定した順に 1 つずつ処理します。各 DB では「検査 → 削除 → 書き出し」の順です。
+Databases are processed one at a time, in the order given. For each database the order is "check → delete → write".
 
-- **検査で失敗した場合**（ファイル名が 255 バイトを超える、大文字小文字で衝突する、その DB のファイル名を持つエントリが通常ファイルでない（シンボリックリンクやディレクトリ）など）: 失敗した DB については何も削除・作成しません。
-- **削除を始めた後に失敗した場合**（行の読み出しエラー、接続切れ、書き込みエラー、Ctrl-C など）: その DB の出力は**不完全**です。古いファイルはもう消えていて、一部のテーブルはデータファイルがないかもしれません。書き込み中に失敗したファイルは削除するので、途中で切れたファイルは残りません。ただし、データファイルが欠けたままでも `docker-entrypoint-initdb.d` からは一部のテーブルが空の DB としてエラーなしに復元されてしまいます。**そのまま使わず**、ダンプをやり直すか、出力先を Git で管理しているなら Git で前の状態に戻してください。
-- **複数 DB を指定した場合**: 先に処理した DB のファイルはすでに書き直されています。
+- **Failure in the check phase** (a file name over 255 bytes, a case-only collision, an entry with one of the database's file names that is not a regular file such as a symlink or directory, and so on): nothing is deleted or created for the failing database.
+- **Failure after deletion has started** (a read error, a lost connection, a write error, Ctrl-C and so on): that database's output is **incomplete**. Old files are already gone and some tables may have no data file. A file that fails mid-write is removed, so no truncated file is left behind. However, even with data files missing, `docker-entrypoint-initdb.d` restores the database without any error, with some tables empty. **Do not use it as is**: re-run the dump, or, if the output directory is under Git, restore the previous state from Git.
+- **Multiple databases**: the databases processed earlier have already been rewritten.
 
-どちらの場合も終了コードは 1 です。
+In both cases the exit code is 1.
 
-## セキュリティ
+## Security
 
-ダンプにはテーブルのデータそのもの（個人情報や認証情報を含みうる）が入ります。ファイルは `mysqldump > file` と同じく umask に従うパーミッションで作られる（ディレクトリは 0755）ので、umask やディレクトリのパーミッション、暗号化されたストレージなどで出力先を守ってください。共有の Git リポジトリにコミットする前には、公開してよいデータかどうか確認してください。パーミッションを絞りすぎると、`docker-entrypoint-initdb.d` として使うときにコンテナ内の `mysql` ユーザーが読めなくなる点にも注意してください。
+A dump contains the table data itself, which may include personal information or credentials. As with `mysqldump > file`, files are created with permissions that follow your umask (directories are 0755), so protect the output location with the umask, directory permissions, encrypted storage and so on. Before committing to a shared Git repository, confirm the data is fine to publish. Note too that overly restrictive permissions can make the files unreadable to the `mysql` user inside the container when used as `docker-entrypoint-initdb.d`.
 
-## 制限事項（MVP の対象外）
+## Limitations (out of scope for the MVP)
 
-- 並列取得、MySQL 以外の DBMS（MariaDB を含む）、5.7 系以前。
-- 巨大テーブルの範囲分割出力。全行をメモリに読んでから書き出します（想定規模は 1 DB 10 テーブル程度、最大 10 万行程度）。
-- トリガー、ストアドルーチン、イベント、ユーザー・権限。
-- 複数 DB 間の一貫性: 複数の DB を指定すると、DB ごとに別の接続・別の一貫性スナップショットで読み出します。各 DB の中は同一時点の内容ですが、DB 同士は別の時点になりうるので、DB をまたぐ外部キーやビューの整合性は保証しません。
-- フラグはデータベース名より前に書く必要があります。
+- Parallel fetching, DBMSs other than MySQL (including MariaDB), and 5.7 and earlier.
+- Range-split output for huge tables. All rows are read into memory before being written (the intended scale is about 10 tables per database and up to about 100,000 rows).
+- Triggers, stored routines, events, and users and privileges.
+- Consistency across databases: when several databases are given, each is read over its own connection with its own consistent snapshot. The contents of each database are from a single point in time, but different databases can be from different times, so integrity of foreign keys or views that span databases is not guaranteed.
+- Flags must be placed before the database names.
 
-## 開発
+## Development
 
 ```sh
-task test                                   # 単体テスト（MySQL 不要。統合テストは skip）
-task test:integration                       # Docker で MySQL 8.0 と 8.4 を起動して統合テスト
-task test:integration HOST=host.docker.internal TESTFLAGS=-v   # Docker デーモンが別ホストのとき
+task test                                   # unit tests (no MySQL needed; integration tests are skipped)
+task test:integration                       # start MySQL 8.0 and 8.4 in Docker and run integration tests
+task test:integration HOST=host.docker.internal TESTFLAGS=-v   # when the Docker daemon is on another host
 task lint                                   # golangci-lint
 ```
 
-統合テストは環境変数 `MYSQLDANCE_TEST_DSN`（例: `root:root@tcp(127.0.0.1:33061)/`）があるときだけ動きます。
+Integration tests run only when the `MYSQLDANCE_TEST_DSN` environment variable is set (for example `root:root@tcp(127.0.0.1:33061)/`).
