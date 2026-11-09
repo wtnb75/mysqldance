@@ -1,0 +1,51 @@
+name: integration
+
+# Reusable workflow: runs the integration tests against MySQL 8.0 and 8.4.
+# Called from branch.yml and main.yml.
+on:
+  workflow_call: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: integration (MySQL ${{ matrix.mysql }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql: ["8.0", "8.4"]
+    services:
+      mysql:
+        image: mysql:${{ matrix.mysql }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+        - 3306:3306
+        # The job starts only after the health check passes. The entrypoint's
+        # temporary init server has networking disabled, so a TCP ping
+        # succeeds only once the real server is up.
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      MYSQLDANCE_TEST_DSN: root:root@tcp(127.0.0.1:3306)/
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: wtnb75/actions/golang@v1
+    - name: Run integration tests
+      run: |
+        set -o pipefail
+        go test -count=1 -v ./... 2>&1 | tee integration.log
+    - name: Fail if the integration tests were skipped
+      run: |
+        if grep -q 'MYSQLDANCE_TEST_DSN is not set' integration.log; then
+          echo "::error::integration tests were skipped (MYSQLDANCE_TEST_DSN is not set)"
+          exit 1
+        fi
+        echo "MySQL ${{ matrix.mysql }}: $(grep -c '^--- PASS' integration.log) top-level tests passed," \
+          "$(grep -c -- '--- SKIP' integration.log) skipped"

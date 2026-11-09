@@ -85,14 +85,6 @@
   - [ ] グループまたは他ユーザーが読めるパスワードファイルを指定したときに警告を出す
   - [ ] README の使い方に `MYSQL_PWD` の注意を追記する
 
-## B-026 [todo|P1] CI で MySQL 8.0 / 8.4 に対する統合テストを実行する
-- 依存: B-025
-- 概要: 統合テストは `MYSQLDANCE_TEST_DSN` があるときだけ動く。手元では `task test:integration` が Docker で起動するが、CI ではジョブの `services`（またはマトリクス）で MySQL 8.0 と 8.4 を起動して同じテストを実行する。参照元の `mcprt` には統合テストがないため、この部分は参照できず、新規に設計する。
-- 受け入れ条件:
-  - [ ] 8.0 と 8.4 のそれぞれで統合テストが実行される（マトリクス）
-  - [ ] MySQL の起動を待ってからテストを始める（ヘルスチェック）
-  - [ ] 統合テストが skip されていないことを CI のログで確認できる
-
 ## B-027 [todo|P2] タグでリリースする workflow を作る
 - 依存: B-025, B-032
 - 概要: `mcprt` の `tag.yml` に倣う。`v*` タグのプッシュで `goreleaser release --clean` を実行し、B-032 の設定に従ってバイナリ、チェックサム、変更履歴を GitHub Releases に出す。`permissions` は `contents: write` が必要。`fetch-depth: 0` で履歴を全部取る（変更履歴の生成に必要）。他の action は SHA で固定する。
@@ -326,3 +318,12 @@
   - [x] カバレッジの要約がジョブのサマリーに出る
   - [x] action は SHA で固定し、バージョンをコメントに残す
   - [x] README にバッジを追加する
+
+## B-026 [done|P1] CI で MySQL 8.0 / 8.4 に対する統合テストを実行する
+- 依存: B-025
+- 概要: 統合テストは `MYSQLDANCE_TEST_DSN` があるときだけ動く。手元では `task test:integration` が Docker で起動するが、CI ではジョブの `services`（またはマトリクス）で MySQL 8.0 と 8.4 を起動して同じテストを実行する。参照元の `mcprt` には統合テストがないため、この部分は参照できず、新規に設計する。
+- 前提: 再利用可能な workflow（`.github/workflows/integration.yml`、`workflow_call`）に統合テストのジョブを置き、`branch.yml` と `main.yml` の両方から呼ぶ。MySQL は `services` で起動し、`mysqladmin ping` のヘルスチェックで待つ。統合テストが skip されたら（`MYSQLDANCE_TEST_DSN is not set`）ジョブを失敗させる。
+- 受け入れ条件:
+  - [x] 8.0 と 8.4 のそれぞれで統合テストが実行される（マトリクス）
+  - [x] MySQL の起動を待ってからテストを始める（ヘルスチェック）
+  - [x] 統合テストが skip されていないことを CI のログで確認できる
