@@ -66,4 +66,141 @@
   - [ ] トリガー、ストアドルーチン、イベントを出力し、リストアして定義が一致する
   - [ ] 出力は決定的である（`DEFINER` の扱いを決めて README に書く）
 
+## B-012 [todo|P1] TLS で MySQL に接続できるようにする
+- 概要: `source.Open` は `mysql.NewConfig()` に TLS を設定しておらず、フラグもない（コードを読んだ範囲。`rg -i 'tls|ssl'` でヒットなし）。リモートの MySQL に TCP で繋ぐと、パスワード認証の交換と全行のデータが平文で流れる可能性がある。個人情報を含みうるダンプなので優先度を上げる。着手時に、現状の接続が平文であることをパケットまたはサーバー側の `Ssl_cipher` で確かめる。
+- 受け入れ条件:
+  - [ ] TLS の使用を指定するフラグ（例: `--ssl-mode`、CA 証明書のパス）を追加する
+  - [ ] TLS を必須にした場合、TLS 非対応のサーバーへは接続せずエラーにする
+  - [ ] 統合テストで、TLS 接続時に `Ssl_cipher` が空でないことを確認する
+  - [ ] README の使い方に追記する
+
+## B-013 [todo|P2] 出力ファイルのパーミッションを指定できるようにする
+- 概要: 出力ファイルは `0o666`（umask 適用）、ディレクトリは `0o755` で作られ、既定では同じホストの他ユーザーが読める。README に注意は書いてあるが、ツール側に絞る手段がない。ただし絞りすぎると `docker-entrypoint-initdb.d` として使うとき、コンテナ内の `mysql` ユーザーが読めなくなる。
+- 受け入れ条件:
+  - [ ] ファイルとディレクトリのモードを指定するフラグを追加する（既定は現状維持か絞るかを決めて README に書く）
+  - [ ] 既存の出力ディレクトリのモードは変えない
+
+## B-014 [todo|P2] SIGTERM を処理し、終了時のクリーンアップを確実にする
+- 概要: `signal.NotifyContext` は `os.Interrupt` だけを受ける。`docker stop` や `kill` が送る SIGTERM では、書き込み中のファイルが途中で切れたまま残り、トランザクションもサーバー側のタイムアウトまで残る。また `Snapshot.Close` の `ROLLBACK` は `context.Background()` で実行するため、接続が切れていると待ち続ける可能性がある。B-004 のアトミック化とは別に、プロセス終了時の振る舞いとして直す。
+- 受け入れ条件:
+  - [ ] SIGTERM でも Ctrl-C と同じ経路で中断し、書き込み中のファイルを削除して終了コード 1 で終わる
+  - [ ] `Close` の `ROLLBACK` にタイムアウトを設ける
+
+## B-015 [todo|P3] 接続と読み取りのタイムアウトを設定できるようにする
+- 概要: `mysql.Config` に `Timeout` / `ReadTimeout` / `WriteTimeout` を設定していないため、サーバーが応答しなくなるとダンプが待ち続ける。
+- 受け入れ条件:
+  - [ ] 接続タイムアウトを指定するフラグを追加し、既定値を決める
+  - [ ] 読み取りのタイムアウトは、巨大テーブルの正常な読み出しを打ち切らない既定にする
+
+## B-016 [todo|P2] FLOAT / DOUBLE のラウンドトリップ精度を検証する
+- 概要: `sqlvalue.Literal` は `FLOAT` / `DOUBLE` をテキストプロトコルの文字列のまま出す。サーバーがこの文字列を何桁で出すかによっては、復元後に値が変わる可能性がある（未確認。設計書 5 節の「浮動小数点の表記」にも検証の記載がある）。`source_test.go` に FLOAT 列はあるが、桁数ぎりぎりの値のラウンドトリップは見当たらない。
+- 受け入れ条件:
+  - [ ] 8.0 と 8.4 の実機で、ダンプ → 復元 → 元の値とビット単位で一致するかをテストする（`0.1`、`1e38`、`3.4028235e38`、`1.7976931348623157e308` などを含む）
+  - [ ] 一致しない場合は、出力の書き方を直す（修正の内容を README と設計書に書く）
+
+## B-017 [todo|P3] 行の整形とハッシュの割り当てを減らす
+- 概要: 行ごとに `strings.Join` を 2 回する（キーなしテーブルのソート用に `source.Rows` で 1 回、`datafile.Write` で 1 回）。`datafile.Write` は行ごとに `fnv.New32a()` と `[]byte(text)` を割り当て、`text + sep` も連結して新しい文字列を作る。B-010 のストリーム化で `Rows` の形が変わるなら、そちらに合わせて一緒に直す。
+- 受け入れ条件:
+  - [ ] ベンチマーク（10 万行程度）を追加し、改善前後の割り当て数と時間を記録する
+  - [ ] 出力はバイト単位で変わらない（既存のテストが通る）
+
+## B-018 [todo|P3] 文字列キーの ORDER BY がインデックスを使えない影響を測る
+- 概要: 文字列キー（`char` / `varchar` / `text` 系）は `ORDER BY CAST(col AS BINARY)` で並べる。列に式を掛けるので、インデックス順では返せず filesort になる可能性がある（`EXPLAIN` で未確認）。想定規模では問題ないが、B-010 の前に影響を把握しておく。
+- 受け入れ条件:
+  - [ ] 10 万行・100 万行の文字列主キーのテーブルで `EXPLAIN` と所要時間を記録する
+  - [ ] 影響が大きい場合の代替案（バイナリ照合順序の指定など）を検討して結果を書く
+
+## B-019 [todo|P3] テーブルごとのクエリ数を減らす
+- 概要: `Tables` はテーブルごとに `SHOW CREATE TABLE` と `SELECT ... LIMIT 0`（型名の取得）を実行し、`Views` は `listTables` をもう一度実行する。テーブルが数十を超えると往復の回数が目立つ。
+- 受け入れ条件:
+  - [ ] `listTables` の結果を使い回し、`Tables` / `Views` で 1 回にする
+  - [ ] 型名の取得を `information_schema` の結果で置き換えられるか確かめる（置き換えられない型があれば理由を書く）
+
+## B-020 [todo|P2] 重複した `quoteIdent` を 1 か所にまとめる
+- 概要: 同じ実装の `quoteIdent` が `source`、`datafile`、`schemafile` に 1 つずつある（3 か所）。識別子のクォートは安全性に関わるので、修正が片方だけに入る事故を防ぐ。
+- 受け入れ条件:
+  - [ ] 1 か所に集約し、3 パッケージがそれを使う
+  - [ ] バッククォートを含む識別子のテストを 1 か所に集める
+
+## B-021 [todo|P2] `Snapshot` の隠れた状態をなくす
+- 概要: `Warnings()` は直前の `Tables()` の呼び出し結果に依存する。`Rows` は `Tables` が埋める `s.columns` のキャッシュに依存し、無ければ読み直す。呼び出しの順序を間違えると、警告が空になったり余計なクエリが走ったりする。
+- 受け入れ条件:
+  - [ ] `Tables` が警告を戻り値として返す（`Warnings()` を廃止する）
+  - [ ] キーの列の型を `TableInfo` に持たせ、`Rows` から `s.columns` への依存をなくす
+  - [ ] 既存のテストが通る
+
+## B-022 [todo|P3] 大きい関数とファイルを分割する
+- 依存: B-020, B-021
+- 概要: `source.go` は 612 行で、接続の確立、カタログの問い合わせ、行の読み出しが 1 つのファイルにある。`dump.dumpDB` は検査、削除、スキーマの書き出し、データの書き出しを 1 つの関数で行う。テスト用のフック（`dump.fileWriter`、`source.largeTableRows` というグローバル変数）はオプションにする。B-020 と B-021 が同じファイルを触るため、その後に行う。
+- 受け入れ条件:
+  - [ ] `source.go` を役割ごとのファイルに分ける（`connect.go`、`catalog.go`、`rows.go` など）
+  - [ ] `dumpDB` を段階ごとの関数に分ける
+  - [ ] テスト用のグローバル変数を `Options` のフィールドに置き換える
+
+## B-023 [todo|P3] 別の DB を参照するビューの復元順を検証する
+- 概要: `Views` の依存取得は `TABLE_SCHEMA = 対象 DB` に限られ、別の DB のテーブルやビューを参照するビューは依存として扱わない。複数 DB を同じディレクトリに入れると、復元はファイル名の辞書順なので、参照先の DB が後に来ると `CREATE VIEW` が失敗する可能性がある（未確認）。B-003 とは別に、この制約を確認して README に書くか、警告を出す。
+- 受け入れ条件:
+  - [ ] 2 つの DB にまたがるビューを実機で復元して、失敗するかを確認する
+  - [ ] 失敗する場合は、ダンプ時に警告を出し、README の「Limitations」に書く
+
+## B-024 [todo|P3] パスワードファイルのパーミッションを検査する
+- 概要: `--password-file` はパーミッションを見ずに読む。他のユーザーが読めるファイルなら警告を出す。環境変数 `MYSQL_PWD` は、同じホストの他のプロセスから見える場合があることを README に書く。
+- 受け入れ条件:
+  - [ ] グループまたは他ユーザーが読めるパスワードファイルを指定したときに警告を出す
+  - [ ] README の使い方に `MYSQL_PWD` の注意を追記する
+
+## B-025 [todo|P1] GitHub Actions で lint とテストを実行する CI を作る
+- 概要: `wtnb75/mcprt` の `branch.yml` / `main.yml` と同じ構成にする。`.github/workflows/branch.yml`（`main` 以外へのプッシュ）と `main.yml`（`main` へのプッシュ）を作り、`wtnb75/actions/golang@v1`（gofmt、`go vet`、golangci-lint）と `wtnb75/actions/gotest@v1`（カバレッジ付きの `go test`、レポート）を使う。他の action は参照元と同じく SHA で固定し、`permissions` は `contents: read` から始める。`workflow_dispatch` も付ける。
+- 受け入れ条件:
+  - [ ] ブランチへのプッシュで、フォーマット・`go vet`・lint・単体テストが実行され、失敗したら CI が失敗する
+  - [ ] カバレッジの要約がジョブのサマリーに出る
+  - [ ] action は SHA で固定し、バージョンをコメントに残す
+  - [ ] README にバッジを追加する
+
+## B-026 [todo|P1] CI で MySQL 8.0 / 8.4 に対する統合テストを実行する
+- 依存: B-025
+- 概要: 統合テストは `MYSQLDANCE_TEST_DSN` があるときだけ動く。手元では `task test:integration` が Docker で起動するが、CI ではジョブの `services`（またはマトリクス）で MySQL 8.0 と 8.4 を起動して同じテストを実行する。参照元の `mcprt` には統合テストがないため、この部分は参照できず、新規に設計する。
+- 受け入れ条件:
+  - [ ] 8.0 と 8.4 のそれぞれで統合テストが実行される（マトリクス）
+  - [ ] MySQL の起動を待ってからテストを始める（ヘルスチェック）
+  - [ ] 統合テストが skip されていないことを CI のログで確認できる
+
+## B-027 [todo|P2] タグでリリースする workflow と goreleaser の設定を作る
+- 依存: B-025
+- 概要: `mcprt` の `tag.yml` と `.goreleaser.yaml` に倣う。`v*` タグのプッシュで `goreleaser release --clean` を実行し、linux・darwin・windows × amd64・arm64 のバイナリ、チェックサム、変更履歴（feat / fix / その他に分類、`docs:` `test:` `chore:` は除外）を GitHub Releases に出す。`permissions` は `contents: write` が必要。バージョンを埋め込むため、`main` に `version` / `commit` の変数を追加して `ldflags` で渡す（現状は無い）。コミットメッセージの規約（`feat:` `fix:`）が変更履歴の分類に効く。
+- 受け入れ条件:
+  - [ ] `goreleaser build --snapshot --clean` がローカルと CI で通る
+  - [ ] テスト用のタグ（例: `v0.0.0-test`）で Releases にバイナリが出ることを確認する
+  - [ ] `mysqldance --version` でバージョンが表示される
+
+## B-028 [todo|P3] コンテナイメージを GitHub Container Registry に公開する
+- 依存: B-027
+- 概要: `mcprt` は `Dockerfile` と goreleaser の `dockers_v2`（linux/amd64、linux/arm64、`ghcr.io`）で公開している。mysqldance も同じ形にするか、そもそもイメージが必要かを決める。必要なら、ブランチと `main` では `branch.yml` / `main.yml` のように `goreleaser build --snapshot` の成果物からイメージを作って push し、タグではリリースと同時に push する。
+- 受け入れ条件:
+  - [ ] イメージが必要かどうかを決めて、この項目に結論を書く（不要なら削除する）
+  - [ ] 必要な場合、マルチアーキテクチャのイメージが `ghcr.io` に出る
+
+## B-029 [todo|P3] カバレッジを GitHub Pages で公開する
+- 依存: B-025
+- 概要: `mcprt` の `main.yml` のように、`gotest` の `html-output-dir` に出した HTML を `wtnb75/actions/merge-pages@v1` でまとめ、`actions/deploy-pages` で `main` へのプッシュのたびに公開する。Pages の有効化はリポジトリの設定で行う。
+- 受け入れ条件:
+  - [ ] `main` へのプッシュでカバレッジの HTML が Pages に公開される
+  - [ ] README のバッジからカバレッジのページに行ける
+
+## B-030 [todo|P3] 手動実行の自動修正・依存更新 workflow を作る
+- 依存: B-025
+- 概要: `mcprt` の `fix.yml`（`wtnb75/actions/gofix@v1`）と `update-deps.yml`（`wtnb75/actions/goupdate@v1`）に倣い、`workflow_dispatch` で手動実行する。実行するとテストを通したうえで PR を作る（`contents: write` と `pull-requests: write` が必要）。
+- 受け入れ条件:
+  - [ ] 手動実行で PR が作られ、PR 上で CI が通る
+  - [ ] 統合テストが必要な更新でも、B-026 の CI で検証される
+
+## B-031 [todo|P2] 動作ログを標準の `log/slog` で出力する
+- 概要: 今のログは `dump.Options.Log`（`io.Writer`）に `fmt.Fprintf` で書く警告だけで、進捗はなく、レベルもない。`log/slog` に置き換え、`Options.Log` は `*slog.Logger` にする（nil なら出力を捨てる）。ログは標準エラー出力に出す（README の「エラーと警告は標準エラー出力」は維持する）。進捗として、DB の開始と終了、テーブルごとの行数・バイト数・所要時間を `Info` で出す。既存の警告（非 InnoDB、大きなテーブル）は `Warn` にして、DB 名・テーブル名を属性で渡す。パスワードや接続文字列はログに出さない。
+- 受け入れ条件:
+  - [ ] `--log-level`（debug / info / warn / error、既定は info）と `--log-format`（text / json、既定は text）を追加する
+  - [ ] DB とテーブルの進捗が `Info` で出て、警告は `Warn` で出る
+  - [ ] ログにパスワード・接続文字列・行の値が出ないことをテストで確認する
+  - [ ] 標準出力には何も出さない
+  - [ ] 既存の警告のテストを新しい形式に合わせて更新し、README の使い方にフラグを追記する
+
 # Done
