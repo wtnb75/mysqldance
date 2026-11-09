@@ -15,7 +15,8 @@ import (
 var (
 	autoIncrementOption = regexp.MustCompile(` AUTO_INCREMENT=\d+`)
 	ident               = "(?:`(?:[^`]|``)*`|[^\\s@`]+)"
-	definerClause       = regexp.MustCompile("DEFINER=" + ident + "@" + ident + " ?")
+	// Anchored to the statement header so view bodies are never touched.
+	definerClause = regexp.MustCompile("^(CREATE (?:OR REPLACE )?(?:ALGORITHM=\\w+ )?)DEFINER=" + ident + "@" + ident + " ?")
 )
 
 // Table is a table name with its CREATE TABLE statement (without a trailing semicolon).
@@ -27,12 +28,27 @@ type View struct{ Name, Create string }
 // StripAutoIncrement removes the table option " AUTO_INCREMENT=<n>".
 // The AUTO_INCREMENT keyword in column definitions is kept.
 func StripAutoIncrement(createTable string) string {
-	return autoIncrementOption.ReplaceAllString(createTable, "")
+	// Only the table-options tail (the last line, starting with ")") is
+	// touched, and only before the first quote so COMMENT text is kept.
+	nl := strings.LastIndexByte(createTable, '\n')
+	head, last := createTable[:nl+1], createTable[nl+1:]
+	if !strings.HasPrefix(last, ")") {
+		return createTable
+	}
+	opts, rest := last, ""
+	if q := strings.IndexByte(last, '\''); q >= 0 {
+		opts, rest = last[:q], last[q:]
+	}
+	loc := autoIncrementOption.FindStringIndex(opts)
+	if loc == nil {
+		return createTable
+	}
+	return head + opts[:loc[0]] + opts[loc[1]:] + rest
 }
 
 // StripDefiner removes the DEFINER=`u`@`h` clause and one following space.
 func StripDefiner(createView string) string {
-	return definerClause.ReplaceAllString(createView, "")
+	return definerClause.ReplaceAllString(createView, "$1")
 }
 
 // OrderViews orders views so that dependencies come first (Kahn's algorithm).
