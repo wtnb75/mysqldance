@@ -182,15 +182,21 @@ func removeOwned(dir, db string) error {
 }
 
 // writeFile creates path, which must not exist (O_EXCL never follows a
-// symlink), and fills it with write. Permissions follow the umask.
+// symlink), and fills it with write. Permissions follow the umask. On
+// failure the partial file (the path created here, nothing else) is removed.
 func writeFile(path string, write func(io.Writer) error) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 	if err != nil {
 		return err
 	}
-	if err := write(f); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("write %s: %w", path, err)
+	err = write(fileWriter(path, f))
+	err = errors.Join(err, f.Close())
+	if err != nil {
+		return errors.Join(fmt.Errorf("write %s: %w", path, err), os.Remove(path))
 	}
-	return f.Close()
+	return nil
 }
+
+// fileWriter wraps the writer of an output file; tests replace it to inject
+// write failures.
+var fileWriter = func(path string, f *os.File) io.Writer { return f }

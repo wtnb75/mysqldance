@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
+	"mysqldance/internal/datafile"
 	"mysqldance/internal/naming"
 	"mysqldance/internal/source"
 )
@@ -327,6 +330,9 @@ func TestRoundTrip(t *testing.T) {
 		"CREATE TABLE blobs (id INT PRIMARY KEY, b LONGBLOB)",
 		"INSERT INTO blobs VALUES (1, REPEAT(UNHEX('00FF'), 800000)), (2, ''), (3, NULL)",
 		"CREATE TABLE empty_t (id INT PRIMARY KEY)",
+		// Only a nullable unique key, holding several NULLs.
+		"CREATE TABLE nuniq (u INT NULL, v VARCHAR(5), UNIQUE KEY uk (u))",
+		"INSERT INTO nuniq VALUES (NULL, 'b'), (2, 'x'), (NULL, 'a'), (NULL, 'a'), (1, NULL)",
 		// Generated and INVISIBLE columns need an explicit column list.
 		"CREATE TABLE gen (id INT PRIMARY KEY, x INT, y INT AS (x * 2) STORED, z INT INVISIBLE)",
 		"INSERT INTO gen (id, x, z) VALUES (1, 2, 3), (2, NULL, NULL)",
@@ -346,7 +352,11 @@ func TestRoundTrip(t *testing.T) {
 	if !strings.Contains(log, "MyISAM") || !strings.Contains(log, "`my`") {
 		t.Errorf("log does not warn about the MyISAM table:\n%s", log)
 	}
-	schema := readFiles(t, dir)[naming.SchemaFile(db)]
+	files := readFiles(t, dir)
+	if got, want := files[naming.DataFile(db, "empty_t")], datafile.Header(db); got != want {
+		t.Errorf("data file of the zero-row table = %q, want the header only %q", got, want)
+	}
+	schema := files[naming.SchemaFile(db)]
 	for _, s := range []string{"DEFINER=", "AUTO_INCREMENT="} {
 		if strings.Contains(schema, s) {
 			t.Errorf("schema file contains %q:\n%s", s, schema)
@@ -396,12 +406,20 @@ func TestDeterministicAndMinimalDiff(t *testing.T) {
 		"CREATE TABLE k (a INT, b VARCHAR(5))",
 		"INSERT INTO k VALUES (2, 'b'), (1, 'a'), (3, NULL)",
 		"CREATE VIEW vv AS SELECT a FROM k",
+		"CREATE TABLE nuniq (u INT NULL, v VARCHAR(5), UNIQUE KEY uk (u))",
+		"INSERT INTO nuniq VALUES (NULL, 'b'), (2, 'x'), (NULL, 'a'), (NULL, 'c'), (1, NULL)",
 	)
 
 	d1, d2 := t.TempDir(), t.TempDir()
 	e.dump(t, d1, db)
-	// Advance the AUTO_INCREMENT counter without changing the data.
-	e.exec(t, "INSERT INTO t (v) VALUES ('tmp')", "DELETE FROM t WHERE v = 'tmp'")
+	// Advance the AUTO_INCREMENT counter without changing the data, and
+	// re-insert the same rows in another order.
+	e.exec(t,
+		"INSERT INTO t (v) VALUES ('tmp')", "DELETE FROM t WHERE v = 'tmp'",
+		"DELETE FROM nuniq", "DELETE FROM k",
+		"INSERT INTO nuniq VALUES (1, NULL), (NULL, 'c'), (NULL, 'a'), (2, 'x'), (NULL, 'b')",
+		"INSERT INTO k VALUES (3, NULL), (1, 'a'), (2, 'b')",
+	)
 	e.dump(t, d2, db)
 	f1, f2 := readFiles(t, d1), readFiles(t, d2)
 	if !reflect.DeepEqual(f1, f2) {
@@ -495,6 +513,68 @@ func TestOwnedNameSymlinkRefused(t *testing.T) {
 	}
 	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
 		t.Errorf("symlink %s was replaced: %v, %v", link, fi, err)
+	}
+}
+
+// failingWriter fails once more than n bytes have been written.
+type failingWriter struct {
+	w io.Writer
+	n int
+}
+
+func (f *failingWriter) Write(p []byte) (int, error) {
+	if len(p) > f.n {
+		k, _ := f.w.Write(p[:f.n])
+		f.n = 0
+		return k, errors.New("injected write failure")
+	}
+	f.n -= len(p)
+	return f.w.Write(p)
+}
+
+func TestWriteFailureRemovesPartialFile(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE a (id INT PRIMARY KEY)", "INSERT INTO a VALUES (1)",
+		"CREATE TABLE b (id INT PRIMARY KEY)", "INSERT INTO b VALUES (1), (2)",
+		"CREATE TABLE c (id INT PRIMARY KEY)", "INSERT INTO c VALUES (3)",
+	)
+	dir := t.TempDir()
+	stale := filepath.Join(dir, naming.DataFile(db, "gone"))
+	if err := os.WriteFile(stale, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	failing := filepath.Join(dir, naming.DataFile(db, "b"))
+	orig := fileWriter
+	t.Cleanup(func() { fileWriter = orig })
+	fileWriter = func(path string, f *os.File) io.Writer {
+		if path == failing {
+			// Fail after part of the header, leaving a partial file behind
+			// unless writeFile removes it.
+			return &failingWriter{w: f, n: 10}
+		}
+		return f
+	}
+
+	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir})
+	if err == nil || !strings.Contains(err.Error(), "injected write failure") {
+		t.Fatalf("Run = %v, want the injected write failure", err)
+	}
+	if exists(t, failing) {
+		t.Errorf("partial file %s was left behind", failing)
+	}
+	// The cleanup already ran, so the output of db is incomplete: the stale
+	// file is gone, files before b are new and c was never written.
+	if exists(t, stale) {
+		t.Errorf("stale file %s survived although cleanup ran", stale)
+	}
+	if !exists(t, filepath.Join(dir, naming.SchemaFile(db))) || !exists(t, filepath.Join(dir, naming.DataFile(db, "a"))) {
+		t.Errorf("files written before the failure are missing: %q", readFiles(t, dir))
+	}
+	if exists(t, filepath.Join(dir, naming.DataFile(db, "c"))) {
+		t.Errorf("data file of c was written after the failure")
 	}
 }
 
