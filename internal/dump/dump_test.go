@@ -1,0 +1,593 @@
+package dump
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/go-sql-driver/mysql"
+
+	"mysqldance/internal/naming"
+	"mysqldance/internal/source"
+)
+
+// Integration tests. They are skipped unless MYSQLDANCE_TEST_DSN is set,
+// e.g. root:pw@tcp(127.0.0.1:3306)/
+
+// testConfig converts MYSQLDANCE_TEST_DSN into a source.Config and also
+// returns the parsed DSN. It skips the test when the variable is empty.
+func testConfig(t *testing.T) (source.Config, *mysql.Config) {
+	t.Helper()
+	dsn := os.Getenv("MYSQLDANCE_TEST_DSN")
+	if dsn == "" {
+		t.Skip("MYSQLDANCE_TEST_DSN is not set")
+	}
+	mc, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		t.Fatalf("parse MYSQLDANCE_TEST_DSN: %v", err)
+	}
+	cfg := source.Config{User: mc.User, Password: mc.Passwd}
+	if mc.Net == "unix" {
+		cfg.Socket = mc.Addr
+		return cfg, mc
+	}
+	host, port, err := net.SplitHostPort(mc.Addr)
+	if err != nil {
+		t.Fatalf("parse address %q: %v", mc.Addr, err)
+	}
+	cfg.Host = host
+	if cfg.Port, err = strconv.Atoi(port); err != nil {
+		t.Fatalf("parse port %q: %v", port, err)
+	}
+	return cfg, mc
+}
+
+// env is the connection state shared by one test.
+type env struct {
+	cfg   source.Config
+	mc    *mysql.Config
+	admin *sql.Conn
+}
+
+// newEnv opens a pinned administrative connection closed at cleanup.
+func newEnv(t *testing.T) *env {
+	t.Helper()
+	cfg, mc := testConfig(t)
+	db, err := sql.Open("mysql", mc.FormatDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return &env{cfg: cfg, mc: mc, admin: conn}
+}
+
+func uniqueName(t *testing.T) string {
+	t.Helper()
+	buf := make([]byte, 6)
+	if _, err := rand.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+	return "mysqldance_dump_" + hex.EncodeToString(buf)
+}
+
+// createDB creates database name, drops it at cleanup and makes it the
+// admin connection's default database.
+func (e *env) createDB(t *testing.T, name string) {
+	t.Helper()
+	t.Cleanup(func() {
+		if _, err := e.admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+quote(name)); err != nil {
+			t.Errorf("drop database %s: %v", name, err)
+		}
+	})
+	e.exec(t, "CREATE DATABASE "+quote(name), "USE "+quote(name))
+}
+
+func (e *env) exec(t *testing.T, stmts ...string) {
+	t.Helper()
+	for _, s := range stmts {
+		if _, err := e.admin.ExecContext(context.Background(), s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+}
+
+func quote(s string) string {
+	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
+}
+
+// dump runs Run with default data options and returns what it logged.
+func (e *env) dump(t *testing.T, dir string, dbs ...string) string {
+	t.Helper()
+	var log bytes.Buffer
+	if err := Run(context.Background(), Options{Source: e.cfg, DBs: dbs, OutDir: dir, Log: &log}); err != nil {
+		t.Fatalf("Run(%v): %v", dbs, err)
+	}
+	return log.String()
+}
+
+// restore executes every *.sql file of dir in sorted file-name order, each
+// on a fresh multi-statement connection, like docker-entrypoint-initdb.d.
+func (e *env) restore(t *testing.T, dir string) {
+	t.Helper()
+	mc := e.mc.Clone()
+	mc.DBName = ""
+	mc.MultiStatements = true
+	db, err := sql.Open("mysql", mc.FormatDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	// No idle connections: each file gets a new session, so session
+	// settings never leak from one file to the next.
+	db.SetMaxIdleConns(0)
+	for _, name := range sqlFiles(t, dir) {
+		text, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(context.Background(), string(text)); err != nil {
+			t.Fatalf("restore %s: %v", name, err)
+		}
+	}
+}
+
+// sqlFiles returns the names of the *.sql files in dir, sorted.
+func sqlFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, ent := range entries {
+		if strings.HasSuffix(ent.Name(), ".sql") {
+			out = append(out, ent.Name())
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// readFiles returns file name -> content for every file in dir.
+func readFiles(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, ent := range entries {
+		b, err := os.ReadFile(filepath.Join(dir, ent.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[ent.Name()] = string(b)
+	}
+	return out
+}
+
+// contents returns "<TABLE_TYPE> <name>" -> rows for every table and view of
+// db. Each row lists all columns (including INVISIBLE ones) in ordinal order
+// as quoted bytes or NULL; rows are sorted in Go so equal-collating values
+// cannot reorder them.
+func (e *env) contents(t *testing.T, db string) map[string][]string {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := e.admin.QueryContext(ctx,
+		"SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = ?", db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type obj struct{ name, typ string }
+	var objs []obj
+	for rows.Next() {
+		var o obj
+		if err := rows.Scan(&o.name, &o.typ); err != nil {
+			t.Fatal(err)
+		}
+		objs = append(objs, o)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	_ = rows.Close()
+
+	out := map[string][]string{}
+	for _, o := range objs {
+		cols := e.columnNames(t, db, o.name)
+		q := make([]string, len(cols))
+		for i, c := range cols {
+			q[i] = quote(c)
+		}
+		data, err := e.admin.QueryContext(ctx, "SELECT "+strings.Join(q, ", ")+" FROM "+quote(db)+"."+quote(o.name))
+		if err != nil {
+			t.Fatalf("select %s: %v", o.name, err)
+		}
+		raw := make([]sql.RawBytes, len(cols))
+		dest := make([]any, len(raw))
+		for i := range raw {
+			dest[i] = &raw[i]
+		}
+		lines := []string{}
+		for data.Next() {
+			if err := data.Scan(dest...); err != nil {
+				t.Fatal(err)
+			}
+			vals := make([]string, len(raw))
+			for i, b := range raw {
+				if b == nil {
+					vals[i] = "NULL"
+				} else {
+					vals[i] = strconv.Quote(string(b))
+				}
+			}
+			lines = append(lines, strings.Join(vals, ","))
+		}
+		if err := data.Err(); err != nil {
+			t.Fatal(err)
+		}
+		_ = data.Close()
+		sort.Strings(lines)
+		out[o.typ+" "+o.name] = lines
+	}
+	return out
+}
+
+func (e *env) columnNames(t *testing.T, db, table string) []string {
+	t.Helper()
+	rows, err := e.admin.QueryContext(context.Background(),
+		"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+		db, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// roundTrip captures the contents of dbs, drops them, restores dir and
+// checks that the restored contents are identical.
+func (e *env) roundTrip(t *testing.T, dir string, dbs ...string) {
+	t.Helper()
+	before := map[string]map[string][]string{}
+	for _, db := range dbs {
+		before[db] = e.contents(t, db)
+		e.exec(t, "DROP DATABASE "+quote(db))
+	}
+	e.restore(t, dir)
+	for _, db := range dbs {
+		after := e.contents(t, db)
+		if !reflect.DeepEqual(after, before[db]) {
+			t.Errorf("database %s differs after restore\nbefore: %q\nafter:  %q", db, before[db], after)
+		}
+	}
+}
+
+func exists(t *testing.T, path string) bool {
+	t.Helper()
+	_, err := os.Stat(path)
+	if err == nil {
+		return true
+	}
+	if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return false
+}
+
+func TestRoundTrip(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		// Foreign key cycle.
+		"CREATE TABLE fk_a (id INT PRIMARY KEY, b_id INT NULL)",
+		"CREATE TABLE fk_b (id INT PRIMARY KEY, a_id INT NULL, FOREIGN KEY (a_id) REFERENCES fk_a (id))",
+		"ALTER TABLE fk_a ADD FOREIGN KEY (b_id) REFERENCES fk_b (id)",
+		"INSERT INTO fk_a VALUES (1, NULL)",
+		"INSERT INTO fk_b VALUES (1, 1), (2, 1)",
+		"UPDATE fk_a SET b_id = 2 WHERE id = 1",
+		// No key, with exact duplicates.
+		"CREATE TABLE nokey (a INT, b VARCHAR(10))",
+		"INSERT INTO nokey VALUES (1, 'x'), (1, 'x'), (NULL, NULL), (0, '')",
+		// Special characters, latin1 high bytes, invalid UTF-8 in VARBINARY.
+		"CREATE TABLE strs (id INT AUTO_INCREMENT PRIMARY KEY, s TEXT,"+
+			" l VARCHAR(10) CHARACTER SET latin1, vb VARBINARY(10))",
+		"SET SESSION sql_mode = CONCAT(@@sql_mode, ',NO_AUTO_VALUE_ON_ZERO')",
+		"INSERT INTO strs VALUES (0, 'zero id', NULL, NULL)",
+		"INSERT INTO strs (s, l, vb) VALUES ('', _latin1 X'FFFEE9', X'FFFE00C3'), (NULL, '', X'')",
+		// Large and empty BLOBs; the large one exceeds MaxInsertBytes.
+		"CREATE TABLE blobs (id INT PRIMARY KEY, b LONGBLOB)",
+		"INSERT INTO blobs VALUES (1, REPEAT(UNHEX('00FF'), 800000)), (2, ''), (3, NULL)",
+		"CREATE TABLE empty_t (id INT PRIMARY KEY)",
+		// Generated and INVISIBLE columns need an explicit column list.
+		"CREATE TABLE gen (id INT PRIMARY KEY, x INT, y INT AS (x * 2) STORED, z INT INVISIBLE)",
+		"INSERT INTO gen (id, x, z) VALUES (1, 2, 3), (2, NULL, NULL)",
+		"CREATE TABLE my (id INT PRIMARY KEY, v VARCHAR(5)) ENGINE=MyISAM",
+		"INSERT INTO my VALUES (1, 'm')",
+		// a_top depends on z_base, so name order is not creation order.
+		"CREATE VIEW z_base AS SELECT id, s FROM strs",
+		"CREATE VIEW a_top AS SELECT id FROM z_base WHERE id > 0",
+	)
+	if _, err := e.admin.ExecContext(context.Background(), "INSERT INTO strs (s) VALUES (?)",
+		"back\\slash 'single' \"double\"\nnew\r\x00nul\x1a end 日本語 😀"); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	log := e.dump(t, dir, db)
+	if !strings.Contains(log, "MyISAM") || !strings.Contains(log, "`my`") {
+		t.Errorf("log does not warn about the MyISAM table:\n%s", log)
+	}
+	schema := readFiles(t, dir)[naming.SchemaFile(db)]
+	for _, s := range []string{"DEFINER=", "AUTO_INCREMENT="} {
+		if strings.Contains(schema, s) {
+			t.Errorf("schema file contains %q:\n%s", s, schema)
+		}
+	}
+	e.roundTrip(t, dir, db)
+
+	// The views must have been recreated (in dependency order) and work.
+	after := e.contents(t, db)
+	if got := after["VIEW a_top"]; len(got) != 3 {
+		t.Errorf("a_top rows = %q, want 3 rows", got)
+	}
+}
+
+// lineDiff returns the number of deleted and added lines between a and b
+// (LCS-based, like diff).
+func lineDiff(a, b string) (del, add int) {
+	x, y := strings.Split(a, "\n"), strings.Split(b, "\n")
+	lcs := make([][]int, len(x)+1)
+	for i := range lcs {
+		lcs[i] = make([]int, len(y)+1)
+	}
+	for i := len(x) - 1; i >= 0; i-- {
+		for j := len(y) - 1; j >= 0; j-- {
+			if x[i] == y[j] {
+				lcs[i][j] = lcs[i+1][j+1] + 1
+			} else {
+				lcs[i][j] = max(lcs[i+1][j], lcs[i][j+1])
+			}
+		}
+	}
+	common := lcs[0][0]
+	return len(x) - common, len(y) - common
+}
+
+func TestDeterministicAndMinimalDiff(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	var vals []string
+	for i := 1; i <= 100; i++ {
+		vals = append(vals, fmt.Sprintf("('row-%03d')", i))
+	}
+	e.exec(t,
+		"CREATE TABLE t (id INT AUTO_INCREMENT PRIMARY KEY, v VARCHAR(20))",
+		"INSERT INTO t (v) VALUES "+strings.Join(vals, ", "),
+		"CREATE TABLE k (a INT, b VARCHAR(5))",
+		"INSERT INTO k VALUES (2, 'b'), (1, 'a'), (3, NULL)",
+		"CREATE VIEW vv AS SELECT a FROM k",
+	)
+
+	d1, d2 := t.TempDir(), t.TempDir()
+	e.dump(t, d1, db)
+	// Advance the AUTO_INCREMENT counter without changing the data.
+	e.exec(t, "INSERT INTO t (v) VALUES ('tmp')", "DELETE FROM t WHERE v = 'tmp'")
+	e.dump(t, d2, db)
+	f1, f2 := readFiles(t, d1), readFiles(t, d2)
+	if !reflect.DeepEqual(f1, f2) {
+		t.Fatalf("two dumps of the same data differ")
+	}
+
+	e.exec(t, "UPDATE t SET v = 'ROW-050' WHERE id = 50")
+	d3 := t.TempDir()
+	e.dump(t, d3, db)
+	f3 := readFiles(t, d3)
+	if len(f3) != len(f1) {
+		t.Fatalf("file sets differ: %d vs %d files", len(f1), len(f3))
+	}
+	var del, add int
+	for name, old := range f1 {
+		cur, ok := f3[name]
+		if !ok {
+			t.Fatalf("file %s missing after update", name)
+		}
+		d, a := lineDiff(old, cur)
+		del += d
+		add += a
+	}
+	if del != 1 || add != 1 {
+		t.Errorf("diff after updating one row = -%d +%d, want -1 +1", del, add)
+	}
+}
+
+func TestStaleFilesRemoved(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE t1 (id INT PRIMARY KEY)",
+		"CREATE TABLE t2 (id INT PRIMARY KEY)",
+		"INSERT INTO t1 VALUES (1)",
+		"INSERT INTO t2 VALUES (2)",
+	)
+	dir := t.TempDir()
+	// Files that must survive: an unrelated file and a file of a database
+	// whose name has db as a prefix.
+	keep := []string{"README.txt", naming.DataFile(db+"2", "x"), naming.SchemaFile(db + "2")}
+	for _, name := range keep {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("keep\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	e.dump(t, dir, db)
+	t2 := filepath.Join(dir, naming.DataFile(db, "t2"))
+	if !exists(t, t2) {
+		t.Fatalf("%s was not written", t2)
+	}
+
+	e.exec(t, "DROP TABLE t2")
+	e.dump(t, dir, db)
+	if exists(t, t2) {
+		t.Errorf("stale data file %s was not removed", t2)
+	}
+	if !exists(t, filepath.Join(dir, naming.DataFile(db, "t1"))) {
+		t.Errorf("data file of t1 is missing")
+	}
+	for _, name := range keep {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil || string(b) != "keep\n" {
+			t.Errorf("unrelated file %s was touched: %q, %v", name, b, err)
+		}
+	}
+}
+
+func TestOddNamesAndCaseCollision(t *testing.T) {
+	e := newEnv(t)
+
+	t.Run("odd names", func(t *testing.T) {
+		db := uniqueName(t)
+		e.createDB(t, db)
+		names := []string{"with space", "back`tick", "日本語", "dot.name", "Upper", "per%cent"}
+		for i, n := range names {
+			e.exec(t,
+				"CREATE TABLE "+quote(n)+" (id INT PRIMARY KEY, "+quote("col "+n)+" VARCHAR(20))",
+				fmt.Sprintf("INSERT INTO %s VALUES (%d, 'v%d')", quote(n), i, i),
+			)
+		}
+		e.exec(t, "CREATE VIEW "+quote("view `"+names[2])+" AS SELECT * FROM "+quote(names[2]))
+		dir := t.TempDir()
+		e.dump(t, dir, db)
+		for _, n := range names {
+			if !exists(t, filepath.Join(dir, naming.DataFile(db, n))) {
+				t.Errorf("data file for %q is missing", n)
+			}
+		}
+		e.roundTrip(t, dir, db)
+	})
+
+	t.Run("case collision", func(t *testing.T) {
+		var lctn int
+		if err := e.admin.QueryRowContext(context.Background(), "SELECT @@lower_case_table_names").Scan(&lctn); err != nil {
+			t.Fatal(err)
+		}
+		if lctn != 0 {
+			t.Skipf("lower_case_table_names = %d", lctn)
+		}
+		db := uniqueName(t)
+		e.createDB(t, db)
+		e.exec(t, "CREATE TABLE `Users` (id INT)", "CREATE TABLE `users` (id INT)")
+		dir := t.TempDir()
+		old := filepath.Join(dir, naming.DataFile(db, "old"))
+		if err := os.WriteFile(old, []byte("old\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir})
+		if err == nil || !strings.Contains(err.Error(), "Users") || !strings.Contains(err.Error(), "users") {
+			t.Fatalf("Run = %v, want a case-insensitive collision error naming Users and users", err)
+		}
+		if got := readFiles(t, dir); len(got) != 1 || got[filepath.Base(old)] != "old\n" {
+			t.Errorf("output directory changed on error: %q", got)
+		}
+	})
+
+	t.Run("file name too long", func(t *testing.T) {
+		db := uniqueName(t)
+		e.createDB(t, db)
+		long := strings.Repeat("あ", 30)
+		e.exec(t, "CREATE TABLE ok (id INT)", "CREATE TABLE "+quote(long)+" (id INT)")
+		dir := t.TempDir()
+		err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir})
+		if err == nil || !strings.Contains(err.Error(), long) || !strings.Contains(err.Error(), "255") {
+			t.Fatalf("Run = %v, want a 255-byte file name error naming the table", err)
+		}
+		if got := readFiles(t, dir); len(got) != 0 {
+			t.Errorf("files written despite the error: %q", got)
+		}
+	})
+}
+
+func TestMultipleDatabases(t *testing.T) {
+	e := newEnv(t)
+	db1 := uniqueName(t)
+	db2 := db1 + "2" // shares db1 as a prefix
+	e.createDB(t, db1)
+	e.exec(t,
+		"CREATE TABLE a (id INT PRIMARY KEY)", "INSERT INTO a VALUES (1)",
+		"CREATE TABLE zz (id INT PRIMARY KEY)", "INSERT INTO zz VALUES (2)",
+	)
+	e.createDB(t, db2)
+	e.exec(t,
+		"CREATE TABLE a (id INT PRIMARY KEY)", "INSERT INTO a VALUES (3)",
+		"CREATE TABLE b (id INT PRIMARY KEY, a_id INT, FOREIGN KEY (a_id) REFERENCES a (id))",
+		"INSERT INTO b VALUES (1, 3)",
+	)
+
+	dir := t.TempDir()
+	e.dump(t, dir, db1, db2)
+	files := sqlFiles(t, dir)
+	if len(files) != 6 {
+		t.Fatalf("files = %q, want 6", files)
+	}
+	for _, db := range []string{db1, db2} {
+		var idx []int
+		for i, f := range files {
+			if naming.IsOwnedBy(f, db) {
+				idx = append(idx, i)
+			}
+		}
+		if len(idx) == 0 || files[idx[0]] != naming.SchemaFile(db) {
+			t.Errorf("%s: schema file does not sort first among %q", db, files)
+			continue
+		}
+		if idx[len(idx)-1]-idx[0] != len(idx)-1 {
+			t.Errorf("%s: files are not contiguous in %q", db, files)
+		}
+	}
+
+	// Re-dumping one database leaves the other's files untouched.
+	before := readFiles(t, dir)
+	e.exec(t, "USE "+quote(db1), "CREATE TABLE c (id INT PRIMARY KEY)")
+	e.dump(t, dir, db1)
+	after := readFiles(t, dir)
+	for name, content := range before {
+		if naming.IsOwnedBy(name, db2) && after[name] != content {
+			t.Errorf("%s changed when only %s was dumped", name, db1)
+		}
+	}
+	if _, ok := after[naming.DataFile(db1, "c")]; !ok {
+		t.Errorf("data file of new table c is missing")
+	}
+
+	e.roundTrip(t, dir, db1, db2)
+}
