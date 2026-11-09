@@ -52,8 +52,9 @@ type TableInfo struct {
 	ApproxRows int64
 }
 
-// Snapshot is a read-only consistent snapshot of one database, held on a
-// single pinned connection inside one transaction.
+// Snapshot is a read-only consistent snapshot, held on a single pinned
+// connection inside one transaction. It reads one database at a time (the
+// current one); Use switches databases without leaving the snapshot.
 type Snapshot struct {
 	db       *sql.DB
 	conn     *sql.Conn
@@ -66,12 +67,20 @@ type Snapshot struct {
 
 var systemDatabases = []string{"information_schema", "mysql", "performance_schema", "sys"}
 
-// Open connects and starts a consistent snapshot of database db.
-func Open(ctx context.Context, cfg Config, db string) (*Snapshot, error) {
+func checkNotSystem(db string) error {
 	for _, sys := range systemDatabases {
 		if strings.EqualFold(db, sys) {
-			return nil, fmt.Errorf("refusing to dump system database %q", db)
+			return fmt.Errorf("refusing to dump system database %q", db)
 		}
+	}
+	return nil
+}
+
+// Open connects, starts a consistent snapshot and selects database db. Use
+// switches to further databases within the same snapshot.
+func Open(ctx context.Context, cfg Config, db string) (*Snapshot, error) {
+	if err := checkNotSystem(db); err != nil {
+		return nil, err
 	}
 
 	mc := mysql.NewConfig()
@@ -90,9 +99,9 @@ func Open(ctx context.Context, cfg Config, db string) (*Snapshot, error) {
 		}
 		mc.Net, mc.Addr = "tcp", net.JoinHostPort(host, strconv.Itoa(port))
 	}
-	// A bad ssl setting must fail here, as the first thing dumpDB does, so it
-	// aborts before any output file is touched (the CA is re-read per database
-	// on purpose: Config stays a plain value).
+	// A bad ssl setting must fail here, as the first thing Run does after
+	// creating the output directory, so it aborts before any output file is
+	// deleted or written.
 	var err error
 	if mc.TLS, mc.AllowFallbackToPlaintext, err = tlsConfig(cfg, host); err != nil {
 		return nil, err
@@ -119,7 +128,7 @@ func start(ctx context.Context, sdb *sql.DB, db string) (*Snapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Snapshot{db: sdb, conn: conn, name: db}
+	s := &Snapshot{db: sdb, conn: conn}
 	// Pin every session setting that changes SHOW CREATE output or value
 	// text, so the dump never depends on server or account defaults:
 	// ANSI_QUOTES would quote identifiers with '"', PAD_CHAR_TO_FULL_LENGTH
@@ -150,26 +159,40 @@ func start(ctx context.Context, sdb *sql.DB, db string) (*Snapshot, error) {
 		return nil, err
 	}
 
+	if err := s.Use(ctx, db); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// Use makes db the database the other methods read, without leaving the
+// snapshot transaction, so every database read through one Snapshot comes
+// from the same point in time. State cached for the previous database is
+// dropped. On error the Snapshot still points at the previous database.
+func (s *Snapshot) Use(ctx context.Context, db string) error {
+	if err := checkNotSystem(db); err != nil {
+		return err
+	}
 	var found string
-	err = conn.QueryRowContext(ctx,
+	err := s.conn.QueryRowContext(ctx,
 		"SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?", db).Scan(&found)
 	if err == nil && found != db {
 		err = sql.ErrNoRows
 	}
 	if err != nil {
-		_ = conn.Close()
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("database %q not found", db)
+			return fmt.Errorf("database %q not found", db)
 		}
-		return nil, err
+		return err
 	}
 	// With db as the default database, SHOW CREATE VIEW leaves names in that
 	// database unqualified, so the dump can be restored under another name.
-	if _, err := conn.ExecContext(ctx, "USE "+quoteIdent(db)); err != nil {
-		_ = conn.Close()
-		return nil, err
+	if _, err := s.conn.ExecContext(ctx, "USE "+quoteIdent(db)); err != nil {
+		return err
 	}
-	return s, nil
+	s.name, s.columns, s.warnings = db, nil, nil
+	return nil
 }
 
 // Close ends the snapshot transaction and closes the connection.
