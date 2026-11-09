@@ -26,6 +26,8 @@ func TestRunUsageErrors(t *testing.T) {
 		{"password flag", []string{"--password", "x", "-o", t.TempDir(), "db1"}},
 		{"unknown flag", []string{"--bogus", "-o", t.TempDir(), "db1"}},
 		{"zero rows per insert", []string{"--rows-per-insert", "0", "-o", t.TempDir(), "db1"}},
+		{"negative rows per file", []string{"--rows-per-file", "-1", "-o", t.TempDir(), "db1"}},
+		{"too large rows per file", []string{"--rows-per-file", "4294967296", "-o", t.TempDir(), "db1"}},
 		{"zero max insert bytes", []string{"--max-insert-bytes", "0", "-o", t.TempDir(), "db1"}},
 		{"unknown ssl mode", []string{"--ssl-mode", "bogus", "-o", t.TempDir(), "db1"}},
 		{"verify-ca without ssl-ca", []string{"--ssl-mode", "verify-ca", "-o", t.TempDir(), "db1"}},
@@ -99,6 +101,15 @@ func TestParseArgsFlags(t *testing.T) {
 				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "verify-ca", SSLCA: "/etc/ca.pem"},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
+			},
+		},
+		{
+			"rows-per-file flag",
+			[]string{"--rows-per-file", "50000", "-o", "out", "d"},
+			dump.Options{
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred"},
+				DBs:    []string{"d"}, OutDir: "out",
+				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576, RowsPerFile: 50000},
 			},
 		},
 		{
