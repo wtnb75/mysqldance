@@ -1,6 +1,9 @@
 version: "3"
 
 tasks:
+  default:
+    cmds:
+      - task -l --sort=alphanumeric
   test:
     desc: Run unit tests
     cmds:
@@ -14,7 +17,13 @@ tasks:
   fmt:
     desc: Format Go sources
     cmds:
-      - gofmt -w .
+      - go fmt ./...
+      - go fix ./...
+
+  update:
+    desc: update dependencies
+    cmds:
+      - go get -u ./...
 
   # Backlog helpers. BACKLOG.md format: see .claude/skills/mgmt-backlog.
   #   FILE  backlog file (default BACKLOG.md)
