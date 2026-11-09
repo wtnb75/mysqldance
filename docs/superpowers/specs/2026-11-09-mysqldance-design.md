@@ -92,7 +92,7 @@ INSERT INTO `t` VALUES
   3. どちらもなければ全列の値でソートして順序を固定する。大きなテーブルで遅くなる場合は警告を出す。
 - 出力に、ダンプ時刻・サーバーバージョン・ホスト名など毎回変わる行を含めない。
 - 参考: mysqldump はデフォルトで `ORDER BY` を付けず、InnoDB ではクラスタ化インデックス順（主キーがなければ隠し行 ID 順＝ほぼ挿入順）で返る。`OPTIMIZE TABLE`・再構築・レプリカ・リストアし直しで順序が変わりうるため、本ツールは明示的に `ORDER BY` を使う。
-- 値の表現（数値、文字列のエスケープ、NULL、日時、BLOB/BINARY は 16 進、BIT、JSON、浮動小数点の表記）は実行ごとに同一でなければならない。【判断】基本は mysqldump の表記に合わせる（BLOB / BINARY / VARBINARY は `0x` + 16 進）。ただし `BIT` は mysqldump が 16 進（`0x15`）で出すのに対し、本ツールは `b'10101'` 形式で出す【差異あり。mysqldump は `--hex-blob` の有無によらず BIT を 16 進にする。どちらも復元結果は同じ。11 節】。空の BLOB は mysqldump が `_binary ''`、本ツールは `''`。
+- 値の表現（数値、文字列のエスケープ、NULL、日時、BLOB/BINARY は 16 進、BIT、JSON、浮動小数点の表記）は実行ごとに同一でなければならない。【判断】基本は mysqldump の表記に合わせる（BLOB / BINARY / VARBINARY は `0x` + 16 進）。ただし次の 2 点は意図的に mysqldump と異なる【差異あり。どちらも意図的な差異として残す。根拠は 11 節】。(1) `BIT` は mysqldump が 16 進（`0x15`）で出すのに対し、本ツールは `b'10101'` 形式で出す（値が読みやすく、バイナリ文字を含まない）。(2) 空の BLOB は mysqldump が `_binary ''`、本ツールは `''`（本ツールは 16 進かプレーンなリテラルだけを出し、空の値は常に `''` と書くため。復元後は同じ空の BLOB になる）。
 - 注: `BOOLEAN` は `TINYINT(1)` の別名で、データ部分は `0`/`1` の数値。型の情報は `CREATE TABLE` 側にしか残らない。
 
 ## 6. 一貫性
@@ -145,15 +145,16 @@ MySQL ドライバ・CLI ライブラリの選定、パッケージ構成、フ�
 
 - 【確認済み】公式イメージが `docker-entrypoint-initdb.d` のサブディレクトリを辿らず、辞書順で実行すること。
   - 確認したバージョン: `mysql:8.0`（8.0.46）と `mysql:8.4`（8.4.13）。
-  - 方法: テスト用 DB（改行・引用符・バックスラッシュ・日本語を含む文字列、BLOB / VARBINARY / BIT、外部キー、依存する 2 段のビュー）を持つ MySQL を起動し、本ツールで出力ディレクトリを作り、新しい（空の）`mysql` コンテナの `/docker-entrypoint-initdb.d` に渡して初回起動した。
-  - 結果（平置き）: エントリポイントのログが `vdb.00-schema.sql` → `vdb.10-data.blobs.sql` → `vdb.10-data.orders.sql` → `vdb.10-data.users.sql` の順に `running` を出し、エラーなしで完了した。テーブル 3 つとビュー 2 つが作られ、全行が入り、`mysqldump --hex-blob --skip-extended-insert` で元の DB と復元後の DB を比べて差分なし（文字列のエスケープ、BLOB、BIT、外部キー、ビュー経由の SELECT も一致）。
-  - 結果（サブディレクトリ）: 同じファイルを `/docker-entrypoint-initdb.d/dump/` の下に置くと `[Warn] ... ignoring /docker-entrypoint-initdb.d/dump` が出て何も実行されず、データベースは作られない。4.1 節の「フラットな 1 ディレクトリ」の前提は正しい。
-  - 注: この環境の Docker デーモンは別ホストにあり、ホストのディレクトリのバインドマウント（`-v <dir>:/docker-entrypoint-initdb.d`）では中身が空になった。そのため `docker create` + `docker cp <dir>/. <container>:/docker-entrypoint-initdb.d/` + `docker start` で渡した。ローカルの Docker なら通常のバインドマウントで同じ結果になるはずだが、バインドマウント自体は今回の環境では未確認。
+  - 方法: テスト用 DB（改行・引用符・バックスラッシュ・日本語を含む文字列、BLOB / VARBINARY / BIT、外部キー、依存する 2 段のビュー）を持つ MySQL を起動し、本ツールで出力ディレクトリを作り、新しい（データのない）`mysql` コンテナの `/docker-entrypoint-initdb.d` に渡して初回起動した。
+  - 結果（平置き）: エントリポイントのログが `vdb.00-schema.sql` → `vdb.10-data.blobs.sql` → `vdb.10-data.orders.sql` → `vdb.10-data.users.sql` の順に `running` を出し、エラーなしで完了した。テーブル 3 つとビュー 2 つが作られ、全行が入った。行数は元の DB と復元後で一致（`users` 3 / `blobs` 4 / `orders` 2 / ビュー `v_users` 3 / `v_top` 2。両バージョンとも）。さらに `mysqldump --hex-blob --skip-extended-insert` のダンプ同士（元の DB と復元後の DB）の差分なしで確認した（文字列のエスケープ、BLOB、BIT、外部キー、ビューも一致。比較は `--hex-blob` の表記上のもので、空の BLOB は両方 `_binary ''` と出るため、空と NULL の区別は保たれている）。
+  - 結果（サブディレクトリ）: 同じファイルを `/docker-entrypoint-initdb.d/dump/` の下に置くと、ログに `[Warn] [Entrypoint]: /usr/local/bin/docker-entrypoint.sh: ignoring /docker-entrypoint-initdb.d/dump` が出て何も実行されず、データベースは作られない。4.1 節の「フラットな 1 ディレクトリ」の前提は正しい。
+  - 注: この環境の Docker デーモンは別ホストにあり、ホストのディレクトリのバインドマウント（`-v <dir>:/docker-entrypoint-initdb.d`）ではコンテナ内の `ls -la /docker-entrypoint-initdb.d` が `total 0`（ディレクトリは存在するが中身が空）だった。マウント自体の失敗ではなく、デーモン側からホストのパスが見えないためと考えられる（原因までは調べていない）。そのため `docker create` + `docker cp <dir>/. <container>:/docker-entrypoint-initdb.d/` + `docker start` で渡した。ローカルの Docker なら通常のバインドマウントで同じ結果になるはずだが、バインドマウント自体は今回の環境では未確認。
 - 【差異あり】`BIT`・`BLOB` などの mysqldump における表記（8.0.46 / 8.4.13 の `mysqldump` で確認）。5 節の本文を直した。
   - `BLOB` / `VARBINARY`: `--hex-blob` ありなら `0x00FF10` のように `0x` + 16 進で、本ツールと同じ。`--hex-blob` なしだと `_binary '...'`（バイナリがそのまま入る）になる。空の BLOB は `--hex-blob` ありでも `_binary ''`（本ツールは `''`）。
-  - `BIT(5)`: 設計時の想定（`b'...'`）と違い、mysqldump は `--hex-blob` ありなら `0x15`、なしなら `_binary '\x15'`（生バイト）で出す。`b'10101'` 形式にはならない。本ツールは `b'10101'`（`b'1'` のように先頭の 0 は省く）で出す。両方とも復元後の値は同じ（`BIN(bits)` で確認）。本ツールの `b'...'` は 16 進より値が読みやすく、バイナリ文字を含まないので意図的な差異として残す。
+  - `BIT(5)`: 設計時の想定（`b'...'`）と違い、mysqldump は `--hex-blob` ありなら `0x15`、なしなら `_binary '...'` に 0x15 の 1 バイトをそのまま入れて出す。`b'10101'` 形式にはならない。本ツールは `b'10101'`（`b'1'` のように先頭の 0 は省く）で出す。両方とも復元後の値は同じ（`BIN(bits)` で確認）。本ツールの `b'...'` は 16 進より値が読みやすく、バイナリ文字を含まないので意図的な差異として残す。
+  - 空の BLOB: mysqldump は `_binary ''`、本ツールは `''`。これも意図的な差異として残す（本ツールは 16 進かプレーンなリテラルだけを出し、空の値は `''` と書く）。復元結果は、本ツールの出力から復元した行で `hex(b)` が空文字列（NULL ではない）になること、および `--hex-blob` のダンプ同士の差分が空であること（両方 `_binary ''`）で確認した。
   - 文字列（`'...'`）の `\n` `\'` `\"` `\\` のエスケープ、NULL は mysqldump と本ツールで一致した。
-- 【確認済み】`information_schema.VIEW_TABLE_USAGE` は MySQL 8.0.46 と 8.4.13 の両方で使え、2 段のビュー（`v_top` → `v_users` → `users`）の依存が取れた（`SELECT view_name, table_name FROM information_schema.VIEW_TABLE_USAGE`）。Task 5 の統合テスト（`internal/source`）も同じ 2 バージョンで通っている。8.0.13 より前の版は確認していない（対象外）。
+- 【確認済み】`information_schema.VIEW_TABLE_USAGE` は MySQL 8.0.46 と 8.4.13 の両方で使え、2 段のビュー（`v_top` → `v_users` → `users`）の依存が取れた（`SELECT view_name, table_name FROM information_schema.VIEW_TABLE_USAGE`）。Task 5 の統合テスト（`internal/source` の統合テスト。`task test:integration` で 8.0 と 8.4 の両方を起動して実行）でも同じ 2 バージョンで使われ、通っている（Task 5 のレビュー時の実行結果に基づく。今回は再実行していない）。8.0.13 より前の版は確認していない（対象外）。
 - 対象バージョンは MySQL 8.0 系以降で決定済み（10.5 節）。MariaDB・5.7 系は対象外。
 
 ## 12. バックログ（MVP の範囲外。後で課題として積む）
