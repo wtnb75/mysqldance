@@ -45,7 +45,7 @@ task fmt                # gofmt
 `BACKLOG.md`（リポジトリ直下）で管理する。操作は専用スキルを使う。
 
 - 追加 / 削除 / 更新 / 一覧: `mgmt-backlog`
-- 実装: `impl-backlog`
+- 実装: `impl-backlog`（ブランチ名は `backlog/B-NNN-<slug>`。PR タイトルの先頭に `B-NNN:` を付ける）
 
 補助タスク（`scripts/backlog.awk` を使う）:
 
