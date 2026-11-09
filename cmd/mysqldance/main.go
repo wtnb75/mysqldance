@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -62,6 +63,25 @@ func notifyContext(parent context.Context) (context.Context, context.CancelFunc)
 	return ctx, stop
 }
 
+// parseMode parses an octal permission such as "0640". An empty s means the
+// default (0). Only the nine permission bits are accepted, and the owner must
+// have at least the bits in ownerNeeds (a directory must stay usable by the
+// tool, a file readable by its owner).
+func parseMode(s string, ownerNeeds os.FileMode) (os.FileMode, error) {
+	if s == "" {
+		return 0, nil
+	}
+	v, err := strconv.ParseUint(s, 8, 32)
+	if err != nil || v > 0o777 {
+		return 0, fmt.Errorf("%q is not an octal permission between 0 and 0777", s)
+	}
+	m := os.FileMode(v)
+	if m&ownerNeeds != ownerNeeds {
+		return 0, fmt.Errorf("%q must give the owner at least %04o", s, ownerNeeds)
+	}
+	return m, nil
+}
+
 // parseArgs parses the command line into dump options without connecting.
 func parseArgs(args []string, getenv func(string) string) (dump.Options, error) {
 	return parseArgsTo(args, getenv, io.Discard)
@@ -90,6 +110,11 @@ The password is read from --password-file, else from MYSQL_PWD.
       --max-insert-bytes N   size cap of one INSERT statement (default 1048576)
       --rows-per-file N      split a table into files of N rows on average,
                              named TABLE.0001.sql, ... (default 0 = no split)
+      --file-mode MODE       exact octal permission of the output files, e.g.
+                             0640 (default 0666 filtered by the umask)
+      --dir-mode MODE        exact octal permission of the output directory
+                             when it is created, e.g. 0750 (default 0755
+                             filtered by the umask; an existing one is kept)
       --no-lock              do not take FLUSH TABLES WITH READ LOCK when a
                              table is not InnoDB (warn instead)
 `)
@@ -99,6 +124,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 		host, user, socket, passwordFile, output string
 		sslMode, sslCA                           string
 		noLock                                   bool
+		fileMode, dirMode                        string
 		port                                     int
 		rowsPerInsert, rowsPerFile               uint64
 		maxInsertBytes                           int
@@ -119,6 +145,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.IntVar(&maxInsertBytes, "max-insert-bytes", 1048576, "")
 	fs.Uint64Var(&rowsPerFile, "rows-per-file", 0, "")
 	fs.BoolVar(&noLock, "no-lock", false, "")
+	fs.StringVar(&fileMode, "file-mode", "", "")
+	fs.StringVar(&dirMode, "dir-mode", "", "")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -149,10 +177,21 @@ The password is read from --password-file, else from MYSQL_PWD.
 		return usage("%v", err)
 	}
 
+	fm, err := parseMode(fileMode, 0o400)
+	if err != nil {
+		return usage("--file-mode: %v", err)
+	}
+	dm, err := parseMode(dirMode, 0o700)
+	if err != nil {
+		return usage("--dir-mode: %v", err)
+	}
+
 	opt := dump.Options{
-		DBs:    fs.Args(),
-		OutDir: output,
-		Data:   datafile.Options{RowsPerInsert: uint32(rowsPerInsert), MaxInsertBytes: maxInsertBytes, RowsPerFile: uint32(rowsPerFile)},
+		FileMode: fm,
+		DirMode:  dm,
+		DBs:      fs.Args(),
+		OutDir:   output,
+		Data:     datafile.Options{RowsPerInsert: uint32(rowsPerInsert), MaxInsertBytes: maxInsertBytes, RowsPerFile: uint32(rowsPerFile)},
 	}
 	opt.Source.Host, opt.Source.Port, opt.Source.Socket, opt.Source.User = host, port, socket, user
 	opt.Source.SSLMode, opt.Source.SSLCA = sslMode, sslCA
