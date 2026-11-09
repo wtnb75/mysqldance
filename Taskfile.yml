@@ -1,0 +1,37 @@
+version: "3"
+
+tasks:
+  test:
+    desc: Run unit tests
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run
+
+  fmt:
+    desc: Format Go sources
+    cmds:
+      - gofmt -w .
+
+  test:integration:
+    desc: Run tests against MySQL 8.0 and 8.4 started via Docker
+    vars:
+      PORT: 33061
+    cmds:
+      - for: ["8.0", "8.4"]
+        cmd: |
+          set -e
+          docker rm -f mysqldance-test >/dev/null 2>&1 || true
+          docker run -d --name mysqldance-test -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=test -p 127.0.0.1:{{.PORT}}:3306 mysql:{{.ITEM}}
+          trap 'docker rm -f mysqldance-test >/dev/null 2>&1' EXIT
+          echo "waiting for MySQL {{.ITEM}}..."
+          for i in $(seq 1 90); do
+            if docker exec mysqldance-test mysqladmin ping -h 127.0.0.1 -uroot -proot --silent >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          MYSQLDANCE_TEST_DSN='root:root@tcp(127.0.0.1:{{.PORT}})/' go test -count=1 ./...
