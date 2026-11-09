@@ -349,8 +349,9 @@ func TestRoundTrip(t *testing.T) {
 
 	dir := t.TempDir()
 	log := e.dump(t, dir, db)
-	if !strings.Contains(log, "MyISAM") || !strings.Contains(log, "`my`") {
-		t.Errorf("log does not warn about the MyISAM table:\n%s", log)
+	// The MyISAM table is read under a global read lock, so no warning.
+	if strings.Contains(log, "MyISAM") {
+		t.Errorf("log warns about the locked MyISAM table:\n%s", log)
 	}
 	files := readFiles(t, dir)
 	if got, want := files[naming.DataFile(db, "empty_t")], datafile.Header(db); got != want {
@@ -390,6 +391,23 @@ func lineDiff(a, b string) (del, add int) {
 	}
 	common := lcs[0][0]
 	return len(x) - common, len(y) - common
+}
+
+// TestNoLockWarnsAboutNonInnoDB checks that with NoLock a non-InnoDB table is
+// dumped without the global read lock and a warning is logged.
+func TestNoLockWarnsAboutNonInnoDB(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE my (id INT PRIMARY KEY) ENGINE=MyISAM",
+		"INSERT INTO my VALUES (1)",
+	)
+	e.cfg.NoLock = true
+	log := e.dump(t, t.TempDir(), db)
+	if !strings.Contains(log, "MyISAM") || !strings.Contains(log, "`my`") {
+		t.Errorf("log does not warn about the MyISAM table:\n%s", log)
+	}
 }
 
 func TestDeterministicAndMinimalDiff(t *testing.T) {

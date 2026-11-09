@@ -32,6 +32,7 @@ Put flags **before** the database names (Go's standard `flag` package stops pars
 | `-o`, `--output` | (required) | Output directory. Created if missing |
 | `--rows-per-insert` | `1000` | Average number of rows per `INSERT` statement |
 | `--max-insert-bytes` | `1048576` | Upper bound on the size of one `INSERT` statement, in bytes. The statement is split right after the row that exceeds it |
+| `--no-lock` | off | Do not take the global read lock when a table is not InnoDB; warn instead (see "Non-InnoDB tables and the read lock" below) |
 | positional | (at least one required) | Names of the databases to dump |
 
 - The password is never accepted on the command line. If `--password-file` is given its contents are used; otherwise the `MYSQL_PWD` environment variable is used.
@@ -104,13 +105,22 @@ In file names, database and table names keep only ASCII letters, digits, `_` and
 - The reading connection pins `sql_mode=''`, `sql_quote_show_create=1` and `show_create_table_verbosity=0` at session level, so output does not change even if the server's default `sql_mode` has `ANSI_QUOTES` (identifiers would become `"t"`, which cannot be restored) or `PAD_CHAR_TO_FULL_LENGTH` (`CHAR` values would be padded with spaces).
 - A table with a column that cannot be read because only column-level privileges exist (`GRANT SELECT (c1, c2) ON ...`) is an error rather than silently dropping the column (the columns of `SHOW CREATE TABLE` are cross-checked against `information_schema.COLUMNS`).
 
+### Non-InnoDB tables and the read lock
+
+The snapshot transaction does not cover tables of non-transactional engines (MyISAM and so on). So when any base table of any dumped database is not InnoDB, the tool runs `FLUSH TABLES WITH READ LOCK` first, then starts the snapshot, and holds the lock until the run has finished reading and writing the files (the connection is closed). Every table is then from the same point in time. If every table is InnoDB, no lock is taken.
+
+- **Effect on the server:** while the lock is held, writes to **all** tables of **all** databases wait (reads are not affected), and `FLUSH TABLES WITH READ LOCK` itself waits for running long statements to finish, which in turn holds up statements that arrive after it. The lock lasts for the whole read, so a large dump stalls writers for that long. Dump from a replica when that matters.
+- **Required privilege:** `RELOAD`. If the account lacks it, the run fails with an error that says so; nothing is written.
+- **`--no-lock`:** skips the lock. Non-InnoDB tables are then read without consistency and a warning is printed for each (see "Warnings").
+- If a non-InnoDB table is ever read while no lock is held (for example because it appeared after the tool found every table to be InnoDB), the run fails instead of reading it inconsistently; run it again or pass `--no-lock`.
+
 ### AUTO_INCREMENT is not restored
 
 `AUTO_INCREMENT=N` (the counter's current value) is removed from `CREATE TABLE` so that a counter moving by itself does not produce a diff. After restoring, numbering continues from "existing maximum + 1", so if rows at the end were deleted in the past, the next number differs from the original server. The same applies to partitioned tables.
 
 ### Warnings
 
-Tables that are not InnoDB (MyISAM and so on) cannot guarantee snapshot consistency, so a warning is printed and the dump continues. A table whose estimated row count (`information_schema.TABLES.TABLE_ROWS`) exceeds 500,000 gets a warning, regardless of keys, that it is far beyond the intended scale and that all rows will be loaded into memory (and, if it has no key, that it will be sorted in memory).
+With `--no-lock`, tables that are not InnoDB (MyISAM and so on) cannot guarantee snapshot consistency, so a warning is printed and the dump continues. A table whose estimated row count (`information_schema.TABLES.TABLE_ROWS`) exceeds 500,000 gets a warning, regardless of keys, that it is far beyond the intended scale and that all rows will be loaded into memory (and, if it has no key, that it will be sorted in memory).
 
 ## Re-dumping and removing stale files
 

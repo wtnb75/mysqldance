@@ -73,12 +73,15 @@ The password is read from --password-file, else from MYSQL_PWD.
   -o, --output DIR           output directory (required)
       --rows-per-insert N    average rows per INSERT statement (default 1000)
       --max-insert-bytes N   size cap of one INSERT statement (default 1048576)
+      --no-lock              do not take FLUSH TABLES WITH READ LOCK when a
+                             table is not InnoDB (warn instead)
 `)
 	}
 
 	var (
 		host, user, socket, passwordFile, output string
 		sslMode, sslCA                           string
+		noLock                                   bool
 		port                                     int
 		rowsPerInsert                            uint64
 		maxInsertBytes                           int
@@ -97,6 +100,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.StringVar(&output, "output", "", "")
 	fs.Uint64Var(&rowsPerInsert, "rows-per-insert", 1000, "")
 	fs.IntVar(&maxInsertBytes, "max-insert-bytes", 1048576, "")
+	fs.BoolVar(&noLock, "no-lock", false, "")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -132,6 +136,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	}
 	opt.Source.Host, opt.Source.Port, opt.Source.Socket, opt.Source.User = host, port, socket, user
 	opt.Source.SSLMode, opt.Source.SSLCA = sslMode, sslCA
+	opt.Source.NoLock = noLock
 	opt.Source.Password = getenv("MYSQL_PWD")
 	if passwordFile != "" {
 		b, err := os.ReadFile(passwordFile)

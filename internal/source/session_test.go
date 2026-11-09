@@ -40,7 +40,7 @@ func TestSessionSettingsPinned(t *testing.T) {
 	}
 	sdb := sql.OpenDB(connector)
 	ctx := context.Background()
-	s, err := start(ctx, sdb, db)
+	s, err := start(ctx, sdb, []string{db}, false)
 	if err != nil {
 		_ = sdb.Close()
 		t.Fatalf("start: %v", err)
