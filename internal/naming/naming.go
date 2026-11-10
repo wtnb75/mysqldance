@@ -7,9 +7,10 @@ import (
 )
 
 const (
-	schemaSuffix = ".00-schema.sql"
-	dataInfix    = ".10-data."
-	sqlExt       = ".sql"
+	schemaSuffix      = ".00-schema.sql"
+	dataInfix         = ".10-data."
+	constraintsSuffix = ".90-constraints.sql"
+	sqlExt            = ".sql"
 )
 
 // EscapeName keeps [A-Za-z0-9_-] as is and percent-encodes every other
@@ -31,6 +32,14 @@ func EscapeName(s string) string {
 // SchemaFile returns the schema file name of a database.
 func SchemaFile(db string) string {
 	return EscapeName(db) + schemaSuffix
+}
+
+// ConstraintsFile returns the name of the file a writer may add after all data
+// files of a database (foreign keys, applied once the rows are in). "90" sorts
+// after "10", and no escaped table name can make a data file sort past it:
+// data file names continue with ".10-data.".
+func ConstraintsFile(db string) string {
+	return EscapeName(db) + constraintsSuffix
 }
 
 // DataFile returns the data file name of a table.
@@ -62,9 +71,10 @@ func DataFileParts(db, table string, n int) []string {
 	return names
 }
 
-// IsOwnedBy reports whether file is the schema file or a data file of db.
+// IsOwnedBy reports whether file is the schema file, the constraints file or a
+// data file of db.
 func IsOwnedBy(file, db string) bool {
-	if file == SchemaFile(db) {
+	if file == SchemaFile(db) || file == ConstraintsFile(db) {
 		return true
 	}
 	return strings.HasPrefix(file, EscapeName(db)+dataInfix) && strings.HasSuffix(file, sqlExt)

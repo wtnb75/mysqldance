@@ -74,6 +74,25 @@ func TestIsOwnedBy(t *testing.T) {
 	}
 }
 
+func TestConstraintsFile(t *testing.T) {
+	if got := ConstraintsFile("my db"); got != "my%20db.90-constraints.sql" {
+		t.Errorf("ConstraintsFile = %q", got)
+	}
+	if !IsOwnedBy("a.90-constraints.sql", "a") || IsOwnedBy("a-b.90-constraints.sql", "a") {
+		t.Error("IsOwnedBy does not recognize exactly the constraints file of its database")
+	}
+	// Restoring runs the files in name order: the constraints go in last.
+	for _, db := range []string{"a", "a-b", "a_b", "a.b"} {
+		for _, tbl := range []string{"t", "0", "-", "A", "a.b", "~"} {
+			for _, d := range DataFileParts(db, tbl, 12345) {
+				if c := ConstraintsFile(db); c <= d {
+					t.Errorf("ConstraintsFile(%q)=%q not > data file %q", db, c, d)
+				}
+			}
+		}
+	}
+}
+
 func TestSchemaSortsBeforeData(t *testing.T) {
 	for _, db := range []string{"a", "a-b", "a_b", "a.b"} {
 		for _, tbl := range []string{"t", "0", "-", "A", "a.b"} {

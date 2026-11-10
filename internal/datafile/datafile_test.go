@@ -19,7 +19,7 @@ func write(t *testing.T, rows [][]string, listColumns bool, opt Options) string 
 
 func makeRows(n int) [][]string {
 	rows := make([][]string, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		rows = append(rows, []string{fmt.Sprint(i), fmt.Sprintf("'row %d'", i)})
 	}
 	return rows
@@ -50,6 +50,20 @@ func TestHeaderQuotesDatabaseName(t *testing.T) {
 		"USE `a``b`;\n"
 	if got := Header("a`b"); got != want {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestWriteStatementsUsesTheGivenQuoting(t *testing.T) {
+	quote := func(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+	var buf bytes.Buffer
+	err := WriteStatements(&buf, "BEGIN;\n", "COMMIT;\n", quote, `t"1`, []string{"a", "b"}, true,
+		[][]string{{"1", "'x'"}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "BEGIN;\nINSERT INTO \"t\"\"1\" (\"a\", \"b\") VALUES\n(1,'x');\nCOMMIT;\n"
+	if buf.String() != want {
+		t.Errorf("got %q, want %q", buf.String(), want)
 	}
 }
 

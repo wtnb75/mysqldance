@@ -73,11 +73,7 @@ func (s *SQLite) WriteSchema(w io.Writer, sc Schema) error {
 	if _, err := io.WriteString(w, out.String()); err != nil {
 		return err
 	}
-	if sc.Warn != nil {
-		for _, m := range warnings {
-			sc.Warn(m)
-		}
-	}
+	emit(sc.Warn, warnings)
 	return nil
 }
 
@@ -87,27 +83,13 @@ func writeSQLiteTable(out *strings.Builder, db string, t source.TableInfo, def s
 	// warn prefixes the table; the name is an argument, never part of the format.
 	warn := func(format string, a ...any) { warnf("table %s: "+format, append([]any{table}, a...)...) }
 	// The columns written must be the ones the data files list.
-	var cols []source.ColumnDef
-	written := map[string]bool{}
-	for _, c := range def.Columns {
-		if c.Generated {
-			warn("generated column %s is not output", sqlvalue.QuoteIdent(c.Name))
-			continue
-		}
-		cols = append(cols, c)
+	cols, err := outputColumns(t, def, warn)
+	if err != nil {
+		return err
+	}
+	written := make(map[string]bool, len(cols))
+	for _, c := range cols {
 		written[c.Name] = true
-	}
-	if len(cols) == 0 {
-		return fmt.Errorf("no column can be output")
-	}
-	if len(cols) != len(t.Columns) {
-		return fmt.Errorf("the definition has %d columns but the data has %d", len(cols), len(t.Columns))
-	}
-	for i, c := range cols {
-		if c.Name != t.Columns[i].Name {
-			return fmt.Errorf("column %d is %s in the definition but %s in the data",
-				i+1, sqlvalue.QuoteIdent(c.Name), sqlvalue.QuoteIdent(t.Columns[i].Name))
-		}
 	}
 
 	var lines []string
@@ -319,6 +301,6 @@ func quoteList(names []string) string {
 func (s *SQLite) DataParts(_ string, t source.TableInfo, rows [][]sqlvalue.Value) []Part {
 	return splitParts(t, rows, s.data.RowsPerFile, sqlvalue.SQLiteLiterals,
 		func(w io.Writer, cols []string, group [][]string) error {
-			return datafile.WriteStatements(w, sqliteDataHeader, sqliteDataFooter, t.Name, cols, t.ListColumns, group, s.data)
+			return datafile.WriteStatements(w, sqliteDataHeader, sqliteDataFooter, sqlvalue.QuoteIdent, t.Name, cols, t.ListColumns, group, s.data)
 		})
 }

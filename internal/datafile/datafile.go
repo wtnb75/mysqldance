@@ -111,14 +111,15 @@ func mix32(h uint32) uint32 {
 // makes the statement reach MaxInsertBytes, and after the last row. Removing
 // one row therefore only affects boundaries next to it.
 func Write(w io.Writer, db, table string, columns []string, listColumns bool, rows [][]string, opt Options) error {
-	return WriteStatements(w, Header(db), "", table, columns, listColumns, rows, opt)
+	return WriteStatements(w, Header(db), "", sqlvalue.QuoteIdent, table, columns, listColumns, rows, opt)
 }
 
 // WriteStatements is Write with the file's header and footer given by the
 // caller, for a target DBMS whose session statements differ from MySQL's. The
-// statements are the same multi-row INSERTs with backtick-quoted identifiers,
-// which SQLite also accepts.
-func WriteStatements(w io.Writer, header, footer, table string, columns []string, listColumns bool, rows [][]string, opt Options) error {
+// statements are the same multi-row INSERTs; quote renders an identifier the
+// way the target DBMS wants it (backticks for MySQL and SQLite, double quotes
+// for PostgreSQL).
+func WriteStatements(w io.Writer, header, footer string, quote func(string) string, table string, columns []string, listColumns bool, rows [][]string, opt Options) error {
 	if opt.RowsPerInsert == 0 {
 		opt.RowsPerInsert = defaultRowsPerInsert
 	}
@@ -132,11 +133,11 @@ func WriteStatements(w io.Writer, header, footer, table string, columns []string
 	}
 
 	var head strings.Builder
-	head.WriteString("INSERT INTO " + sqlvalue.QuoteIdent(table))
+	head.WriteString("INSERT INTO " + quote(table))
 	if listColumns {
 		quoted := make([]string, len(columns))
 		for i, c := range columns {
-			quoted[i] = sqlvalue.QuoteIdent(c)
+			quoted[i] = quote(c)
 		}
 		head.WriteString(" (" + strings.Join(quoted, ", ") + ")")
 	}

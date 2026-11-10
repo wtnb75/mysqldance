@@ -34,7 +34,7 @@ Put flags **before** the database names (Go's standard `flag` package stops pars
 | `--ssl-mode` | `preferred` | TLS mode: `disabled`, `preferred`, `required`, `verify-ca` or `verify-identity` (see "TLS" below) |
 | `--ssl-ca` | (none) | PEM file of CA certificates used to verify the server. Only with `required`, `verify-ca` or `verify-identity`; required by `verify-ca` |
 | `-o`, `--output` | (required) | Output directory. Created if missing |
-| `--target` | `mysql` | The DBMS the files are written for: `mysql` or `sqlite` (see "SQLite output" below). Any other value is a usage error |
+| `--target` | `mysql` | The DBMS the files are written for: `mysql`, `sqlite` or `postgres` (see "SQLite output" and "PostgreSQL output" below). Any other value is a usage error |
 | `--rows-per-insert` | `1000` | Average number of rows per `INSERT` statement |
 | `--max-insert-bytes` | `1048576` | Upper bound on the size of one `INSERT` statement, in bytes. The statement is split right after the row that exceeds it |
 | `--rows-per-file` | `0` | Average number of rows per data file. A table with more rows is split into several files (see "Splitting large tables" below). `0` never splits |
@@ -112,6 +112,26 @@ LC_ALL=C cat dump/mydb.*.sql | sqlite3 mydb.db
 - **Not output, with a warning for each** (printed to standard error as `warning: database "db": ...`, the dump continues): views (their `SELECT` is MySQL syntax; converting them is a separate backlog item), generated columns (their values are not dumped either), `ON UPDATE CURRENT_TIMESTAMP`, default expressions other than `CURRENT_TIMESTAMP`, `FULLTEXT` and `SPATIAL` indexes, indexes with an expression key part or on a generated column, CHECK constraints, and foreign keys into another database. A prefix index (`col(10)`) is created on the whole column, which is also reported. Triggers, routines and events are not dumped for any target.
 - A column type with no SQLite counterpart makes the run fail instead of guessing.
 
+### PostgreSQL output
+
+`--target postgres` writes the same one-record-per-line `INSERT`s, with the same splitting and determinism, in SQL that PostgreSQL runs. One MySQL database becomes one **schema** of the same name, so several databases fit into one PostgreSQL database. For each database, three kinds of files are written:
+
+| File | Content |
+| --- | --- |
+| `<db>.00-schema.sql` | `CREATE SCHEMA IF NOT EXISTS`, then one `CREATE TABLE` per table (by name), each followed by its `CREATE [UNIQUE] INDEX` statements |
+| `<db>.10-data.<table>.sql` | The table's `INSERT` statements, in one transaction |
+| `<db>.90-constraints.sql` | The foreign keys (`ALTER TABLE ... ADD CONSTRAINT`), always written, with no statement when there is none |
+
+The foreign keys are in the last file because the data files run in table-name order, which no foreign key respects. Every file sets what it needs itself (`client_encoding`, `standard_conforming_strings`, `TimeZone = 'UTC'`, `search_path`), because the official image runs each file in a session of its own, so they restore with the official image's `/docker-entrypoint-initdb.d` (or `psql -f` on each file in file name order) into an empty database. Restoring into a schema that already has the tables fails.
+
+- **Types** keep every value exact. `TINYINT(1)` (`BOOLEAN`) becomes `boolean`; every other `TINYINT`, `SMALLINT`, `MEDIUMINT`, `INT`, `BIGINT` and `YEAR` becomes the narrowest PostgreSQL integer type that holds the whole range (`TINYINT UNSIGNED` is `smallint`, `INT UNSIGNED` is `bigint`, `BIGINT UNSIGNED` is `numeric(20,0)`). `DECIMAL(p,s)` is `numeric(p,s)`, `FLOAT` is `real`, `DOUBLE` is `double precision`, `BIT(n)` is `bit(n)`, `CHAR(n)` and `VARCHAR(n)` are `varchar(n)` (PostgreSQL's `char(n)` pads, MySQL's does not), the text types, `ENUM` and `SET` are `text`, `JSON` is `json`, binary and spatial types are `bytea`, `DATE` is `date`, `DATETIME(n)` is `timestamp(n)`, `TIMESTAMP(n)` is `timestamptz(n)` and `TIME(n)` is `interval(n)` (its range, -838:59:59 to 838:59:59, is wider than a time of day).
+  - Only a plain `TINYINT(1)` is `boolean`, which is what MySQL 8.0.19 and later reports as `tinyint(1)`; `TINYINT(1) UNSIGNED` is reported as `tinyint unsigned` and becomes `smallint`. A `TINYINT(1)` row holding anything but 0 or 1 makes the run fail.
+- `NOT NULL`, the primary key, `UNIQUE` keys, ordinary indexes (with `DESC`) and literal defaults (and `DEFAULT CURRENT_TIMESTAMP`) are carried over. Primary keys and indexes are named `<table>__<index>` (the primary key is `<table>__PRIMARY`); if that collides with another table or index name, the run fails.
+- A line break inside a string value is written as an `E'a\nb'` string, so one record stays on one line.
+- MySQL's `AUTO_INCREMENT` is not carried over: the column is a plain integer, the counter is not restored (as in the MySQL output), and a later `INSERT` has to give the key. Comments, character sets and collations are dropped.
+- **A value or name PostgreSQL cannot hold fails the run** with the table and column named: a NUL byte in text, a zero or partial date (`0000-00-00`, `2024-00-10`), a name over 63 bytes, a database name starting with `pg_`, a column type with no PostgreSQL counterpart.
+- **Not output, with a warning for each** (printed to standard error as `warning: database "db": ...`, the dump continues): views (their `SELECT` is MySQL syntax; converting them is a separate backlog item), generated columns (their values are not dumped either), `ON UPDATE CURRENT_TIMESTAMP`, default expressions other than `CURRENT_TIMESTAMP`, `FULLTEXT` and `SPATIAL` indexes, indexes with an expression key part or on a generated column, CHECK constraints, and foreign keys that PostgreSQL cannot take: into another database (the constraints file of one database runs before the schema file of a later one), onto columns that are not a primary or unique key (InnoDB accepts any index, PostgreSQL does not), or onto a generated column. A prefix index (`col(10)`) is created on the whole column, which is also reported. Triggers, routines and events are not dumped for any target.
+
 ### Splitting large tables
 
 With `--rows-per-file N`, the rows of a table (already in the order described under "Determinism and ordering") are cut into several data files, so that one huge file does not have to be reviewed or stored as a whole. By default (`0`) nothing is split.
@@ -163,7 +183,7 @@ With `--no-lock`, tables that are not InnoDB (MyISAM and so on) cannot guarantee
 
 ## Re-dumping and removing stale files
 
-Re-dumping into the same output directory replaces **each dumped database's files** (`<db>.00-schema.sql` and `<db>.10-data.*.sql`) once every database has been written, and deletes the files of that database from last time that were not written again. Data files of tables that existed last time but are gone now therefore do not remain. Files of other databases and unrelated files such as `README.txt` are left alone. New files are always created fresh under temporary names (existing paths are never followed).
+Re-dumping into the same output directory replaces **each dumped database's files** (`<db>.00-schema.sql`, `<db>.10-data.*.sql` and, for `--target postgres`, `<db>.90-constraints.sql`) once every database has been written, and deletes the files of that database from last time that were not written again. Data files of tables that existed last time but are gone now therefore do not remain. Files of other databases and unrelated files such as `README.txt` are left alone. New files are always created fresh under temporary names (existing paths are never followed).
 
 A table hidden from the dump account by missing privileges is indistinguishable from a dropped table. If a table that was visible last time becomes invisible after a privilege change, its data file is deleted as stale and is not part of the new output. Always dump with an account that has the same privileges.
 
@@ -186,7 +206,7 @@ A dump contains the table data itself, which may include personal information or
 
 ## Limitations (out of scope for the MVP)
 
-- Parallel fetching, source servers other than MySQL 8.0 and later (MariaDB, 5.7 and earlier), and output for DBMSs other than MySQL and SQLite.
+- Parallel fetching, source servers other than MySQL 8.0 and later (MariaDB, 5.7 and earlier), and output for DBMSs other than MySQL, SQLite and PostgreSQL.
 - Streaming for huge tables. `--rows-per-file` splits the output, but all rows of a table are still read into memory before being written (the intended scale is about 10 tables per database and up to about 100,000 rows).
 - Triggers, stored routines, events, and users and privileges.
 - Flags must be placed before the database names.

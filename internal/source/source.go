@@ -59,6 +59,10 @@ type TableInfo struct {
 	OrderByTypes []string
 	// ApproxRows is the TABLE_ROWS estimate.
 	ApproxRows int64
+	// Def is the structure of the table. Tables does not fill it; the caller
+	// sets it from Defs for a writer that builds its definitions from structure,
+	// so that the writer sees it on every call without remembering anything.
+	Def *TableDef
 }
 
 // Snapshot is a read-only consistent snapshot, held on a single pinned

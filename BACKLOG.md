@@ -57,14 +57,6 @@
   - [ ] 手動実行で PR が作られ、PR 上で CI が通る
   - [ ] 統合テストが必要な更新でも、B-026 の CI で検証される
 
-## B-035 [todo|P2] PostgreSQL 向けの出力に対応する
-- 依存: B-034
-- 概要: PostgreSQL 向けのライタを足す。boolean への変換、外部キーを後付けする順序、識別子のクォートなどの方言差を扱う（設計書 12 節）。
-- 受け入れ条件:
-  - [ ] PostgreSQL 向けに出力でき、実機にリストアして行数と値が一致する
-  - [ ] 出力は MySQL 向けと同様に決定的である
-  - [ ] 出力先の DBMS を選ぶフラグを追加し、README に書く
-
 ## B-037 [todo|P2] MariaDB の MySQL との差異を実機で確かめる
 - 概要: 設計書 12 節に挙げた MariaDB の差異（`SHOW CREATE TABLE` の既定値の書式、照合順序、JSON が `LONGTEXT` + `CHECK`、シーケンス、`VIEW_TABLE_USAGE` がないことなど）は記憶ベースで未確認。実機で確かめ、対応の方針を決める。この項目はコードを変えず、調査結果を設計書に書く。
 - 受け入れ条件:
@@ -255,7 +247,32 @@
   - [ ] 参照先の列が親テーブルの主キーでも UNIQUE インデックスでもない外部キーは、理由つきの警告になる（外部キーを出力するか落とすかは実装時に決める）
   - [ ] 参照先が主キーまたは UNIQUE の外部キーの出力は変わらない
 
+## B-064 [todo|P3] PostgreSQL 向けの出力でビューを変換する
+- 依存: B-035
+- 概要: B-035 の PostgreSQL 向け出力はビューを出力しない（警告のみ）。MySQL の `SHOW CREATE VIEW` は `ALGORITHM` / `DEFINER` / `SQL SECURITY` 句、文字コード指定子、`db`.`t` 形式の修飾名、PostgreSQL にない関数（`IF()`、`CONCAT()` の挙動、`DATE_FORMAT()` など）を含むため、変換の範囲を決める（単純な `SELECT` だけを通して残りは警告する、など）。B-062（SQLite 向け）と方針を揃える。
+- 受け入れ条件:
+  - [ ] 変換できるビューが PostgreSQL にリストアでき、できないビューは理由つきの警告になる
+  - [ ] 出力は決定的である
+
+## B-065 [todo|P3] PostgreSQL 向けの出力で、別の DB を参照する外部キーを出力する
+- 依存: B-035
+- 概要: B-035 の PostgreSQL 向け出力は、DB ごとの制約ファイル（`<db>.90-constraints.sql`）を後ろに置くため、別の DB（別のスキーマ）を参照する外部キーを警告して出力しない（`a.90-constraints.sql` は `b.00-schema.sql` より前に動く）。全 DB の後に動く制約ファイルを足すなど、復元順を保ったまま出力する方法を決める。
+- 受け入れ条件:
+  - [ ] 別の DB を参照する外部キーが PostgreSQL にリストアされる
+  - [ ] 1 つの DB だけをダンプしたときの出力は変わらない
+
 # Done
+
+## B-035 [done|P2] PostgreSQL 向けの出力に対応する
+- 依存: B-034
+- 概要: PostgreSQL 向けのライタを足す。boolean への変換、外部キーを後付けする順序、識別子のクォートなどの方言差を扱う（設計書 12 節）。
+- 前提（仕様確定）: フラグは既存の `--target` に値 `postgres` を足す。MySQL の DB 1 つは PostgreSQL の同名スキーマ 1 つに対応させる（`CREATE SCHEMA IF NOT EXISTS` と `SET search_path`）。`TINYINT(1)` は `boolean`（0/1 以外の値があればエラーにする）、他の `TINYINT` は `smallint`。テーブル定義は SQLite と同じく `Schema.Defs` の構造から組み立てる。ビューは SQLite と同様に警告して出力しない（変換は別項目）。PostgreSQL に写せない定義は黙って落とさず警告かエラーにする。外部キーは全データの後に適用する（復元順に依存しないよう、データファイルの後ろに並ぶファイルへ分ける）。検証は Docker の `postgres:17` と、テスト専用の依存 `pgx`（環境変数 `MYSQLDANCE_TEST_PG_DSN` があるときだけ動く）で行い、`task test:integration` に含める。
+- 結果: `--target postgres` を足した。`writer.Postgres` が MySQL の DB 1 つを同名のスキーマに写し、`<db>.00-schema.sql`（`CREATE SCHEMA` とテーブル、インデックス）、`<db>.10-data.<table>.sql`（1 ファイル 1 トランザクション）、`<db>.90-constraints.sql`（外部キー）を書く。外部キーは全データの後に適用するため、`naming.ConstraintsFile` と、`writer.ConstraintWriter`（任意のインターフェース）を足し、`dump` が書き出す。各ファイルは単独のセッションで動くよう自分で `search_path` などを設定する。定義は `TableInfo.Def`（`dump` が `NeedsDefs` のライタにだけ渡す）から組み立てる。`datafile.WriteStatements` は識別子のクォートを引数で受ける。PostgreSQL に入らない値（`TINYINT(1)` の 0/1 以外、NUL、0 や欠けた日付、年 0）と 63 バイトを超える名前はエラーにする。実機の確認は Docker の `postgres:17` とテスト専用の `pgx`（`MYSQLDANCE_TEST_PG_DSN`）で行い、`task test:integration` が MySQL ごとに PostgreSQL も起動する。公式イメージの `/docker-entrypoint-initdb.d` での復元も手で確かめた。
+- 確認: `TINYINT(1) UNSIGNED` は MySQL 8.0 / 8.4 が `tinyint unsigned` と報告するため `smallint` になる（`boolean` は素の `TINYINT(1)` / `BOOLEAN` のみ）。
+- 受け入れ条件:
+  - [x] `--target postgres` で PostgreSQL 向けに出力でき、実機にリストアして行数と値が一致する
+  - [x] 出力は決定的である（2 回の出力がバイト単位で一致する）
+  - [x] `--target` の値 `postgres` を追加し、README に書く（ビューを出力しないことなども書く）
 
 ## B-036 [done|P2] SQLite 向けの出力に対応する
 - 依存: B-034

@@ -71,11 +71,15 @@ tasks:
   #             use host.docker.internal when the Docker daemon runs elsewhere).
   #             Falls back to the MYSQLDANCE_TEST_HOST environment variable, so
   #             a per-user setting survives new worktrees.
-  #   NAME      container name (default mysqldance-test)
+  #   PG_PORT   host port published for PostgreSQL (default 33062)
+  #   NAME      container name (default mysqldance-test; PostgreSQL gets the
+  #             same name plus -pg)
   #   TIMEOUT   seconds to wait for the server to accept TCP (default 180)
   #   TESTFLAGS extra `go test` flags, e.g. TESTFLAGS=-v
+  # A PostgreSQL 17 container is started next to each MySQL one, for the tests
+  # of --target postgres.
   test:integration:
-    desc: Run tests against MySQL 8.0 and 8.4 started via Docker
+    desc: Run tests against MySQL 8.0 and 8.4 (and PostgreSQL 17) started via Docker
     cmds:
       - task: test:integration:one
         vars: { VERSION: "8.0" }
@@ -88,15 +92,17 @@ tasks:
       vars: [VERSION]
     vars:
       PORT: '{{.PORT | default "33061"}}'
+      PG_PORT: '{{.PG_PORT | default "33062"}}'
       HOST: '{{.HOST | default .MYSQLDANCE_TEST_HOST | default "127.0.0.1"}}'
       NAME: '{{.NAME | default "mysqldance-test"}}'
       TIMEOUT: '{{.TIMEOUT | default "180"}}'
     cmds:
       # Registered first so the container is removed whether a later step
       # fails or the run is interrupted.
-      - defer: docker rm -fv {{.NAME}} >/dev/null 2>&1 || true
-      - docker rm -fv {{.NAME}} >/dev/null 2>&1 || true
+      - defer: docker rm -fv {{.NAME}} {{.NAME}}-pg >/dev/null 2>&1 || true
+      - docker rm -fv {{.NAME}} {{.NAME}}-pg >/dev/null 2>&1 || true
       - docker run -d --name {{.NAME}} -e MYSQL_ROOT_PASSWORD=root -p 127.0.0.1:{{.PORT}}:3306 mysql:{{.VERSION}}
+      - docker run -d --name {{.NAME}}-pg -e POSTGRES_PASSWORD=pg -p 127.0.0.1:{{.PG_PORT}}:5432 postgres:17
       # The entrypoint's temporary init server has networking disabled, so a
       # TCP ping only succeeds once the real server is up.
       - |
@@ -111,4 +117,18 @@ tasks:
           fi
           sleep 1
         done
-      - MYSQLDANCE_TEST_DSN='root:root@tcp({{.HOST}}:{{.PORT}})/' go test -count=1 {{.TESTFLAGS}} ./...
+      # The official image restarts its server once after initializing, so
+      # pg_isready is polled through TCP on the final server only.
+      - |
+        echo "waiting for PostgreSQL..."
+        i=0
+        until docker exec {{.NAME}}-pg pg_isready -h 127.0.0.1 -U postgres --quiet >/dev/null 2>&1; do
+          i=$((i + 1))
+          if [ "$i" -ge {{.TIMEOUT}} ]; then
+            echo "PostgreSQL did not become ready within {{.TIMEOUT}}s" >&2
+            docker logs --tail 20 {{.NAME}}-pg >&2
+            exit 1
+          fi
+          sleep 1
+        done
+      - MYSQLDANCE_TEST_DSN='root:root@tcp({{.HOST}}:{{.PORT}})/' MYSQLDANCE_TEST_PG_DSN='postgres://postgres:pg@{{.HOST}}:{{.PG_PORT}}/postgres?sslmode=disable' go test -count=1 {{.TESTFLAGS}} ./...
