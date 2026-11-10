@@ -536,3 +536,45 @@
 - 却下の理由: 失敗のシナリオがない。`RELOAD` が無いときは、今の `source.Open` が RELOAD と `--no-lock` を挙げたエラーで失敗する（`TestLockNeedsReloadPrivilege`）。並列取得も同じ `FLUSH TABLES WITH READ LOCK` を使うので、同じ経路を通る。確かめていない項目は設計書 6.1 に列挙した。B-041 の範囲は方式の検証で、B-042 の条件を変えるのは範囲外。
 - 初出: B-041
 - 再出: 0
+
+## R-075 `--jobs` がテーブル数より大きいと、使わない接続を開き、無駄にロックを取る
+- 対象: internal/source/source.go の startParallel
+- 指摘: 2 テーブルの DB に `-j 64` を指定すると 65 接続を開き、RELOAD とロックが要る。
+- 却下の理由: 利用者が明示した値で、動作は仕様どおり（失敗も不整合も起きない）。`Open` はテーブル数を `Tables` より前に知らないので、丸めるには接続の遅延オープンが要り、B-042 の範囲を超える。README の「Parallel reads」に接続数（N + 1）を書いている。
+- 初出: B-042
+- 再出: 0
+
+## R-076 `--jobs` を上げるとメモリ使用量が N 倍になる
+- 対象: internal/dump/dump.go の dumpDB / writeTable
+- 指摘: N テーブルの全行が同時にメモリに載り、`-j 1` で動いた巨大テーブルで OOM になりうる。
+- 却下の理由: 確定した仕様に「N 本のテーブルの全行が同時にメモリに載る」と明記済みで、README の「Parallel reads」と Limitations に書いた。解消は行のストリーム化（B-044、B-045）の範囲。既定は 1。
+- 初出: B-042
+- 再出: 0
+
+## R-077 複数ファイルに分割した名前の衝突検査が、全テーブルの書き出し後になる
+- 対象: internal/dump/dump.go の dumpDB（分割後の `claim`）
+- 指摘: 衝突の検出が遅くなり、無駄な読み出しが増える。
+- 却下の理由: 検出が遅れるだけで、エラーは commit の前に必ず返り、出力先は変わらない（R-029 と同じ）。claim をテーブル順に行うのは、並列でも返るエラーを決定的にするため（確定した仕様）。
+- 初出: B-042
+- 再出: 0
+
+## R-078 `firstError` が `context.Canceled` を包んだ本物のエラーを、キャンセルの副作用として読み飛ばす
+- 対象: internal/dump/dump.go の firstError
+- 指摘: ドライバが `context.Canceled` を包む本物のエラーを返すと、テーブル順の保証が崩れる。
+- 却下の理由: 推測。親の ctx が生きているのに `Canceled` で失敗するのは、eachTable が自分でキャンセルした場合だけで、その前に本物のエラーが必ず 1 つある。全てが Canceled 型のときは先頭を返す。
+- 初出: B-042
+- 再出: 0
+
+## R-079 `Close` が全読み出し接続に順に ROLLBACK し、タイムアウトを共有する
+- 対象: internal/source/source.go の Close
+- 指摘: キャンセル後に死んだ接続の ROLLBACK のエラーが並び、停止したサーバーでは先頭の ROLLBACK が時間を使い切る。
+- 却下の理由: 1 接続のときと同じ設計（R-022、R-025）。ROLLBACK に失敗しても、その後で全接続を閉じるのでセッションとトランザクションは終わる。失敗は報告されるべきエラーで、握りつぶさない。統合テスト（TestJobsCloseEndsEverySession）で全セッションが閉じることを確認した。
+- 初出: B-042
+- 再出: 0
+
+## R-080 `Jobs` と `NoLock` の検査が `Open` と `main` で重複している
+- 対象: internal/source/source.go の Open、cmd/mysqldance/main.go
+- 指摘: 同じ検査が 2 か所にあり、ずれうる。
+- 却下の理由: 好みの問題。`main` は使い方のエラー（フラグ名つき）、`Open` はライブラリとして直接呼ばれたときの防御で、メッセージの宛先が違う。両方をテスト済み（TestRunUsageErrors、TestJobsRejectedBeforeConnecting）。
+- 初出: B-042
+- 再出: 0

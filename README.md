@@ -41,6 +41,7 @@ Put flags **before** the database names (Go's standard `flag` package stops pars
 | `--file-mode` | (umask) | Exact octal permission of the output files, e.g. `0640`. The owner must have read permission. By default files get `0666` filtered by the umask |
 | `--dir-mode` | (umask) | Exact octal permission of the output directory, e.g. `0750`, applied only when mysqldance creates it (parent directories it creates get `0755` filtered by the umask). The owner must have `rwx`. An existing directory is never changed. By default `0755` filtered by the umask |
 | `--no-lock` | off | Do not take the global read lock when a table is not InnoDB; warn instead (see "Non-InnoDB tables and the read lock" below) |
+| `-j`, `--jobs` | `1` | Number of tables read in parallel, each on a connection of its own, from 1 to 64. The default `1` reads everything on one connection, as before, and needs no `RELOAD` privilege. Above `1` the global read lock is always taken, so the account needs `RELOAD`, and `--no-lock` cannot be combined with it (see "Parallel reads" below) |
 | `--version` | off | Print the version and commit to standard output, then exit with 0. Builds made without the release ldflags print `dev` and `unknown` |
 | positional | (at least one required) | Names of the databases to dump |
 
@@ -181,7 +182,7 @@ In file names, database and table names keep only ASCII letters, digits, `_` and
 - `INSERT` statement boundaries are decided by row content (a hash), so updating one row normally changes just that row in the diff (one deletion plus one addition). Adding or deleting rows only changes the area around them.
 - Value formats: strings are `'...'` (with `\`, `'`, `"`, newlines, NUL and so on escaped); `BLOB`, `BINARY`, `VARBINARY` and `GEOMETRY` are `0x` followed by hex (empty is `''`); `BIT` is `b'...'`; NULL is `NULL`. Times are read and written with `TIME_ZONE='+00:00'`.
 - The `DEFINER=...` clause of views is not written (views are created as the restoring user).
-- Reads use a single connection and a single transaction (`REPEATABLE READ` with `START TRANSACTION WITH CONSISTENT SNAPSHOT`) for all databases, so every table of every database is from the same point in time. Schema objects are read from the catalog (`information_schema`, `SHOW CREATE`), which the snapshot does not cover, so DDL run during the dump may still show up.
+- Reads use a single connection and a single transaction (`REPEATABLE READ` with `START TRANSACTION WITH CONSISTENT SNAPSHOT`) for all databases, so every table of every database is from the same point in time. With `--jobs` above 1 there are several such connections, started at one point in time (see "Parallel reads"). Schema objects are read from the catalog (`information_schema`, `SHOW CREATE`), which the snapshot does not cover, so DDL run during the dump may still show up.
 - The reading connection pins `sql_mode=''`, `sql_quote_show_create=1` and `show_create_table_verbosity=0` at session level, so output does not change even if the server's default `sql_mode` has `ANSI_QUOTES` (identifiers would become `"t"`, which cannot be restored) or `PAD_CHAR_TO_FULL_LENGTH` (`CHAR` values would be padded with spaces).
 - A table with a column that cannot be read because only column-level privileges exist (`GRANT SELECT (c1, c2) ON ...`) is an error rather than silently dropping the column (the columns of `SHOW CREATE TABLE` are cross-checked against `information_schema.COLUMNS`).
 
@@ -193,6 +194,23 @@ The snapshot transaction does not cover tables of non-transactional engines (MyI
 - **Required privilege:** `RELOAD`. If the account lacks it, the run fails with an error that says so; nothing is written.
 - **`--no-lock`:** skips the lock. Non-InnoDB tables are then read without consistency and a warning is printed for each (see "Warnings").
 - If a non-InnoDB table is ever read while no lock is held (for example because it appeared after the tool found every table to be InnoDB), the run fails instead of reading it inconsistently; run it again or pass `--no-lock`.
+
+### Parallel reads
+
+With `--jobs N` (N above 1) the rows of N tables are read, rendered and written at the same time, each table on its own connection. The output is the same as with `--jobs 1`, byte for byte; only the time it takes changes. The schema, the table list and the warnings are still read on the first connection, one table after another, so their order does not change either.
+
+All connections must show the same point in time, but each starts its own snapshot. So the tool uses one more connection (N + 1 in all) that holds the global read lock while the snapshots start:
+
+1. `FLUSH TABLES WITH READ LOCK` on the extra connection. Writers wait from here on.
+2. Every reading connection runs `START TRANSACTION WITH CONSISTENT SNAPSHOT` while the lock is held, so they all see the same data.
+3. If every table is InnoDB, `UNLOCK TABLES` follows at once: the snapshots cover the tables, so they stay consistent. If any table is not InnoDB, the lock is kept until the run is finished, as in "Non-InnoDB tables and the read lock".
+
+- **Required privilege:** `RELOAD`, even when every table is InnoDB (the lock is what aligns the snapshots). Without it the run fails with an error that names `RELOAD` and `--jobs 1`; nothing is written. `--jobs 1` (the default) never needs it for InnoDB-only databases.
+- **No `--no-lock`:** `--jobs` above 1 with `--no-lock` is a usage error. Without the lock the snapshots would start one after another and show different points in time, and the tool neither reads such a dump silently nor falls back to one connection silently.
+- **Effect on the server:** writers wait from the moment `FLUSH TABLES WITH READ LOCK` is granted until the last snapshot has started, which takes about as long as N connections need to start (tens of milliseconds, in a measurement with 4 connections). `FLUSH TABLES WITH READ LOCK` itself waits for running long statements first, and statements that arrive behind it wait too. For InnoDB-only databases the lock does not last for the read; with a non-InnoDB table it does.
+- **Memory:** every connection holds all rows of its table in memory until the table is written, so up to N tables are in memory at once (see "Limitations").
+- **Server connections:** N + 1, plus the ones the server needs for itself; `max_connections` must allow them. The upper bound of `--jobs` is 64.
+- DDL is not covered, as with one connection: after the lock is released, an `ALTER` or `DROP TABLE` can run while the rows are read.
 
 ### AUTO_INCREMENT is not restored
 
@@ -219,6 +237,8 @@ A run has two phases. Databases are processed one at a time, in the order given,
 
 In all cases the exit code is 1. On exit, the snapshot transaction is rolled back with a 5-second limit; if the server does not answer in time, the connection is closed instead, which ends the transaction on the server.
 
+With `--jobs` above 1 this holds for every connection: on any failure and on Ctrl-C or `SIGTERM`, all reading connections and the one holding the lock are closed, so no transaction and no global read lock is left on the server. The running tables are told to stop, and no new table is started after the first failure. When several tables fail, the error reported is that of one of the failing tables (which one can depend on timing, since the first failure stops the others), never the cancel that stopped them.
+
 Because the old files stay until the commit, the output directory needs room for the old and the new dump at the same time. Temporary files are synced to disk before the renames, so a crash does not leave empty files in place of the previous dump. Do not run two dumps into the same output directory at once.
 
 ## Security
@@ -227,8 +247,8 @@ A dump contains the table data itself, which may include personal information or
 
 ## Limitations (out of scope for the MVP)
 
-- Parallel fetching, source servers other than MySQL 5.7 and later and MariaDB (MySQL 5.6 and earlier), and output for DBMSs other than MySQL, SQLite and PostgreSQL.
-- Streaming for huge tables. `--rows-per-file` splits the output, but all rows of a table are still read into memory before being written (the intended scale is about 10 tables per database and up to about 100,000 rows).
+- Source servers other than MySQL 5.7 and later and MariaDB (MySQL 5.6 and earlier), and output for DBMSs other than MySQL, SQLite and PostgreSQL. Parallel reading is per table (`--jobs`); one table is never read on several connections.
+- Streaming for huge tables. `--rows-per-file` splits the output, but all rows of a table are still read into memory before being written (the intended scale is about 10 tables per database and up to about 100,000 rows). With `--jobs N`, up to N tables are in memory at once.
 - Triggers, stored routines, events, and users and privileges.
 - Flags must be placed before the database names.
 
