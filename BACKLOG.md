@@ -384,3 +384,10 @@
   - [x] 失敗しても一時ファイルが残らない。異常終了で残った一時ファイルは次回の実行で掃除される
   - [x] 複数 DB の途中で失敗しても、先に処理した DB の前回の出力が変わらない
   - [x] README の「Failure handling」を新しい挙動に合わせて更新する
+
+## B-060 [done|P2] 統合テストの接続先ホストを環境変数で指定できるようにする
+- 概要: `task test:integration` が MySQL に接続するホストは `HOST` 引数（既定 `127.0.0.1`）でしか変えられない。Docker デーモンが別の場所にある環境では `host.docker.internal` が要り、毎回引数を付けるか worktree ごとに設定が要る。環境変数 `MYSQLDANCE_TEST_HOST` でも指定できるようにし、ユーザー単位の設定（`~/.claude/settings.json` の `env` やシェルの profile）に置けば worktree を作り直しても引き継がれるようにする。既定値は変えない。
+- 受け入れ条件:
+  - [x] 優先順位は `HOST` 引数 > `MYSQLDANCE_TEST_HOST` > `127.0.0.1` にする
+  - [x] `MYSQLDANCE_TEST_HOST` だけを指定して `task test:integration` が通る（8.0 と 8.4）
+  - [x] Taskfile のコメントに環境変数と優先順位を書く

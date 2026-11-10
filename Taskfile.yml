@@ -63,7 +63,9 @@ tasks:
   # `task test:integration PORT=33999 HOST=host.docker.internal`):
   #   PORT      host port published for MySQL (default 33061)
   #   HOST      address the tests dial to reach that port (default 127.0.0.1;
-  #             use host.docker.internal when the Docker daemon runs elsewhere)
+  #             use host.docker.internal when the Docker daemon runs elsewhere).
+  #             Falls back to the MYSQLDANCE_TEST_HOST environment variable, so
+  #             a per-user setting survives new worktrees.
   #   NAME      container name (default mysqldance-test)
   #   TIMEOUT   seconds to wait for the server to accept TCP (default 180)
   #   TESTFLAGS extra `go test` flags, e.g. TESTFLAGS=-v
@@ -81,7 +83,7 @@ tasks:
       vars: [VERSION]
     vars:
       PORT: '{{.PORT | default "33061"}}'
-      HOST: '{{.HOST | default "127.0.0.1"}}'
+      HOST: '{{.HOST | default .MYSQLDANCE_TEST_HOST | default "127.0.0.1"}}'
       NAME: '{{.NAME | default "mysqldance-test"}}'
       TIMEOUT: '{{.TIMEOUT | default "180"}}'
     cmds:
