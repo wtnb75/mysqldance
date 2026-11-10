@@ -522,3 +522,17 @@
 - 却下の理由: `isMariaDB` と同じ流儀の、パッケージごとのテスト用判定。テストが本番の判定を呼ぶと、本番が間違ったときにテストも一緒に間違う（「本番のコードは聞かない」という `isMariaDB` の方針）。
 - 初出: B-040
 - 再出: 0
+
+## R-073 特権テストのユーザー名がデータベース名の接尾辞から作られ、長さの上限を超えうる
+- 対象: internal/source/parallel_snapshot_test.go の TestParallelSnapshotPrivileges
+- 指摘: `mds_` / `mdr_` に DB 名の接尾辞を付けたユーザー名が、32 文字（5.7 と MariaDB は 16 文字）を超えて `CREATE USER` が失敗しうる。
+- 却下の理由: 接尾辞は `testDB` が作る 12 桁の 16 進数（`mysqldance_test_` + 6 バイト）で固定長。ユーザー名は 16 文字で、どの版の上限にも収まる。既存の `TestLockNeedsReloadPrivilege`（`mdance_` + 接尾辞）と同じ作り方で、8.0 と 8.4 で通った。
+- 初出: B-041
+- 再出: 0
+
+## R-074 B-041 で確かめていない版・環境（RELOAD を付けられない環境など）への対応が B-042 の受け入れ条件にない
+- 対象: BACKLOG.md の B-042、設計書 6.1
+- 指摘: `RELOAD` が無い環境でのフォールバックや明示的なエラーが B-042 の条件にない。「黙って落とさない」に反する。
+- 却下の理由: 失敗のシナリオがない。`RELOAD` が無いときは、今の `source.Open` が RELOAD と `--no-lock` を挙げたエラーで失敗する（`TestLockNeedsReloadPrivilege`）。並列取得も同じ `FLUSH TABLES WITH READ LOCK` を使うので、同じ経路を通る。確かめていない項目は設計書 6.1 に列挙した。B-041 の範囲は方式の検証で、B-042 の条件を変えるのは範囲外。
+- 初出: B-041
+- 再出: 0
