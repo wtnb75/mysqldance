@@ -36,13 +36,6 @@
   - [ ] グループまたは他ユーザーが読めるパスワードファイルを指定したときに警告を出す
   - [ ] README の使い方に `MYSQL_PWD` の注意を追記する
 
-## B-027 [todo|P2] タグでリリースする workflow を作る
-- 依存: B-025, B-032
-- 概要: `mcprt` の `tag.yml` に倣う。`v*` タグのプッシュで `goreleaser release --clean` を実行し、B-032 の設定に従ってバイナリ、チェックサム、変更履歴を GitHub Releases に出す。`permissions` は `contents: write` が必要。`fetch-depth: 0` で履歴を全部取る（変更履歴の生成に必要）。他の action は SHA で固定する。
-- 受け入れ条件:
-  - [ ] `v*` タグのプッシュで Releases にバイナリとチェックサムが出る
-  - [ ] テスト用のタグ（例: `v0.0.0-test`）で動作を確認してから、そのタグとリリースを削除する
-
 ## B-028 [todo|P3] コンテナイメージを GitHub Container Registry に公開する
 - 依存: B-027
 - 概要: `mcprt` は `Dockerfile` と goreleaser の `dockers_v2`（linux/amd64、linux/arm64、`ghcr.io`）で公開している。mysqldance も同じ形にするか、そもそもイメージが必要かを決める。必要なら、ブランチと `main` では `branch.yml` / `main.yml` のように `goreleaser build --snapshot` の成果物からイメージを作って push し、タグではリリースと同時に push する。
@@ -400,3 +393,10 @@
   - [x] `goreleaser build --snapshot --clean` で、全ての OS・アーキテクチャのバイナリが `dist/` にできる
   - [x] `mysqldance --version` で、ビルド時に渡したバージョンとコミットが表示される
   - [x] ローカルで試せるよう、`Taskfile.yml` に `task snapshot`（`goreleaser build --snapshot --clean`）を追加する
+
+## B-027 [done|P2] タグでリリースする workflow を作る
+- 概要: `mcprt` の `tag.yml` に倣う。`v*` タグのプッシュで `goreleaser release --clean` を実行し、B-032 の設定に従ってバイナリ、チェックサム、変更履歴を GitHub Releases に出す。`permissions` は `contents: write` が必要。`fetch-depth: 0` で履歴を全部取る（変更履歴の生成に必要）。他の action は SHA で固定する。
+- 前提: Docker 関連の step（buildx、ghcr.io へのログイン）と `packages: write` は B-028 で決めるので入れない。Go のバージョンは `go.mod` から取る（`actions/setup-go` の `go-version-file`）。goreleaser は `goreleaser/goreleaser-action` で、バージョンを `2.17.0` に固定する。テストタグ `v0.0.0-test` を push して Releases に 6 つのアーカイブと `checksums.txt` が出ること、チェックサムが一致することを確かめ、タグとリリースを削除した。
+- 受け入れ条件:
+  - [x] `v*` タグのプッシュで Releases にバイナリとチェックサムが出る
+  - [x] テスト用のタグ（例: `v0.0.0-test`）で動作を確認してから、そのタグとリリースを削除する

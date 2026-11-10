@@ -14,6 +14,8 @@ go build ./cmd/mysqldance
 
 To build release-style binaries for every supported OS and architecture (linux, darwin and windows on amd64 and arm64) into `dist/`, run `task snapshot` (requires [GoReleaser](https://goreleaser.com)).
 
+Pushing a tag that starts with `v` (for example `v1.0.0`) runs the `tag` workflow, which publishes a GitHub Release with the archives, `checksums.txt` and a changelog.
+
 ## Usage
 
 ```sh
