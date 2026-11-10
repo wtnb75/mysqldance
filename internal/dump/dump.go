@@ -168,6 +168,12 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	if err != nil {
 		return err
 	}
+	var defs map[string]source.TableDef
+	if opt.Writer.NeedsDefs() {
+		if defs, err = snap.Defs(ctx); err != nil {
+			return err
+		}
+	}
 
 	// Validate every file name before touching the directory.
 	schemaName := naming.SchemaFile(db)
@@ -189,7 +195,8 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 
 	if err := st.create(filepath.Join(opt.OutDir, schemaName), func(w io.Writer) error {
 		return opt.Writer.WriteSchema(w, writer.Schema{
-			DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps,
+			DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps, Defs: defs,
+			Warn: func(msg string) { _, _ = fmt.Fprintf(opt.Log, "warning: database %q: %s\n", db, msg) },
 		})
 	}); err != nil {
 		return err

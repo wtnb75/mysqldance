@@ -111,6 +111,14 @@ func mix32(h uint32) uint32 {
 // makes the statement reach MaxInsertBytes, and after the last row. Removing
 // one row therefore only affects boundaries next to it.
 func Write(w io.Writer, db, table string, columns []string, listColumns bool, rows [][]string, opt Options) error {
+	return WriteStatements(w, Header(db), "", table, columns, listColumns, rows, opt)
+}
+
+// WriteStatements is Write with the file's header and footer given by the
+// caller, for a target DBMS whose session statements differ from MySQL's. The
+// statements are the same multi-row INSERTs with backtick-quoted identifiers,
+// which SQLite also accepts.
+func WriteStatements(w io.Writer, header, footer, table string, columns []string, listColumns bool, rows [][]string, opt Options) error {
 	if opt.RowsPerInsert == 0 {
 		opt.RowsPerInsert = defaultRowsPerInsert
 	}
@@ -119,7 +127,7 @@ func Write(w io.Writer, db, table string, columns []string, listColumns bool, ro
 	}
 
 	bw := bufio.NewWriter(w)
-	if _, err := bw.WriteString(Header(db)); err != nil {
+	if _, err := bw.WriteString(header); err != nil {
 		return err
 	}
 
@@ -159,6 +167,9 @@ func Write(w io.Writer, db, table string, columns []string, listColumns bool, ro
 		if closeNow {
 			open = false
 		}
+	}
+	if _, err := bw.WriteString(footer); err != nil {
+		return err
 	}
 	return bw.Flush()
 }

@@ -2,7 +2,6 @@ package writer
 
 import (
 	"io"
-	"slices"
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/schemafile"
@@ -18,6 +17,9 @@ type MySQL struct {
 // NewMySQL returns a MySQL writer. opt controls the INSERT statements and the
 // splitting of large tables.
 func NewMySQL(opt datafile.Options) *MySQL { return &MySQL{data: opt} }
+
+// NeedsDefs implements Writer.
+func (m *MySQL) NeedsDefs() bool { return false }
 
 // WriteSchema implements Writer.
 func (m *MySQL) WriteSchema(w io.Writer, s Schema) error {
@@ -44,35 +46,8 @@ func (m *MySQL) WriteSchema(w io.Writer, s Schema) error {
 // All rows of the table are held in memory (typed and rendered) until the parts
 // are written; streaming is B-044 (review ledger R-030, R-044).
 func (m *MySQL) DataParts(db string, t source.TableInfo, rows [][]sqlvalue.Value) []Part {
-	cols := make([]string, len(t.Columns))
-	for i, c := range t.Columns {
-		cols[i] = c.Name
-	}
-	literals := make([][]string, len(rows))
-	for i, row := range rows {
-		literals[i] = sqlvalue.Literals(row)
-	}
-	groups := datafile.Split(literals, keyColumns(t), m.data.RowsPerFile)
-	parts := make([]Part, len(groups))
-	for i, group := range groups {
-		parts[i] = func(w io.Writer) error {
+	return splitParts(t, rows, m.data.RowsPerFile, sqlvalue.Literals,
+		func(w io.Writer, cols []string, group [][]string) error {
 			return datafile.Write(w, db, t.Name, cols, t.ListColumns, group, m.data)
-		}
-	}
-	return parts
-}
-
-// keyColumns returns the indexes in a row of the columns the rows of t are
-// ordered by, or nil when t has no such key or a key column is not part of the
-// row (a generated column), in which case the whole row is used.
-func keyColumns(t source.TableInfo) []int {
-	idx := make([]int, 0, len(t.OrderBy))
-	for _, k := range t.OrderBy {
-		at := slices.IndexFunc(t.Columns, func(c sqlvalue.Column) bool { return c.Name == k })
-		if at < 0 {
-			return nil
-		}
-		idx = append(idx, at)
-	}
-	return idx
+		})
 }

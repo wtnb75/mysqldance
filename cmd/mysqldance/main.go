@@ -17,6 +17,7 @@ import (
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/dump"
 	"mysqldance/internal/source"
+	"mysqldance/internal/writer"
 )
 
 // version and commit are set at build time by goreleaser through
@@ -29,6 +30,12 @@ var (
 func main() {
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
 }
+
+// The values of --target: the DBMS the output is written for.
+const (
+	targetMySQL  = "mysql"
+	targetSQLite = "sqlite"
+)
 
 // errUsage marks errors already reported by the flag package.
 var errUsage = errors.New("usage error")
@@ -120,6 +127,9 @@ The password is read from --password-file, else from MYSQL_PWD.
       --ssl-ca FILE          PEM file of CA certificates to verify the server
                              (with required, verify-ca or verify-identity)
   -o, --output DIR           output directory (required)
+      --target DBMS          mysql or sqlite: the DBMS the files are written for
+                             (default mysql). sqlite writes tables, indexes and
+                             data, not views; see the README
       --rows-per-insert N    average rows per INSERT statement (default 1000)
       --max-insert-bytes N   size cap of one INSERT statement (default 1048576)
       --rows-per-file N      split a table into files of N rows on average,
@@ -137,7 +147,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 
 	var (
 		host, user, socket, passwordFile, output string
-		sslMode, sslCA                           string
+		sslMode, sslCA, target                   string
 		noLock, showVersion                      bool
 		fileMode, dirMode                        string
 		port                                     int
@@ -156,6 +166,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.StringVar(&sslCA, "ssl-ca", "", "")
 	fs.StringVar(&output, "o", "", "")
 	fs.StringVar(&output, "output", "", "")
+	fs.StringVar(&target, "target", targetMySQL, "")
 	fs.Uint64Var(&rowsPerInsert, "rows-per-insert", 1000, "")
 	fs.IntVar(&maxInsertBytes, "max-insert-bytes", 1048576, "")
 	fs.Uint64Var(&rowsPerFile, "rows-per-file", 0, "")
@@ -181,6 +192,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 	switch {
 	case output == "":
 		return usage("-o/--output is required")
+	case target != targetMySQL && target != targetSQLite:
+		return usage("--target must be %s or %s, not %q", targetMySQL, targetSQLite, target)
 	case fs.NArg() == 0:
 		return usage("at least one database name is required")
 	case rowsPerInsert == 0 || rowsPerInsert > math.MaxUint32:
@@ -205,12 +218,19 @@ The password is read from --password-file, else from MYSQL_PWD.
 		return usage("--dir-mode: %v", err)
 	}
 
+	data := datafile.Options{RowsPerInsert: uint32(rowsPerInsert), MaxInsertBytes: maxInsertBytes, RowsPerFile: uint32(rowsPerFile)}
 	opt := dump.Options{
 		FileMode: fm,
 		DirMode:  dm,
 		DBs:      fs.Args(),
 		OutDir:   output,
-		Data:     datafile.Options{RowsPerInsert: uint32(rowsPerInsert), MaxInsertBytes: maxInsertBytes, RowsPerFile: uint32(rowsPerFile)},
+	}
+	// dump builds the MySQL writer from Data; another writer takes the options
+	// itself, and dump refuses both.
+	if target == targetSQLite {
+		opt.Writer = writer.NewSQLite(data)
+	} else {
+		opt.Data = data
 	}
 	opt.Source.Host, opt.Source.Port, opt.Source.Socket, opt.Source.User = host, port, socket, user
 	opt.Source.SSLMode, opt.Source.SSLCA = sslMode, sslCA

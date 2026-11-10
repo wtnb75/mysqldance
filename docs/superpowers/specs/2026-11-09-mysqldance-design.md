@@ -176,6 +176,7 @@ MySQL ドライバ・CLI ライブラリの選定、パッケージ構成、フ�
 - **MySQL 5.7 系など古いバージョンの対応**。
 - **並列取得**（スナップショットを複数接続で揃える方法を含む）。
 - **PostgreSQL / SQLite 向け出力**（boolean 変換、外部キーを後付けする順序など）。
+  - 【実装】SQLite は B-036 で対応した（`--target sqlite`）。ライタは `internal/writer` の `SQLite`。テーブル定義は `SHOW CREATE TABLE` を解析せず、`information_schema` から構造（`source.TableDef`）で読んで組み立てる。構造が要るライタだけが `Writer.NeedsDefs()` で `true` を返し、`dump` がその時だけ `Snapshot.Defs` を呼ぶ。MySQL の出力は変わらない。写せないもの（ビュー、生成列、`ON UPDATE`、式の既定値、FULLTEXT / SPATIAL / 式のインデックス、CHECK、他 DB への外部キー）は警告して出力しない。値の正確さを優先し、`DECIMAL` / `BIGINT UNSIGNED` / `BIT(64)` は `TEXT` にして文字列で書く（SQLite が桁あふれを `REAL` にして値を変えるため）。1 レコード 1 行を保つため、文字列中の改行は `'a'||char(10)||'b'` と書く。ビューの変換は B-062。PostgreSQL は B-035 で、同じ `--target` に値を足す。
 - **巨大テーブルの主キー範囲による分割出力**（ファイル名末尾に番号を足す）。
 - **大規模データ向けのストリーム処理**（主キーなしテーブルのソートを含む）。
 - **トリガー、ストアドルーチン、イベントのダンプ**。
