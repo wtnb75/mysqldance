@@ -94,8 +94,8 @@ tasks:
     cmds:
       # Registered first so the container is removed whether a later step
       # fails or the run is interrupted.
-      - defer: docker rm -f {{.NAME}} >/dev/null 2>&1 || true
-      - docker rm -f {{.NAME}} >/dev/null 2>&1 || true
+      - defer: docker rm -fv {{.NAME}} >/dev/null 2>&1 || true
+      - docker rm -fv {{.NAME}} >/dev/null 2>&1 || true
       - docker run -d --name {{.NAME}} -e MYSQL_ROOT_PASSWORD=root -p 127.0.0.1:{{.PORT}}:3306 mysql:{{.VERSION}}
       # The entrypoint's temporary init server has networking disabled, so a
       # TCP ping only succeeds once the real server is up.
