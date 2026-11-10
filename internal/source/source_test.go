@@ -41,8 +41,9 @@ func TestRowsPrimaryKeyOrder(t *testing.T) {
 	// A collation whose order differs from the binary one: as_cs orders a/A
 	// next to each other (binary order is A, B, a). MariaDB has no as_cs, so
 	// it uses a case-insensitive one (binary order is B, a, c) on other rows.
+	// MySQL 5.7 has no utf8mb4_0900 collations and does the same.
 	collation, strRows, wantStrs := "utf8mb4_0900_as_cs", "('a'),('B'),('A')", [][]string{{"'A'"}, {"'B'"}, {"'a'"}}
-	if isMariaDB(t, conn) {
+	if isMariaDB(t, conn) || isMySQL57(t, conn) {
 		collation, strRows, wantStrs = "utf8mb4_general_ci", "('a'),('B'),('c')", [][]string{{"'B'"}, {"'a'"}, {"'c'"}}
 	}
 	mustExec(t, conn,
@@ -123,11 +124,18 @@ func TestRowsNoKeyDuplicates(t *testing.T) {
 
 func TestGeneratedAndInvisibleColumns(t *testing.T) {
 	cfg, db, conn := testDB(t)
+	// MySQL 5.7 has no INVISIBLE columns: the table has generated ones only.
+	invisible, cols, want := " h INT INVISIBLE,", "id, a, h, c", [][]string{{"1", "5", "7", "'2024-01-02 03:04:05'"}}
+	wantNames, vals := []string{"id", "a", "h", "c"}, "1, 5, 7, '2024-01-02 03:04:05'"
+	if isMySQL57(t, conn) {
+		invisible, cols, vals = "", "id, a, c", "1, 5, '2024-01-02 03:04:05'"
+		wantNames, want = []string{"id", "a", "c"}, [][]string{{"1", "5", "'2024-01-02 03:04:05'"}}
+	}
 	mustExec(t, conn,
 		"CREATE TABLE g (id INT PRIMARY KEY, a INT,"+
 			" v INT AS (a * 2) VIRTUAL, st INT AS (a + 1) STORED,"+
-			" h INT INVISIBLE, c DATETIME DEFAULT CURRENT_TIMESTAMP)",
-		"INSERT INTO g (id, a, h, c) VALUES (1, 5, 7, '2024-01-02 03:04:05')",
+			invisible+" c DATETIME DEFAULT CURRENT_TIMESTAMP)",
+		"INSERT INTO g ("+cols+") VALUES ("+vals+")",
 	)
 	s := openSnapshot(t, cfg, db)
 	g := tableByName(t, s, "g")
@@ -135,13 +143,12 @@ func TestGeneratedAndInvisibleColumns(t *testing.T) {
 	for _, c := range g.Columns {
 		names = append(names, c.Name)
 	}
-	if want := []string{"id", "a", "h", "c"}; !reflect.DeepEqual(names, want) {
-		t.Errorf("Columns = %v, want %v", names, want)
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Errorf("Columns = %v, want %v", names, wantNames)
 	}
 	if !g.ListColumns {
 		t.Error("ListColumns = false, want true")
 	}
-	want := [][]string{{"1", "5", "7", "'2024-01-02 03:04:05'"}}
 	if got := rowsOf(t, s, "g"); !reflect.DeepEqual(got, want) {
 		t.Errorf("rows = %v, want %v", got, want)
 	}

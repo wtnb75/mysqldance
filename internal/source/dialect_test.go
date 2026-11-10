@@ -9,7 +9,8 @@ import (
 )
 
 func TestDialectFor(t *testing.T) {
-	for _, v := range []string{"8.0.46", "8.4.13", "9.1.0", "8.0.46-0ubuntu0.22.04.1"} {
+	// "8" has no minor part; it was accepted before 5.7 was.
+	for _, v := range []string{"8.0.46", "8.4.13", "9.1.0", "8.0.46-0ubuntu0.22.04.1", "8", "9"} {
 		d, err := dialectFor(v)
 		if err != nil {
 			t.Errorf("dialectFor(%q): %v", v, err)
@@ -38,9 +39,69 @@ func TestDialectFor(t *testing.T) {
 			}
 		}
 	}
-	for _, v := range []string{"5.7.44", "garbage", ""} {
+	for _, v := range []string{"5.6.51", "5.5.62", "5", "5.8.0", "7.9.0", "garbage", ""} {
 		if _, err := dialectFor(v); err == nil {
 			t.Errorf("dialectFor(%q) succeeded, want an error", v)
+		}
+	}
+}
+
+// TestDialectForMySQL57 covers MySQL 5.7 (5.7.44 was checked): no
+// show_create_table_verbosity (5.7.21 and earlier lack it, so 5.7 never sets
+// it), and views are ordered from VIEW_DEFINITION.
+func TestDialectForMySQL57(t *testing.T) {
+	for _, v := range []string{"5.7.44", "5.7.21", "5.7.44-log", "5.7.44-0ubuntu0.18.04.1"} {
+		d, err := dialectFor(v)
+		if err != nil {
+			t.Errorf("dialectFor(%q): %v", v, err)
+			continue
+		}
+		for _, stmt := range d.session {
+			if strings.Contains(stmt, "show_create_table_verbosity") {
+				t.Errorf("dialectFor(%q).session has %q, which 5.7.21 and earlier do not know", v, stmt)
+			}
+		}
+		for _, want := range []string{"SET SESSION sql_mode = ''", "SET SESSION sql_quote_show_create = 1", "SET NAMES utf8mb4"} {
+			if !slices.Contains(d.session, want) {
+				t.Errorf("dialectFor(%q).session = %q, want %q", v, d.session, want)
+			}
+		}
+		if reflect.ValueOf(d.viewDeps).Pointer() != reflect.ValueOf(viewDefinitions).Pointer() {
+			t.Errorf("dialectFor(%q).viewDeps is not viewDefinitions (5.7 has no VIEW_TABLE_USAGE)", v)
+		}
+	}
+}
+
+// TestMySQL57ColumnDefault covers COLUMN_DEFAULT on 5.7.44: EXTRA has no
+// DEFAULT_GENERATED, so only DATA_TYPE tells an expression from a string.
+func TestMySQL57ColumnDefault(t *testing.T) {
+	d, err := dialectFor("5.7.44")
+	if err != nil {
+		t.Fatal(err)
+	}
+	val := func(s string) sql.NullString { return sql.NullString{String: s, Valid: true} }
+	tests := []struct {
+		name     string
+		raw      sql.NullString
+		dataType string
+		extra    string
+		want     *string
+		wantExp  bool
+	}{
+		{"no default", sql.NullString{}, "int", "", nil, false},
+		{"plain", val("x"), "varchar", "", new("x"), false},
+		{"timestamp", val("CURRENT_TIMESTAMP"), "timestamp", "", new("CURRENT_TIMESTAMP"), true},
+		{"timestamp with precision", val("CURRENT_TIMESTAMP(6)"), "timestamp", "", new("CURRENT_TIMESTAMP(6)"), true},
+		{"datetime on update", val("CURRENT_TIMESTAMP(3)"), "datetime", "on update CURRENT_TIMESTAMP(3)", new("CURRENT_TIMESTAMP(3)"), true},
+		{"varchar string stays a string", val("CURRENT_TIMESTAMP"), "varchar", "", new("CURRENT_TIMESTAMP"), false},
+		{"char string stays a string", val("CURRENT_TIMESTAMP(6)"), "char", "", new("CURRENT_TIMESTAMP(6)"), false},
+		{"timestamp constant", val("2020-01-02 03:04:05"), "timestamp", "", new("2020-01-02 03:04:05"), false},
+		{"datetime zero", val("0000-00-00 00:00:00"), "datetime", "", new("0000-00-00 00:00:00"), false},
+	}
+	for _, tc := range tests {
+		got, isExp := d.columnDefault(tc.raw, tc.dataType, tc.extra)
+		if !reflect.DeepEqual(got, tc.want) || isExp != tc.wantExp {
+			t.Errorf("%s: columnDefault(%q, %q) = %v, %v; want %v, %v", tc.name, tc.raw.String, tc.dataType, deref(got), isExp, deref(tc.want), tc.wantExp)
 		}
 	}
 }
@@ -81,7 +142,7 @@ func TestColumnDefault(t *testing.T) {
 		{"timestamp", val("CURRENT_TIMESTAMP"), "DEFAULT_GENERATED on update CURRENT_TIMESTAMP", new("CURRENT_TIMESTAMP"), true},
 	}
 	for _, tc := range tests {
-		got, isExp := mysql8.columnDefault(tc.raw, tc.extra)
+		got, isExp := mysql8.columnDefault(tc.raw, "timestamp", tc.extra)
 		if !reflect.DeepEqual(got, tc.want) || isExp != tc.wantIsExp {
 			t.Errorf("mysql %s: = %v, %v; want %v, %v", tc.name, deref(got), isExp, deref(tc.want), tc.wantIsExp)
 		}
@@ -134,13 +195,13 @@ func TestMariaDBColumnDefault(t *testing.T) {
 		{"parenthesized expression", val("(`r` + 1)"), new("(`r` + 1)"), true},
 	}
 	for _, tc := range tests {
-		got, isExp := d.columnDefault(tc.raw, "")
+		got, isExp := d.columnDefault(tc.raw, "varchar", "")
 		if !reflect.DeepEqual(got, tc.want) || isExp != tc.wantExp {
 			t.Errorf("%s: columnDefault(%q) = %v, %v; want %v, %v", tc.name, tc.raw.String, deref(got), isExp, deref(tc.want), tc.wantExp)
 		}
 	}
 	// ON UPDATE and AUTO_INCREMENT in EXTRA do not make a default an expression.
-	if got, isExp := d.columnDefault(val("'x'"), "on update current_timestamp()"); got == nil || *got != "x" || isExp {
+	if got, isExp := d.columnDefault(val("'x'"), "varchar", "on update current_timestamp()"); got == nil || *got != "x" || isExp {
 		t.Errorf("EXTRA changed a quoted default: %v, %v", deref(got), isExp)
 	}
 }

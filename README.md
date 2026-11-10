@@ -4,7 +4,7 @@
 
 A CLI that connects directly to MySQL and writes databases to a flat directory of SQL files with **one record per line and fully deterministic output**. The same data always produces the same bytes, so you can keep dumps in Git and review diffs, or hand them straight to the official MySQL Docker image's `/docker-entrypoint-initdb.d` to restore.
 
-Targets MySQL 8.0 and later (including 8.4) and MariaDB (tested on 10.11 and 11.4; see [MariaDB](#mariadb)). MySQL 5.7 is not supported.
+Targets MySQL 8.0 and later (including 8.4), MariaDB (tested on 10.11 and 11.4; see [MariaDB](#mariadb)) and MySQL 5.7 (tested on 5.7.44 only; see [MySQL 5.7](#mysql-57)). MySQL 5.6 and earlier are not supported.
 
 ## Build
 
@@ -141,6 +141,18 @@ A server that reports itself as MariaDB is read as MariaDB. It is not rejected b
 - **Sequences and system-versioned tables stop the run.** A `SEQUENCE` and a table `WITH SYSTEM VERSIONING` (`information_schema.TABLES.TABLE_TYPE` `SEQUENCE` / `SYSTEM VERSIONED`) are not output, and a plain `SELECT` would lose the history rows of the latter, so the run fails before any file is changed (see [Failure handling](#failure-handling)) and names the table. Drop it, or dump from a database without it.
 - **Defaults** are read as MariaDB reports them, so `--target sqlite` and `--target postgres` get the same `DEFAULT` clauses as from MySQL (`current_timestamp()` becomes `CURRENT_TIMESTAMP`; other expression defaults are left out with a warning).
 
+### MySQL 5.7
+
+A server whose version starts with `5.7.` is read as MySQL 5.7. **Only 5.7.44 was tested** (the session settings were also tried on 5.7.21); other 5.7 releases are untested, and 5.6 and earlier are refused.
+
+- **The output is 5.7's own.** `CREATE TABLE` is written as 5.7's `SHOW CREATE` prints it: integers keep their display width (`int(11)`, `bigint(20) unsigned`), and a database or table made with the stock `latin1` default says `DEFAULT CHARSET=latin1`. No conversion is made. Rows are read as `utf8mb4`, so the data of a `latin1` column is exact. The default `--target mysql` output restores into 5.7, and into MySQL 8.4 for the schemas tested; a zero-date default such as `DEFAULT '0000-00-00 00:00:00'` (a `TIMESTAMP NOT NULL` column when `explicit_defaults_for_timestamp` is `OFF`, the 5.7 default) has not been checked against 8.x.
+- **`show_create_table_verbosity` is not set.** 5.7.21 and earlier do not have it, and the version is not told apart. On 5.7.22 and later a server with the variable set to `ON` globally adds the default `ROW_FORMAT` to `SHOW CREATE TABLE`, so the output follows that setting (this is untested).
+- **Views** are ordered by their dependencies, which are read from `information_schema.VIEWS` (5.7 has no `VIEW_TABLE_USAGE`), as for MariaDB. The account needs the `SHOW VIEW` privilege.
+- **Defaults** `CURRENT_TIMESTAMP` and `CURRENT_TIMESTAMP(n)` of a `TIMESTAMP` or `DATETIME` column are expressions, so `--target sqlite` and `--target postgres` get `DEFAULT CURRENT_TIMESTAMP` as from 8.x. The same text in a string column stays a string.
+- **Foreign keys** without `ON DELETE` / `ON UPDATE` are reported by 5.7 as `RESTRICT`, and by 8.x as `NO ACTION`. `--target sqlite` and `--target postgres` write the word the server reports, so the same schema gives `RESTRICT` from 5.7 and `NO ACTION` from 8.x. Both load in SQLite and PostgreSQL, and they differ only in when PostgreSQL checks them (not with a deferred constraint).
+- 5.7 has no `INVISIBLE` columns, expression keys or `CHECK` constraints (a `CHECK` is parsed and dropped by the server), and it ignores `DESC` in an index, so none of them is in the output.
+- **TLS:** the official 5.7 image offers only RSA key exchange cipher suites, which Go 1.22 and later do not enable by default, so the default `--ssl-mode preferred` fails with `tls: handshake failure` against it (it does not fall back to clear text). Use `--ssl-mode disabled`, or run `mysqldance` with `GODEBUG=tlsrsakex=1` (the integration tests do). The 5.7.21 image offers TLS 1.1 at most, below the TLS 1.2 minimum, so it needs `--ssl-mode disabled`.
+
 ### Splitting large tables
 
 With `--rows-per-file N`, the rows of a table (already in the order described under "Determinism and ordering") are cut into several data files, so that one huge file does not have to be reviewed or stored as a whole. By default (`0`) nothing is split.
@@ -215,7 +227,7 @@ A dump contains the table data itself, which may include personal information or
 
 ## Limitations (out of scope for the MVP)
 
-- Parallel fetching, source servers other than MySQL 8.0 and later and MariaDB (MySQL 5.7 and earlier), and output for DBMSs other than MySQL, SQLite and PostgreSQL.
+- Parallel fetching, source servers other than MySQL 5.7 and later and MariaDB (MySQL 5.6 and earlier), and output for DBMSs other than MySQL, SQLite and PostgreSQL.
 - Streaming for huge tables. `--rows-per-file` splits the output, but all rows of a table are still read into memory before being written (the intended scale is about 10 tables per database and up to about 100,000 rows).
 - Triggers, stored routines, events, and users and privileges.
 - Flags must be placed before the database names.
@@ -226,6 +238,7 @@ A dump contains the table data itself, which may include personal information or
 task test                                   # unit tests (no MySQL needed; integration tests are skipped)
 task test:integration                       # start MySQL 8.0 and 8.4 in Docker and run integration tests
 task test:integration:mariadb               # the same against MariaDB 10.11 and 11.4 (not part of the line above)
+task test:integration:mysql57               # the same against MySQL 5.7.44 (amd64 image, so slow to start on arm64; not part of the line above)
 task test:integration HOST=host.docker.internal TESTFLAGS=-v   # when the Docker daemon is on another host
 task lint                                   # golangci-lint
 ```

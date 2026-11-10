@@ -34,15 +34,23 @@ import (
 // returns the parsed DSN. It skips the test when the variable is empty.
 func testConfig(t *testing.T) (source.Config, *mysql.Config) {
 	t.Helper()
-	dsn := os.Getenv("MYSQLDANCE_TEST_DSN")
+	return configFromDSN(t, "MYSQLDANCE_TEST_DSN")
+}
+
+// configFromDSN is testConfig for the DSN in environment variable name.
+func configFromDSN(t *testing.T, name string) (source.Config, *mysql.Config) {
+	t.Helper()
+	dsn := os.Getenv(name)
 	if dsn == "" {
-		t.Skip("MYSQLDANCE_TEST_DSN is not set")
+		t.Skip(name + " is not set")
 	}
 	mc, err := mysql.ParseDSN(dsn)
 	if err != nil {
-		t.Fatalf("parse MYSQLDANCE_TEST_DSN: %v", err)
+		t.Fatalf("parse %s: %v", name, err)
 	}
-	cfg := source.Config{User: mc.User, Password: mc.Passwd}
+	// MYSQLDANCE_TEST_SSL_MODE=disabled for a server that offers no TLS 1.2
+	// (MySQL 5.7.21).
+	cfg := source.Config{User: mc.User, Password: mc.Passwd, SSLMode: os.Getenv("MYSQLDANCE_TEST_SSL_MODE")}
 	if mc.Net == "unix" {
 		cfg.Socket = mc.Addr
 		return cfg, mc
@@ -69,6 +77,19 @@ type env struct {
 func newEnv(t *testing.T) *env {
 	t.Helper()
 	cfg, mc := testConfig(t)
+	return openEnv(t, cfg, mc)
+}
+
+// newRestoreEnv is newEnv for the second server of MYSQLDANCE_TEST_RESTORE_DSN
+// (MySQL 8.4 in test:integration:mysql57); it skips the test when none is set.
+func newRestoreEnv(t *testing.T) *env {
+	t.Helper()
+	cfg, mc := configFromDSN(t, "MYSQLDANCE_TEST_RESTORE_DSN")
+	return openEnv(t, cfg, mc)
+}
+
+func openEnv(t *testing.T, cfg source.Config, mc *mysql.Config) *env {
+	t.Helper()
 	db, err := sql.Open("mysql", mc.FormatDSN())
 	if err != nil {
 		t.Fatal(err)
@@ -95,12 +116,19 @@ func uniqueName(t *testing.T) string {
 // admin connection's default database.
 func (e *env) createDB(t *testing.T, name string) {
 	t.Helper()
+	e.createDBWith(t, name, "")
+}
+
+// createDBWith is createDB with extra options after the name, e.g.
+// " CHARACTER SET latin1".
+func (e *env) createDBWith(t *testing.T, name, options string) {
+	t.Helper()
 	t.Cleanup(func() {
 		if _, err := e.admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+sqlvalue.QuoteIdent(name)); err != nil {
 			t.Errorf("drop database %s: %v", name, err)
 		}
 	})
-	e.exec(t, "CREATE DATABASE "+sqlvalue.QuoteIdent(name), "USE "+sqlvalue.QuoteIdent(name))
+	e.exec(t, "CREATE DATABASE "+sqlvalue.QuoteIdent(name)+options, "USE "+sqlvalue.QuoteIdent(name))
 }
 
 func (e *env) exec(t *testing.T, stmts ...string) {
@@ -331,15 +359,23 @@ func TestRoundTrip(t *testing.T) {
 		// Only a nullable unique key, holding several NULLs.
 		"CREATE TABLE nuniq (u INT NULL, v VARCHAR(5), UNIQUE KEY uk (u))",
 		"INSERT INTO nuniq VALUES (NULL, 'b'), (2, 'x'), (NULL, 'a'), (NULL, 'a'), (1, NULL)",
-		// Generated and INVISIBLE columns need an explicit column list.
-		"CREATE TABLE gen (id INT PRIMARY KEY, x INT, y INT AS (x * 2) STORED, z INT INVISIBLE)",
-		"INSERT INTO gen (id, x, z) VALUES (1, 2, 3), (2, NULL, NULL)",
 		"CREATE TABLE my (id INT PRIMARY KEY, v VARCHAR(5)) ENGINE=MyISAM",
 		"INSERT INTO my VALUES (1, 'm')",
 		// a_top depends on z_base, so name order is not creation order.
 		"CREATE VIEW z_base AS SELECT id, s FROM strs",
 		"CREATE VIEW a_top AS SELECT id FROM z_base WHERE id > 0",
 	)
+	// Generated and INVISIBLE columns need an explicit column list. MySQL 5.7
+	// has no INVISIBLE columns.
+	if e.isMySQL57(t) {
+		e.exec(t,
+			"CREATE TABLE gen (id INT PRIMARY KEY, x INT, y INT AS (x * 2) STORED)",
+			"INSERT INTO gen (id, x) VALUES (1, 2), (2, NULL)")
+	} else {
+		e.exec(t,
+			"CREATE TABLE gen (id INT PRIMARY KEY, x INT, y INT AS (x * 2) STORED, z INT INVISIBLE)",
+			"INSERT INTO gen (id, x, z) VALUES (1, 2, 3), (2, NULL, NULL)")
+	}
 	if _, err := e.admin.ExecContext(context.Background(), "INSERT INTO strs (s) VALUES (?)",
 		"back\\slash 'single' \"double\"\nnew\r\x00nul\x1a end 日本語 😀"); err != nil {
 		t.Fatal(err)
@@ -963,21 +999,31 @@ func TestColumnPrivilegesRefused(t *testing.T) {
 	e := newEnv(t)
 	db := uniqueName(t)
 	e.createDB(t, db)
-	e.exec(t,
-		"CREATE TABLE cp (id INT PRIMARY KEY, a INT, g INT AS (a * 2) VIRTUAL, h INT INVISIBLE, s INT)",
-		"INSERT INTO cp (id, a, h, s) VALUES (1, 2, 3, 4)",
-		"CREATE TABLE ok (id INT PRIMARY KEY)",
-	)
 	showView := "SHOW VIEW ON " + sqlvalue.QuoteIdent(db) + ".*"
-	for name, c := range map[string]struct {
+	type grantCase struct {
 		grants  []string
 		missing string // column the error must name, if any
-	}{
-		// Every visible column but the INVISIBLE one: SELECT * would succeed.
-		"invisible missing":  {[]string{"SELECT (id, a, g, s) ON " + sqlvalue.QuoteIdent(db) + ".cp", showView}, "`h`"},
+	}
+	cases := map[string]grantCase{
 		"visible missing":    {[]string{"SELECT (id, a, g) ON " + sqlvalue.QuoteIdent(db) + ".cp", showView}, "`s`"},
 		"column grants only": {[]string{"SELECT (id, a, g, s) ON " + sqlvalue.QuoteIdent(db) + ".cp"}, ""},
-	} {
+	}
+	if e.isMySQL57(t) {
+		// MySQL 5.7 has no INVISIBLE columns.
+		e.exec(t,
+			"CREATE TABLE cp (id INT PRIMARY KEY, a INT, g INT AS (a * 2) VIRTUAL, s INT)",
+			"INSERT INTO cp (id, a, s) VALUES (1, 2, 4)",
+		)
+	} else {
+		e.exec(t,
+			"CREATE TABLE cp (id INT PRIMARY KEY, a INT, g INT AS (a * 2) VIRTUAL, h INT INVISIBLE, s INT)",
+			"INSERT INTO cp (id, a, h, s) VALUES (1, 2, 3, 4)",
+		)
+		// Every visible column but the INVISIBLE one: SELECT * would succeed.
+		cases["invisible missing"] = grantCase{[]string{"SELECT (id, a, g, s) ON " + sqlvalue.QuoteIdent(db) + ".cp", showView}, "`h`"}
+	}
+	e.exec(t, "CREATE TABLE ok (id INT PRIMARY KEY)")
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			user := "md_" + uniqueName(t)[len("mysqldance_dump_"):]
 			account := sqlvalue.QuoteIdent(user) + "@'%'"

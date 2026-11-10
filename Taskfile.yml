@@ -97,11 +97,50 @@ tasks:
       - task: test:integration:one
         vars: { IMAGE: "mariadb:11.4", ROOT_ENV: MARIADB_ROOT_PASSWORD, ADMIN: mariadb-admin, VERSION: "11.4" }
 
+  # MySQL 5.7 is not part of test:integration either: run it when the dialect,
+  # the session settings or the catalog queries change. Only 5.7.44 is checked.
+  # The image exists for linux/amd64 only, so it runs under emulation on an
+  # arm64 Docker host (slow to start; hence the longer TIMEOUT).
+  #   - The server runs with utf8mb4 (its default is latin1, which cannot hold
+  #     the test data); the tests of the latin1 default create their own
+  #     latin1 database.
+  #   - GODEBUG=tlsrsakex=1: the 5.7 image offers only TLS_RSA_* cipher suites,
+  #     which Go 1.22 and later do not enable, so the default --ssl-mode
+  #     (preferred) fails with "tls: handshake failure" without it.
+  #   - A MySQL 8.4 server is started next to it (RESTORE_IMAGE) for the test
+  #     that restores a 5.7 dump into 8.4.
+  # Set VERSION=5.7.21 to run the same suite on 5.7.21 (no
+  # show_create_table_verbosity) with --ssl-mode disabled; the two tests of TLS
+  # itself fail there.
+  test:integration:mysql57:
+    desc: Run tests against MySQL 5.7.44 (and 8.4 for the restore test, PostgreSQL 17) started via Docker
+    vars:
+      VERSION: '{{.VERSION | default "5.7.44"}}'
+    cmds:
+      - task: test:integration:one
+        vars:
+          IMAGE: "mysql:{{.VERSION}}"
+          VERSION: "{{.VERSION}}"
+          PLATFORM: "linux/amd64"
+          TIMEOUT: "600"
+          SERVER_ARGS: "--character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci"
+          GODEBUG: "tlsrsakex=1"
+          # 5.7.21 offers TLS 1.1 at most, below the TLS 1.2 the tool requires.
+          SSL_MODE: '{{if eq .VERSION "5.7.21"}}disabled{{end}}'
+          RESTORE_IMAGE: "mysql:8.4"
+
   test:integration:one:
     internal: true
     requires:
       vars: [VERSION]
     vars:
+      # Set for an image that exists for one platform only (MySQL 5.7).
+      PLATFORM_FLAG: '{{if .PLATFORM}}--platform {{.PLATFORM}}{{end}}'
+      # Arguments for the server, GODEBUG for the test binaries, and a second
+      # MySQL image to restore dumps into (MYSQLDANCE_TEST_RESTORE_DSN).
+      SERVER_ARGS: '{{.SERVER_ARGS | default ""}}'
+      GODEBUG_ENV: '{{if .GODEBUG}}GODEBUG={{.GODEBUG}}{{end}}'
+      RESTORE_PORT: '{{.RESTORE_PORT | default "33063"}}'
       # The server image and the names of its root-password variable and its
       # ping tool; MySQL by default. The MariaDB 11 image has no mysqladmin.
       IMAGE: '{{.IMAGE | default (printf "mysql:%s" .VERSION)}}'
@@ -115,10 +154,14 @@ tasks:
     cmds:
       # Registered first so the container is removed whether a later step
       # fails or the run is interrupted.
-      - defer: docker rm -fv {{.NAME}} {{.NAME}}-pg >/dev/null 2>&1 || true
-      - docker rm -fv {{.NAME}} {{.NAME}}-pg >/dev/null 2>&1 || true
-      - docker run -d --name {{.NAME}} -e {{.ROOT_ENV}}=root -p 127.0.0.1:{{.PORT}}:3306 {{.IMAGE}}
+      - defer: docker rm -fv {{.NAME}} {{.NAME}}-pg {{.NAME}}-restore >/dev/null 2>&1 || true
+      - docker rm -fv {{.NAME}} {{.NAME}}-pg {{.NAME}}-restore >/dev/null 2>&1 || true
+      - docker run -d {{.PLATFORM_FLAG}} --name {{.NAME}} -e {{.ROOT_ENV}}=root -p 127.0.0.1:{{.PORT}}:3306 {{.IMAGE}} {{.SERVER_ARGS}}
       - docker run -d --name {{.NAME}}-pg -e POSTGRES_PASSWORD=pg -p 127.0.0.1:{{.PG_PORT}}:5432 postgres:17
+      - |
+        if [ -n "{{.RESTORE_IMAGE}}" ]; then
+          docker run -d --name {{.NAME}}-restore -e MYSQL_ROOT_PASSWORD=root -p 127.0.0.1:{{.RESTORE_PORT}}:3306 {{.RESTORE_IMAGE}}
+        fi
       # The entrypoint's temporary init server has networking disabled, so a
       # TCP ping only succeeds once the real server is up.
       - |
@@ -147,4 +190,23 @@ tasks:
           fi
           sleep 1
         done
-      - MYSQLDANCE_TEST_DSN='root:root@tcp({{.HOST}}:{{.PORT}})/' MYSQLDANCE_TEST_PG_DSN='postgres://postgres:pg@{{.HOST}}:{{.PG_PORT}}/postgres?sslmode=disable' go test -count=1 {{.TESTFLAGS}} ./...
+      - |
+        if [ -n "{{.RESTORE_IMAGE}}" ]; then
+          echo "waiting for the restore server {{.RESTORE_IMAGE}}..."
+          i=0
+          until docker exec {{.NAME}}-restore mysqladmin ping -h 127.0.0.1 -uroot -proot --silent >/dev/null 2>&1; do
+            i=$((i + 1))
+            if [ "$i" -ge {{.TIMEOUT}} ]; then
+              echo "{{.RESTORE_IMAGE}} did not become ready within {{.TIMEOUT}}s" >&2
+              docker logs --tail 20 {{.NAME}}-restore >&2
+              exit 1
+            fi
+            sleep 1
+          done
+        fi
+      - |
+        restore_dsn=""
+        if [ -n "{{.RESTORE_IMAGE}}" ]; then
+          restore_dsn='root:root@tcp({{.HOST}}:{{.RESTORE_PORT}})/'
+        fi
+        env {{.GODEBUG_ENV}} MYSQLDANCE_TEST_SSL_MODE='{{.SSL_MODE}}' MYSQLDANCE_TEST_DSN='root:root@tcp({{.HOST}}:{{.PORT}})/' MYSQLDANCE_TEST_RESTORE_DSN="$restore_dsn" MYSQLDANCE_TEST_PG_DSN='postgres://postgres:pg@{{.HOST}}:{{.PG_PORT}}/postgres?sslmode=disable' go test -count=1 {{.TESTFLAGS}} ./...
