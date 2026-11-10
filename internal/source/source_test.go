@@ -2,9 +2,12 @@ package source
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+
+	"mysqldance/internal/sqlvalue"
 )
 
 func TestOpenRejectsSystemDatabase(t *testing.T) {
@@ -65,6 +68,58 @@ func TestRowsPrimaryKeyOrder(t *testing.T) {
 
 	if got := rowsOf(t, s, "strs"); !reflect.DeepEqual(got, wantStrs) {
 		t.Errorf("strs rows = %v, want %v", got, wantStrs)
+	}
+}
+
+func TestEachRowMatchesRows(t *testing.T) {
+	cfg, db, conn := testDB(t)
+	mustExec(t, conn,
+		"CREATE TABLE keyed (id INT PRIMARY KEY, v VARCHAR(10))",
+		"INSERT INTO keyed VALUES (3,'c'),(1,'a'),(10,'j'),(2,'b')",
+		"CREATE TABLE nokey (n INT, s VARCHAR(5))",
+		"INSERT INTO nokey VALUES (2,'b'),(10,'a'),(2,'b')",
+		"CREATE TABLE norows (id INT PRIMARY KEY)",
+	)
+	s := openSnapshot(t, cfg, db)
+	for _, name := range []string{"keyed", "nokey", "norows"} {
+		ti := tableByName(t, s, name)
+		var got [][]string
+		err := s.EachRow(context.Background(), ti, func(row []sqlvalue.Value) error {
+			got = append(got, sqlvalue.Literals(row))
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if want := rowsOf(t, s, name); !reflect.DeepEqual(got, want) && (len(got) != 0 || len(want) != 0) {
+			t.Errorf("%s: EachRow = %v, Rows = %v", name, got, want)
+		}
+	}
+}
+
+func TestEachRowStopsOnCallbackError(t *testing.T) {
+	cfg, db, conn := testDB(t)
+	mustExec(t, conn,
+		"CREATE TABLE keyed (id INT PRIMARY KEY)",
+		"INSERT INTO keyed VALUES (1),(2),(3),(4)",
+	)
+	s := openSnapshot(t, cfg, db)
+	ti := tableByName(t, s, "keyed")
+	boom := errors.New("boom")
+	calls := 0
+	err := s.EachRow(context.Background(), ti, func([]sqlvalue.Value) error {
+		calls++
+		if calls == 2 {
+			return boom
+		}
+		return nil
+	})
+	if !errors.Is(err, boom) || calls != 2 {
+		t.Fatalf("err = %v after %d calls, want boom after 2", err, calls)
+	}
+	// The snapshot stays usable after the aborted read.
+	if got := rowsOf(t, s, "keyed"); len(got) != 4 {
+		t.Fatalf("rows after abort = %v", got)
 	}
 }
 
@@ -319,15 +374,12 @@ func TestWarningsLargeTable(t *testing.T) {
 	t.Cleanup(func() { largeTableRows = orig })
 	s := openSnapshot(t, cfg, db)
 	w := warningsOf(t, s)
-	if len(w) != 2 {
-		t.Fatalf("Warnings = %q, want one per table", w)
+	// A table with a key is streamed, so its size is no reason to warn.
+	if len(w) != 1 {
+		t.Fatalf("Warnings = %q, want one, for the table without a key", w)
 	}
-	// Warnings follow table name order.
-	if !strings.Contains(w[0], "`keyed`") || !strings.Contains(w[0], "in memory") || strings.Contains(w[0], "sorted") {
-		t.Errorf("keyed warning = %q", w[0])
-	}
-	if !strings.Contains(w[1], "`loose`") || !strings.Contains(w[1], "sorted") {
-		t.Errorf("loose warning = %q", w[1])
+	if !strings.Contains(w[0], "`loose`") || !strings.Contains(w[0], "in memory") || !strings.Contains(w[0], "sorted") {
+		t.Errorf("loose warning = %q", w[0])
 	}
 }
 

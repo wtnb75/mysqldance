@@ -11,7 +11,6 @@ import (
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/naming"
 	"mysqldance/internal/source"
-	"mysqldance/internal/sqlvalue"
 	"mysqldance/internal/writer"
 )
 
@@ -25,10 +24,10 @@ type constraintWriter struct {
 
 func (c *constraintWriter) NeedsDefs() bool { return true }
 
-func (c *constraintWriter) DataParts(db string, t source.TableInfo, rows [][]sqlvalue.Value) []writer.Part {
+func (c *constraintWriter) NewRowWriter(db string, t source.TableInfo, open writer.OpenFile) (writer.RowWriter, error) {
 	c.defsSeen[t.Name] = t.Def != nil && len(t.Def.Columns) > 0
 	c.order = append(c.order, "data:"+t.Name)
-	return c.MySQL.DataParts(db, t, rows)
+	return c.MySQL.NewRowWriter(db, t, open)
 }
 
 func (c *constraintWriter) WriteConstraints(w io.Writer, s writer.Schema) error {
@@ -57,7 +56,7 @@ func TestConstraintsFile(t *testing.T) {
 	// A writer that asked for the definitions gets each table's own.
 	for _, name := range []string{"a", "b", "c"} {
 		if !cw.defsSeen[name] {
-			t.Errorf("table %s reached DataParts without its definition", name)
+			t.Errorf("table %s reached NewRowWriter without its definition", name)
 		}
 	}
 

@@ -208,7 +208,7 @@ All connections must show the same point in time, but each starts its own snapsh
 - **Required privilege:** `RELOAD`, even when every table is InnoDB (the lock is what aligns the snapshots). Without it the run fails with an error that names `RELOAD` and `--jobs 1`; nothing is written. `--jobs 1` (the default) never needs it for InnoDB-only databases.
 - **No `--no-lock`:** `--jobs` above 1 with `--no-lock` is a usage error. Without the lock the snapshots would start one after another and show different points in time, and the tool neither reads such a dump silently nor falls back to one connection silently.
 - **Effect on the server:** writers wait from the moment `FLUSH TABLES WITH READ LOCK` is granted until the last snapshot has started, which takes about as long as N connections need to start (tens of milliseconds, in a measurement with 4 connections). `FLUSH TABLES WITH READ LOCK` itself waits for running long statements first, and statements that arrive behind it wait too. For InnoDB-only databases the lock does not last for the read; with a non-InnoDB table it does.
-- **Memory:** every connection holds all rows of its table in memory until the table is written, so up to N tables are in memory at once (see "Limitations").
+- **Memory:** a table with a primary key or a NOT NULL unique key is streamed (see "Limitations"), so N tables in parallel need no more memory than one. A table without a key is held in memory while it is sorted, so up to N such tables are in memory at once.
 - **Server connections:** N + 1, plus the ones the server needs for itself; `max_connections` must allow them. The upper bound of `--jobs` is 64.
 - DDL is not covered, as with one connection: after the lock is released, an `ALTER` or `DROP TABLE` can run while the rows are read.
 
@@ -218,7 +218,7 @@ All connections must show the same point in time, but each starts its own snapsh
 
 ### Warnings
 
-With `--no-lock`, tables that are not InnoDB (MyISAM and so on) cannot guarantee snapshot consistency, so a warning is printed and the dump continues. A table whose estimated row count (`information_schema.TABLES.TABLE_ROWS`) exceeds 500,000 gets a warning, regardless of keys, that it is far beyond the intended scale and that all rows will be loaded into memory (and, if it has no key, that it will be sorted in memory).
+With `--no-lock`, tables that are not InnoDB (MyISAM and so on) cannot guarantee snapshot consistency, so a warning is printed and the dump continues. A table without a primary key or NOT NULL unique key whose estimated row count (`information_schema.TABLES.TABLE_ROWS`) exceeds 500,000 gets a warning that it is far beyond the intended scale and that all its rows will be held in memory and sorted there. A table with a key gets none: its rows are streamed.
 
 ## Re-dumping and removing stale files
 
@@ -248,7 +248,7 @@ A dump contains the table data itself, which may include personal information or
 ## Limitations (out of scope for the MVP)
 
 - Source servers other than MySQL 5.7 and later and MariaDB (MySQL 5.6 and earlier), and output for DBMSs other than MySQL, SQLite and PostgreSQL. Parallel reading is per table (`--jobs`); one table is never read on several connections.
-- Streaming for huge tables. `--rows-per-file` splits the output, but all rows of a table are still read into memory before being written (the intended scale is about 10 tables per database and up to about 100,000 rows). With `--jobs N`, up to N tables are in memory at once.
+- Streaming for tables without a key. A table with a primary key or a NOT NULL unique key is read and written row by row, so its memory use does not grow with its size (a table of one million rows needs a few megabytes). A table without such a key is still read into memory and sorted there by the byte order of each row's output string (the intended scale for those is up to about 100,000 rows); with `--jobs N`, up to N of them are in memory at once. A temporary-file sort for them is planned.
 - Triggers, stored routines, events, and users and privileges.
 - Flags must be placed before the database names.
 

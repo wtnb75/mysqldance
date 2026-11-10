@@ -19,9 +19,9 @@ import (
 	"mysqldance/internal/sqlvalue"
 )
 
-// largeTableRows is the TABLE_ROWS estimate above which a table triggers a
-// warning: every table is read fully into memory (and sorted there when it
-// has no usable key). A variable so tests can lower it.
+// largeTableRows is the TABLE_ROWS estimate above which a table without a
+// usable key triggers a warning: it is read fully into memory and sorted there
+// (a table with a key is streamed). A variable so tests can lower it.
 var largeTableRows int64 = 500000
 
 // Config holds connection parameters. Socket, when set, takes precedence
@@ -580,7 +580,7 @@ func chooseKey(keys map[string][]string, cols []columnRow) []string {
 
 // Tables returns the base tables sorted by name, and the warnings found while
 // reading them: tables not using InnoDB, and tables whose row estimate
-// exceeds largeTableRows. Warnings follow table name order.
+// without a key exceeds largeTableRows. Warnings follow table name order.
 func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
 	list, err := s.listTables(ctx)
 	if err != nil {
@@ -633,14 +633,12 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
 				"table %s uses the %s engine; its data is not covered by the consistent snapshot",
 				sqlvalue.QuoteIdent(ti.Name), ti.Engine))
 		}
-		if ti.ApproxRows > largeTableRows {
-			how := "all its rows are held in memory while its data file is written"
-			if len(ti.OrderBy) == 0 {
-				how += ", and sorted there because it has no primary key or NOT NULL unique key"
-			}
+		// A table with a key is streamed and needs no memory for its rows.
+		if len(ti.OrderBy) == 0 && ti.ApproxRows > largeTableRows {
 			warnings = append(warnings, fmt.Sprintf(
-				"table %s has about %d rows, far beyond the scale this tool is designed for; %s",
-				sqlvalue.QuoteIdent(ti.Name), ti.ApproxRows, how))
+				"table %s has about %d rows, far beyond the scale this tool is designed for; "+
+					"all its rows are held in memory and sorted there because it has no primary key or NOT NULL unique key",
+				sqlvalue.QuoteIdent(ti.Name), ti.ApproxRows))
 		}
 		out = append(out, ti)
 	}
@@ -803,17 +801,33 @@ var stringKeyTypes = map[string]bool{
 }
 
 // Rows returns the rows of t as typed values, one []sqlvalue.Value per row in
-// t.Columns order. With a key the server orders them; otherwise they are
-// sorted in memory by their MySQL literals joined with commas, in byte order.
-// t must come from Tables for the database currently selected by Use.
+// t.Columns order, collected from EachRow. It holds every row in memory; dump
+// uses EachRow instead.
 func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]sqlvalue.Value, error) {
+	var out [][]sqlvalue.Value
+	err := s.EachRow(ctx, t, func(row []sqlvalue.Value) error {
+		out = append(out, row)
+		return nil
+	})
+	return out, err
+}
+
+// EachRow calls fn with each row of t in output order, one []sqlvalue.Value per
+// row in t.Columns order. With a key the server orders the rows and they are
+// passed on as they arrive, so memory does not grow with the table; otherwise
+// all rows are read first and sorted in memory by their MySQL literals joined
+// with commas, in byte order. fn owns the row it is given. If fn fails, the
+// read stops and EachRow returns its error. A read that ends early (a lost
+// connection, a canceled context) is an error too, never a short table.
+// t must come from Tables for the database currently selected by Use.
+func (s *Snapshot) EachRow(ctx context.Context, t TableInfo, fn func(row []sqlvalue.Value) error) error {
 	names := make([]string, len(t.Columns))
 	for i, c := range t.Columns {
 		names[i] = c.Name
 	}
 	orderBy, err := orderByClause(t.OrderBy, t.OrderByTypes)
 	if err != nil {
-		return nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
+		return fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
 	}
 	query := "SELECT " + columnList(names) + " FROM " + s.qualified(t.Name) + orderBy
 
@@ -821,47 +835,61 @@ func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]sqlvalue.Value, e
 	// formats them, and sql.RawBytes keeps them unconverted.
 	rows, err := s.conn.QueryContext(ctx, query)
 	if err != nil {
-		return nil, err
+		return err
 	}
+	// Closing after an early return reads the rest of the result off the wire:
+	// the abort lasts up to one table scan, but the connection (and its snapshot)
+	// stays usable (review ledger R-084).
 	defer func() { _ = rows.Close() }()
 	raw := make([]sql.RawBytes, len(t.Columns))
 	dest := make([]any, len(raw))
 	for i := range raw {
 		dest[i] = &raw[i]
 	}
-	var out [][]sqlvalue.Value
+
+	emit := fn
+	var held [][]sqlvalue.Value
+	if len(t.OrderBy) == 0 {
+		// Rendering here and again in the writer is accepted: B-045 replaces
+		// this in-memory sort (review ledger R-045).
+		emit = func(row []sqlvalue.Value) error {
+			held = append(held, row)
+			return nil
+		}
+	}
 	for rows.Next() {
 		if err := rows.Scan(dest...); err != nil {
-			return nil, err
+			return err
 		}
 		row := make([]sqlvalue.Value, len(raw))
 		for i, b := range raw {
 			row[i] = sqlvalue.NewValue(t.Columns[i].TypeName, b, b == nil)
 		}
-		out = append(out, row)
+		if err := emit(row); err != nil {
+			return err
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return err
 	}
-	if len(t.OrderBy) == 0 {
-		// Rendering here and again in dump is accepted: B-045 replaces this
-		// in-memory sort (review ledger R-045).
-		keys := make([]string, len(out))
-		for i, row := range out {
-			keys[i] = strings.Join(sqlvalue.Literals(row), ",")
-		}
-		idx := make([]int, len(out))
-		for i := range idx {
-			idx[i] = i
-		}
-		sort.Slice(idx, func(a, b int) bool { return keys[idx[a]] < keys[idx[b]] })
-		sorted := make([][]sqlvalue.Value, len(out))
-		for i, j := range idx {
-			sorted[i] = out[j]
-		}
-		out = sorted
+	if len(t.OrderBy) != 0 {
+		return nil
 	}
-	return out, nil
+	keys := make([]string, len(held))
+	for i, row := range held {
+		keys[i] = strings.Join(sqlvalue.Literals(row), ",")
+	}
+	idx := make([]int, len(held))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.Slice(idx, func(a, b int) bool { return keys[idx[a]] < keys[idx[b]] })
+	for _, i := range idx {
+		if err := fn(held[i]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // orderByClause returns the ORDER BY clause (with a leading space) for the

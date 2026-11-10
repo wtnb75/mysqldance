@@ -211,7 +211,7 @@ func sqliteRoundTrip(t *testing.T, w *SQLite, schema Schema, rows [][]sqlvalue.V
 		t.Fatal(err)
 	}
 	sqliteExec(t, db, ddl.String())
-	parts := w.DataParts(schema.DB, schema.Tables[0], rows)
+	parts := dataParts(w, schema.DB, schema.Tables[0], rows)
 	if len(parts) == 0 {
 		t.Fatal("no data part")
 	}
@@ -333,7 +333,7 @@ func TestSQLiteValuesRoundTrip(t *testing.T) {
 func TestSQLiteOneRecordPerLine(t *testing.T) {
 	w := NewSQLite(datafile.Options{})
 	rows := [][]sqlvalue.Value{typedRow("1", "a\nb", "1", "1", "\x01", "\x01", "x", "1", "2024-01-01", "1")}
-	parts := w.DataParts("d", typesSchema().Tables[0], rows)
+	parts := dataParts(w, "d", typesSchema().Tables[0], rows)
 	var b bytes.Buffer
 	if err := parts[0](&b); err != nil {
 		t.Fatal(err)
@@ -381,7 +381,7 @@ func TestSQLiteSplitsFilesAndStatements(t *testing.T) {
 	w := NewSQLite(datafile.Options{RowsPerInsert: 3, RowsPerFile: 10})
 	schema := typesSchema()
 	db := sqliteRoundTrip(t, w, schema, rows)
-	parts := w.DataParts("d", schema.Tables[0], rows)
+	parts := dataParts(w, "d", schema.Tables[0], rows)
 	if len(parts) < 2 {
 		t.Fatalf("got %d files, want the table split into several", len(parts))
 	}

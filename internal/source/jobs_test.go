@@ -53,8 +53,8 @@ func TestJobsTablesAndWarningsSameAsSerial(t *testing.T) {
 	cfg, db, conn := testDB(t)
 	mustExec(t, conn,
 		"CREATE TABLE c (n INT)",
-		"CREATE TABLE a (id INT PRIMARY KEY)",
-		"CREATE TABLE b (id INT PRIMARY KEY)",
+		"CREATE TABLE a (n INT)",
+		"CREATE TABLE b (n INT)",
 	)
 	// TABLE_ROWS of a new table is usually 0, so lower the threshold below it
 	// (as TestWarningsLargeTable does) to get a warning for every table.

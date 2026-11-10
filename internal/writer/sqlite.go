@@ -294,13 +294,11 @@ func quoteList(names []string) string {
 	return strings.Join(q, ", ")
 }
 
-// DataParts implements Writer. The values are rendered as SQLite literals
-// first; the split and the INSERT boundaries are decided on the rendered text.
-// Each file runs in one transaction, so restoring a large table is not one
-// commit per statement. All rows are held in memory, like the MySQL writer.
-func (s *SQLite) DataParts(_ string, t source.TableInfo, rows [][]sqlvalue.Value) []Part {
-	return splitParts(t, rows, s.data.RowsPerFile, sqlvalue.SQLiteLiterals,
-		func(w io.Writer, cols []string, group [][]string) error {
-			return datafile.WriteStatements(w, sqliteDataHeader, sqliteDataFooter, sqlvalue.QuoteIdent, t.Name, cols, t.ListColumns, group, s.data)
-		})
+// NewRowWriter implements Writer. Each value is rendered as a SQLite literal
+// when its row arrives; the split and the INSERT boundaries are decided on the
+// rendered text of that row alone. Each file runs in one transaction, so
+// restoring a large table is not one commit per statement.
+func (s *SQLite) NewRowWriter(_ string, t source.TableInfo, open OpenFile) (RowWriter, error) {
+	return newStreamWriter(t, open, sqliteDataHeader, sqliteDataFooter, sqlvalue.QuoteIdent, s.data,
+		infallible(sqlvalue.SQLiteLiterals)), nil
 }
