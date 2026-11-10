@@ -228,7 +228,7 @@ func (s *Snapshot) Use(ctx context.Context, db string) error {
 	}
 	// With db as the default database, SHOW CREATE VIEW leaves names in that
 	// database unqualified, so the dump can be restored under another name.
-	if _, err := s.conn.ExecContext(ctx, "USE "+quoteIdent(db)); err != nil {
+	if _, err := s.conn.ExecContext(ctx, "USE "+sqlvalue.QuoteIdent(db)); err != nil {
 		return err
 	}
 	s.name, s.columns, s.warnings = db, nil, nil
@@ -254,7 +254,7 @@ func (s *Snapshot) firstNonInnoDB(ctx context.Context, dbs []string) (string, er
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("table %s.%s (%s)", quoteIdent(schema), quoteIdent(name), engine), nil
+	return fmt.Sprintf("table %s.%s (%s)", sqlvalue.QuoteIdent(schema), sqlvalue.QuoteIdent(name), engine), nil
 }
 
 // closeTimeout bounds the ROLLBACK in Close. It is a variable for tests.
@@ -278,7 +278,7 @@ func (s *Snapshot) Close() error {
 // CreateDatabase returns the statement from SHOW CREATE DATABASE.
 func (s *Snapshot) CreateDatabase(ctx context.Context) (string, error) {
 	var name, create string
-	err := s.conn.QueryRowContext(ctx, "SHOW CREATE DATABASE "+quoteIdent(s.name)).Scan(&name, &create)
+	err := s.conn.QueryRowContext(ctx, "SHOW CREATE DATABASE "+sqlvalue.QuoteIdent(s.name)).Scan(&name, &create)
 	return create, err
 }
 
@@ -440,24 +440,24 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, error) {
 		}
 		ti.OrderBy = chooseKey(keys[r.name], columns[r.name])
 		if ti.Create, err = s.showCreate(ctx, "TABLE", r.name); err != nil {
-			return nil, fmt.Errorf("table %s: %w", quoteIdent(r.name), err)
+			return nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(r.name), err)
 		}
 		if err := checkAllColumnsVisible(ti.Create, columns[r.name]); err != nil {
-			return nil, fmt.Errorf("table %s: %w", quoteIdent(r.name), err)
+			return nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(r.name), err)
 		}
 		if ti.Columns, err = s.columnTypes(ctx, r.name, names); err != nil {
-			return nil, fmt.Errorf("table %s: %w", quoteIdent(r.name), err)
+			return nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(r.name), err)
 		}
 		if !strings.EqualFold(ti.Engine, "InnoDB") && !s.locked {
 			if !s.noLock {
 				// Created after Open decided that no lock was needed.
 				return nil, fmt.Errorf("table %s uses the %s engine and appeared after the dump started "+
 					"without a global read lock; run again, or pass --no-lock to read without consistency",
-					quoteIdent(ti.Name), ti.Engine)
+					sqlvalue.QuoteIdent(ti.Name), ti.Engine)
 			}
 			warnings = append(warnings, fmt.Sprintf(
 				"table %s uses the %s engine; its data is not covered by the consistent snapshot",
-				quoteIdent(ti.Name), ti.Engine))
+				sqlvalue.QuoteIdent(ti.Name), ti.Engine))
 		}
 		if ti.ApproxRows > largeTableRows {
 			how := "all its rows are held in memory while its data file is written"
@@ -466,7 +466,7 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, error) {
 			}
 			warnings = append(warnings, fmt.Sprintf(
 				"table %s has about %d rows, far beyond the scale this tool is designed for; %s",
-				quoteIdent(ti.Name), ti.ApproxRows, how))
+				sqlvalue.QuoteIdent(ti.Name), ti.ApproxRows, how))
 		}
 		out = append(out, ti)
 	}
@@ -491,7 +491,7 @@ func checkAllColumnsVisible(create string, catalog []columnRow) error {
 	var missing []string
 	for _, name := range defined {
 		if !visible[name] {
-			missing = append(missing, quoteIdent(name))
+			missing = append(missing, sqlvalue.QuoteIdent(name))
 		}
 	}
 	if len(missing) > 0 {
@@ -633,7 +633,7 @@ func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]string, error) {
 		}
 		terms := make([]string, len(t.OrderBy))
 		for i, c := range t.OrderBy {
-			terms[i] = quoteIdent(c)
+			terms[i] = sqlvalue.QuoteIdent(c)
 			if stringKeyTypes[types[c]] {
 				terms[i] = "CAST(" + terms[i] + " AS BINARY)"
 			}
@@ -710,18 +710,13 @@ func (s *Snapshot) Warnings() []string {
 }
 
 func (s *Snapshot) qualified(name string) string {
-	return quoteIdent(s.name) + "." + quoteIdent(name)
+	return sqlvalue.QuoteIdent(s.name) + "." + sqlvalue.QuoteIdent(name)
 }
 
 func columnList(names []string) string {
 	q := make([]string, len(names))
 	for i, n := range names {
-		q[i] = quoteIdent(n)
+		q[i] = sqlvalue.QuoteIdent(n)
 	}
 	return strings.Join(q, ", ")
-}
-
-// quoteIdent quotes a MySQL identifier, doubling embedded backticks.
-func quoteIdent(s string) string {
-	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
 }

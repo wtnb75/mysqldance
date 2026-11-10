@@ -39,3 +39,19 @@ func TestLiteral(t *testing.T) {
 		})
 	}
 }
+
+func TestQuoteIdent(t *testing.T) {
+	tests := map[string]string{
+		"t":     "`t`",
+		"a`b":   "`a``b`",
+		"``":    "``````",
+		"":      "``",
+		"c,d e": "`c,d e`",
+		"日本語":   "`日本語`",
+	}
+	for in, want := range tests {
+		if got := QuoteIdent(in); got != want {
+			t.Errorf("QuoteIdent(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
