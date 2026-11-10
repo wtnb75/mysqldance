@@ -40,7 +40,15 @@ type Config struct {
 	// database has a non-InnoDB table; such tables are then read without
 	// consistency (a warning is reported).
 	NoLock bool
+	// Jobs is the number of connections that read rows in parallel; 0 means 1.
+	// Above 1, Open always takes the global read lock (it needs the RELOAD
+	// privilege) to start all the snapshots at one point in time, so it cannot
+	// be combined with NoLock.
+	Jobs int
 }
+
+// MaxJobs is the largest Config.Jobs: each job is a server connection.
+const MaxJobs = 64
 
 // TableInfo describes a base table.
 type TableInfo struct {
@@ -65,9 +73,13 @@ type TableInfo struct {
 	Def *TableDef
 }
 
-// Snapshot is a read-only consistent snapshot, held on a single pinned
-// connection inside one transaction. It reads one database at a time (the
-// current one); Use switches databases without leaving the snapshot.
+// Snapshot is a read-only consistent snapshot, held on a pinned connection
+// inside one transaction. It reads one database at a time (the current one);
+// Use switches databases without leaving the snapshot.
+//
+// With Config.Jobs above 1 the same point in time is also held by more
+// connections, each a Snapshot of its own (see Readers). A Snapshot is for one
+// goroutine at a time; the readers may run in parallel with each other.
 type Snapshot struct {
 	db      *sql.DB
 	conn    *sql.Conn
@@ -76,6 +88,20 @@ type Snapshot struct {
 	// locked is true while the global read lock is held; noLock is the NoLock
 	// option. A non-InnoDB table read with neither is an error.
 	locked, noLock bool
+	// others are the other readers, and lockConn is the connection that holds
+	// the global read lock while the snapshots start. Both are set on the first
+	// reader only (Config.Jobs above 1).
+	others   []*Snapshot
+	lockConn *sql.Conn
+}
+
+// Readers returns the connections that can read rows in parallel: the
+// Snapshot itself first, then Config.Jobs-1 others. Each one has the same
+// current database as the Snapshot (Use switches them all) and sees the same
+// point in time. The metadata methods (CreateDatabase, Tables, Views, Defs)
+// are for the Snapshot itself; Rows may run on any reader.
+func (s *Snapshot) Readers() []*Snapshot {
+	return append([]*Snapshot{s}, s.others...)
 }
 
 var systemDatabases = []string{"information_schema", "mysql", "performance_schema", "sys"}
@@ -93,8 +119,19 @@ func checkNotSystem(db string) error {
 // Use switches to the others within the same snapshot. dbs must list every
 // database that will be read: when any of them has a non-InnoDB table, a
 // global read lock is taken before the snapshot starts and held until Close
-// (unless cfg.NoLock), so those tables are consistent with the rest.
+// (unless cfg.NoLock), so those tables are consistent with the rest. With
+// cfg.Jobs above 1 the lock is always taken, and kept only for that reason
+// (see startParallel).
 func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
+	if cfg.Jobs < 0 || cfg.Jobs > MaxJobs {
+		return nil, fmt.Errorf("option Jobs must be between 1 and %d, not %d", MaxJobs, cfg.Jobs)
+	}
+	if cfg.Jobs > 1 && cfg.NoLock {
+		// Without the lock the snapshots of the connections start one after
+		// another and would not show the same point in time.
+		return nil, errors.New("option Jobs above 1 cannot be combined with option NoLock: " +
+			"the snapshots of the connections could not be aligned")
+	}
 	if len(dbs) == 0 {
 		return nil, errors.New("no database to read")
 	}
@@ -136,7 +173,7 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 		return nil, err
 	}
 	sdb := sql.OpenDB(connector)
-	s, err := start(ctx, sdb, dbs, cfg.NoLock)
+	s, err := start(ctx, sdb, dbs, cfg.NoLock, cfg.Jobs)
 	if err != nil {
 		_ = sdb.Close()
 		return nil, err
@@ -144,33 +181,49 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 	return s, nil
 }
 
-func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool) (*Snapshot, error) {
+// pinSession runs the statements that pin every session setting that changes
+// SHOW CREATE output or value text, so the dump never depends on server or
+// account defaults: ANSI_QUOTES would quote identifiers with '"',
+// PAD_CHAR_TO_FULL_LENGTH would pad CHAR values, NO_BACKSLASH_ESCAPES would
+// change how SHOW CREATE escapes strings (schemafile relies on backslash
+// escapes). s.dialect must be set.
+func (s *Snapshot) pinSession(ctx context.Context) error {
+	for _, stmt := range s.dialect.session {
+		if _, err := s.conn.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("%s: %w", stmt, err)
+		}
+	}
+	return nil
+}
+
+// detectDialect picks s.dialect from the server version. It comes before
+// pinSession, because the dialect decides which session settings exist.
+func (s *Snapshot) detectDialect(ctx context.Context) error {
+	var version string
+	if err := s.conn.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
+		return err
+	}
+	var err error
+	s.dialect, err = dialectFor(version)
+	return err
+}
+
+func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int) (*Snapshot, error) {
+	if jobs > 1 {
+		return startParallel(ctx, sdb, dbs, jobs)
+	}
 	conn, err := sdb.Conn(ctx)
 	if err != nil {
 		return nil, err
 	}
 	s := &Snapshot{db: sdb, conn: conn, noLock: noLock}
-	// The dialect decides which session settings exist, so it comes first.
-	var version string
-	if err := conn.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
+	if err := s.detectDialect(ctx); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	if s.dialect, err = dialectFor(version); err != nil {
+	if err := s.pinSession(ctx); err != nil {
 		_ = conn.Close()
 		return nil, err
-	}
-
-	// Pin every session setting that changes SHOW CREATE output or value
-	// text, so the dump never depends on server or account defaults:
-	// ANSI_QUOTES would quote identifiers with '"', PAD_CHAR_TO_FULL_LENGTH
-	// would pad CHAR values, NO_BACKSLASH_ESCAPES would change how SHOW
-	// CREATE escapes strings (schemafile relies on backslash escapes).
-	for _, stmt := range s.dialect.session {
-		if _, err := conn.ExecContext(ctx, stmt); err != nil {
-			_ = conn.Close()
-			return nil, fmt.Errorf("%s: %w", stmt, err)
-		}
 	}
 
 	// MVCC does not cover non-transactional tables (MyISAM and so on). When
@@ -205,11 +258,103 @@ func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool) (*Snapsh
 	return s, nil
 }
 
+// startParallel opens jobs connections on one point in time (design doc,
+// section 6.1): a connection of its own takes FLUSH TABLES WITH READ LOCK,
+// every reader starts its consistent snapshot while the lock is held, and the
+// lock is released at once when every table is InnoDB (the snapshots cover
+// them) or kept until Close when one is not. The lock also blocks DDL, so the
+// engine check made under it cannot race.
+//
+// On failure every connection is returned to the pool, so the caller's
+// sdb.Close ends the sessions, the transactions and the lock.
+func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int) (_ *Snapshot, err error) {
+	var conns []*sql.Conn
+	defer func() {
+		if err != nil {
+			for _, c := range conns {
+				_ = c.Close()
+			}
+		}
+	}()
+	open := func() (*sql.Conn, error) {
+		c, err := sdb.Conn(ctx)
+		if err == nil {
+			conns = append(conns, c)
+		}
+		return c, err
+	}
+
+	lockConn, err := open()
+	if err != nil {
+		return nil, err
+	}
+	readers := make([]*Snapshot, jobs)
+	for i := range readers {
+		c, err := open()
+		if err != nil {
+			return nil, err
+		}
+		readers[i] = &Snapshot{db: sdb, conn: c}
+	}
+	first := readers[0]
+	if err := first.detectDialect(ctx); err != nil {
+		return nil, err
+	}
+	for _, r := range readers {
+		r.dialect = first.dialect
+		if err := r.pinSession(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	if _, err := lockConn.ExecContext(ctx, "FLUSH TABLES WITH READ LOCK"); err != nil {
+		return nil, fmt.Errorf("FLUSH TABLES WITH READ LOCK (needed to start the snapshots of %d connections "+
+			"at one point in time; it requires the RELOAD privilege, or run with --jobs 1): %w", jobs, err)
+	}
+	nonInnoDB, err := first.firstNonInnoDB(ctx, dbs)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range readers {
+		if _, err := r.conn.ExecContext(ctx, "START TRANSACTION WITH CONSISTENT SNAPSHOT"); err != nil {
+			return nil, fmt.Errorf("START TRANSACTION WITH CONSISTENT SNAPSHOT: %w", err)
+		}
+	}
+	// A non-InnoDB table is not covered by the snapshots, so the lock stays
+	// until Close; the readers then know the tables are consistent.
+	if nonInnoDB == "" {
+		if _, err := lockConn.ExecContext(ctx, "UNLOCK TABLES"); err != nil {
+			return nil, fmt.Errorf("UNLOCK TABLES: %w", err)
+		}
+	}
+	for _, r := range readers {
+		r.locked = nonInnoDB != ""
+	}
+
+	first.others, first.lockConn = readers[1:], lockConn
+	if err := first.Use(ctx, dbs[0]); err != nil {
+		return nil, err
+	}
+	return first, nil
+}
+
 // Use makes db the database the other methods read, without leaving the
 // snapshot transaction, so every database read through one Snapshot comes
 // from the same point in time. On error the Snapshot still points at the
-// previous database.
+// previous database. The other readers are switched after the first one has
+// accepted db (same account, same server); if one of them fails, the readers
+// may point at different databases and the caller must abort (dump.Run does).
 func (s *Snapshot) Use(ctx context.Context, db string) error {
+	for _, r := range s.Readers() {
+		if err := r.use(ctx, db); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// use is Use for this connection alone.
+func (s *Snapshot) use(ctx context.Context, db string) error {
 	if err := checkNotSystem(db); err != nil {
 		return err
 	}
@@ -269,9 +414,23 @@ func (s *Snapshot) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 	defer cancel()
 	// A failed or timed-out ROLLBACK is reported like any other cleanup
-	// error; the dump is not silently treated as clean (see R-022).
-	_, rbErr := s.conn.ExecContext(ctx, "ROLLBACK")
-	return errors.Join(rbErr, s.conn.Close(), s.db.Close())
+	// error; the dump is not silently treated as clean (see R-022). The
+	// timeout is shared by all readers.
+	readers := s.Readers()
+	var errs []error
+	for _, r := range readers {
+		_, err := r.conn.ExecContext(ctx, "ROLLBACK")
+		errs = append(errs, err)
+	}
+	// Every connection must go back to the pool before db.Close, which closes
+	// the idle ones only: that is what ends the sessions and the lock.
+	for _, r := range readers {
+		errs = append(errs, r.conn.Close())
+	}
+	if s.lockConn != nil {
+		errs = append(errs, s.lockConn.Close())
+	}
+	return errors.Join(append(errs, s.db.Close())...)
 }
 
 // CreateDatabase returns the statement from SHOW CREATE DATABASE.

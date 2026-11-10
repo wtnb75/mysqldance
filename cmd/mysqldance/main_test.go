@@ -42,6 +42,10 @@ func TestRunUsageErrors(t *testing.T) {
 		{"missing password file", []string{"--password-file", filepath.Join(t.TempDir(), "none"), "-o", t.TempDir(), "db1"}},
 		{"unknown target", []string{"--target", "oracle", "-o", t.TempDir(), "db1"}},
 		{"empty target", []string{"--target", "", "-o", t.TempDir(), "db1"}},
+		{"zero jobs", []string{"--jobs", "0", "-o", t.TempDir(), "db1"}},
+		{"negative jobs", []string{"-j", "-2", "-o", t.TempDir(), "db1"}},
+		{"too many jobs", []string{"--jobs", "65", "-o", t.TempDir(), "db1"}},
+		{"jobs with no-lock", []string{"--jobs", "2", "--no-lock", "-o", t.TempDir(), "db1"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var stderr bytes.Buffer
@@ -61,7 +65,7 @@ func TestParseArgsDefaults(t *testing.T) {
 		t.Fatalf("parseArgs: %v", err)
 	}
 	want := dump.Options{
-		Source: source.Config{Host: "127.0.0.1", Port: 3306, SSLMode: "preferred"},
+		Source: source.Config{Host: "127.0.0.1", Port: 3306, SSLMode: "preferred", Jobs: 1},
 		DBs:    []string{"db1", "db2"},
 		OutDir: "out",
 		Data:   datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
@@ -129,7 +133,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"short flags",
 			[]string{"-h", "db.example", "-P", "3307", "-u", "alice", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "db.example", Port: 3307, User: "alice", Password: "envpw", SSLMode: "preferred"},
+				Source: source.Config{Host: "db.example", Port: 3307, User: "alice", Password: "envpw", SSLMode: "preferred", Jobs: 1},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 			},
@@ -139,7 +143,7 @@ func TestParseArgsFlags(t *testing.T) {
 			[]string{"--host", "db.example", "--port", "3307", "--user", "alice", "--socket", "/tmp/s.sock",
 				"--output", "out", "--rows-per-insert", "5", "--max-insert-bytes", "4096", "d"},
 			dump.Options{
-				Source: source.Config{Host: "db.example", Port: 3307, Socket: "/tmp/s.sock", User: "alice", Password: "envpw", SSLMode: "preferred"},
+				Source: source.Config{Host: "db.example", Port: 3307, Socket: "/tmp/s.sock", User: "alice", Password: "envpw", SSLMode: "preferred", Jobs: 1},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 5, MaxInsertBytes: 4096},
 			},
@@ -148,7 +152,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"ssl flags",
 			[]string{"--ssl-mode", "verify-ca", "--ssl-ca", "/etc/ca.pem", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "verify-ca", SSLCA: "/etc/ca.pem"},
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "verify-ca", SSLCA: "/etc/ca.pem", Jobs: 1},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 			},
@@ -157,7 +161,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"rows-per-file flag",
 			[]string{"--rows-per-file", "50000", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred"},
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 1},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576, RowsPerFile: 50000},
 			},
@@ -166,7 +170,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"mode flags",
 			[]string{"--file-mode", "0640", "--dir-mode", "750", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred"},
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 1},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data:     datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 				FileMode: 0o640, DirMode: 0o750,
@@ -176,7 +180,34 @@ func TestParseArgsFlags(t *testing.T) {
 			"no-lock flag",
 			[]string{"--no-lock", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", NoLock: true},
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 1, NoLock: true},
+				DBs:    []string{"d"}, OutDir: "out",
+				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
+			},
+		},
+		{
+			"jobs flag",
+			[]string{"--jobs", "4", "-o", "out", "d"},
+			dump.Options{
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 4},
+				DBs:    []string{"d"}, OutDir: "out",
+				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
+			},
+		},
+		{
+			"jobs short flag at the upper bound",
+			[]string{"-j", "64", "-o", "out", "d"},
+			dump.Options{
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 64},
+				DBs:    []string{"d"}, OutDir: "out",
+				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
+			},
+		},
+		{
+			"one job with no-lock",
+			[]string{"-j", "1", "--no-lock", "-o", "out", "d"},
+			dump.Options{
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 1, NoLock: true},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 			},

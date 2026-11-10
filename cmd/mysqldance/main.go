@@ -143,6 +143,10 @@ The password is read from --password-file, else from MYSQL_PWD.
                              filtered by the umask; an existing one is kept)
       --no-lock              do not take FLUSH TABLES WITH READ LOCK when a
                              table is not InnoDB (warn instead)
+  -j, --jobs N               read N tables in parallel on N connections that
+                             show the same point in time (default 1). Above 1
+                             the lock is always taken, so the RELOAD privilege
+                             is needed, and --no-lock cannot be used
       --version              print the version and commit, then exit
 `)
 	}
@@ -152,7 +156,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 		sslMode, sslCA, target                   string
 		noLock, showVersion                      bool
 		fileMode, dirMode                        string
-		port                                     int
+		port, jobs                               int
 		rowsPerInsert, rowsPerFile               uint64
 		maxInsertBytes                           int
 	)
@@ -173,6 +177,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.IntVar(&maxInsertBytes, "max-insert-bytes", 1048576, "")
 	fs.Uint64Var(&rowsPerFile, "rows-per-file", 0, "")
 	fs.BoolVar(&noLock, "no-lock", false, "")
+	fs.IntVar(&jobs, "j", 1, "")
+	fs.IntVar(&jobs, "jobs", 1, "")
 	fs.BoolVar(&showVersion, "version", false, "")
 	fs.StringVar(&fileMode, "file-mode", "", "")
 	fs.StringVar(&dirMode, "dir-mode", "", "")
@@ -206,6 +212,12 @@ The password is read from --password-file, else from MYSQL_PWD.
 		return usage("--max-insert-bytes must be positive")
 	case port <= 0 || port > 65535:
 		return usage("--port must be between 1 and 65535")
+	case jobs < 1 || jobs > source.MaxJobs:
+		return usage("--jobs must be between 1 and %d", source.MaxJobs)
+	case jobs > 1 && noLock:
+		// Without the lock the snapshots of the connections cannot be aligned.
+		return usage("--jobs above 1 cannot be combined with --no-lock: the lock is what makes " +
+			"the connections show the same point in time")
 	}
 	if err := (source.Config{Socket: socket, SSLMode: sslMode, SSLCA: sslCA}).ValidateSSL(); err != nil {
 		return usage("%v", err)
@@ -240,6 +252,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	opt.Source.Host, opt.Source.Port, opt.Source.Socket, opt.Source.User = host, port, socket, user
 	opt.Source.SSLMode, opt.Source.SSLCA = sslMode, sslCA
 	opt.Source.NoLock = noLock
+	opt.Source.Jobs = jobs
 	opt.Source.Password = getenv("MYSQL_PWD")
 	if passwordFile != "" {
 		b, err := os.ReadFile(passwordFile)

@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/naming"
@@ -214,27 +216,30 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		return err
 	}
 
-	for _, t := range tables {
-		rows, err := snap.Rows(ctx, t)
-		if err != nil {
-			return fmt.Errorf("table %q: %w", t.Name, err)
+	// The tables are read and written in parallel, one per reader. Whatever
+	// order they finish in, the output is the same: file contents depend on the
+	// table alone, and the checks below run in table order.
+	partNames := make([][]string, len(tables))
+	errs := eachTable(ctx, snap.Readers(), len(tables), func(ctx context.Context, r *source.Snapshot, i int) error {
+		var err error
+		partNames[i], err = writeTable(ctx, opt, r, db, tables[i], st)
+		return err
+	})
+	if err := firstError(ctx, errs); err != nil {
+		return err
+	}
+	// A cancel before the first table started leaves no error behind.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for i, t := range tables {
+		if len(partNames[i]) <= 1 {
+			continue
 		}
-		parts, err := dataParts(opt.Writer, db, t, rows)
-		if err != nil {
-			return err
-		}
-		names := naming.DataFileParts(db, t.Name, len(parts))
-		if len(parts) > 1 {
-			// The part names are known only now. Claim them like the others,
-			// before anything is committed.
-			for _, n := range names {
-				if err := claim(seen, n, fmt.Sprintf("table %q of database %q", t.Name, db)); err != nil {
-					return err
-				}
-			}
-		}
-		for g, part := range parts {
-			if err := st.create(filepath.Join(opt.OutDir, names[g]), part); err != nil {
+		// The part names are known only now. Claim them like the others,
+		// before anything is committed.
+		for _, n := range partNames[i] {
+			if err := claim(seen, n, fmt.Sprintf("table %q of database %q", t.Name, db)); err != nil {
 				return err
 			}
 		}
@@ -245,6 +250,76 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		})
 	}
 	return nil
+}
+
+// writeTable reads the rows of t through r, renders them and stages the data
+// files, and returns the final names of the files (without the directory).
+func writeTable(ctx context.Context, opt Options, r *source.Snapshot, db string, t source.TableInfo, st *stage) ([]string, error) {
+	rows, err := r.Rows(ctx, t)
+	if err != nil {
+		return nil, fmt.Errorf("table %q: %w", t.Name, err)
+	}
+	parts, err := dataParts(opt.Writer, db, t, rows)
+	if err != nil {
+		return nil, err
+	}
+	names := naming.DataFileParts(db, t.Name, len(parts))
+	for g, part := range parts {
+		if err := st.create(filepath.Join(opt.OutDir, names[g]), part); err != nil {
+			return nil, err
+		}
+	}
+	return names, nil
+}
+
+// eachTable calls fn(ctx, reader, i) for i in [0, n), on len(readers)
+// goroutines at a time, each with a reader of its own, and returns the error
+// of every call (nil for the calls that succeeded or never ran). After the first
+// failure no new call starts and ctx is canceled for the running ones. It
+// returns when all goroutines are done, so the readers are free again.
+func eachTable(ctx context.Context, readers []*source.Snapshot, n int, fn func(ctx context.Context, r *source.Snapshot, i int) error) []error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errs := make([]error, n)
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for _, r := range readers {
+		wg.Go(func() {
+			for ctx.Err() == nil {
+				i := int(next.Add(1)) - 1
+				if i >= n {
+					return
+				}
+				if errs[i] = fn(ctx, r, i); errs[i] != nil {
+					cancel()
+				}
+			}
+		})
+	}
+	wg.Wait()
+	return errs
+}
+
+// firstError returns the error of the first table (in table order) that
+// failed for a reason of its own. A table that failed only because eachTable
+// canceled it after another one had failed is not the cause, so it is skipped
+// unless ctx itself was canceled. With several real failures the one reported
+// can still depend on timing (the first failure cancels the tables still
+// running); serially it is always the first table in order.
+func firstError(ctx context.Context, errs []error) error {
+	var first error
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		if first == nil {
+			first = err
+		}
+		if ctx.Err() != nil || !errors.Is(err, context.Canceled) {
+			return err
+		}
+	}
+	return first
 }
 
 // dataParts asks w for the data files of t. A writer that returns none would
@@ -344,8 +419,12 @@ func sweepTemps(dir string) error {
 // final path changes until commit, so a run that fails earlier leaves the
 // previous dump as it was.
 type stage struct {
-	dir   string
-	mode  os.FileMode // 0 = 0666 filtered by the umask
+	dir  string
+	mode os.FileMode // 0 = 0666 filtered by the umask
+	// mu guards n and files: create is called by several goroutines (one per
+	// reader). n numbers the temporary names.
+	mu    sync.Mutex
+	n     int
 	files []stagedFile
 }
 
@@ -358,13 +437,21 @@ type stagedFile struct {
 // The temporary file must not exist (O_EXCL never follows a symlink).
 // Permissions follow the umask unless s.mode is set, which is applied exactly.
 func (s *stage) create(final string, write func(io.Writer) error) error {
-	tmp := filepath.Join(s.dir, fmt.Sprintf("%s%04d%s", tmpPrefix, len(s.files)+1, tmpSuffix))
+	// The number in the temporary name only has to be unique; which table gets
+	// which number does not matter, since the files are renamed to their final
+	// names.
+	s.mu.Lock()
+	s.n++
+	tmp := filepath.Join(s.dir, fmt.Sprintf("%s%04d%s", tmpPrefix, s.n, tmpSuffix))
+	s.mu.Unlock()
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, cmp.Or(s.mode, 0o666))
 	if err != nil {
 		return err
 	}
 	// Recorded before writing, so a partial file is removed by discard.
+	s.mu.Lock()
 	s.files = append(s.files, stagedFile{tmp: tmp, final: final})
+	s.mu.Unlock()
 	if s.mode != 0 {
 		// The umask filtered the mode given to OpenFile.
 		err = f.Chmod(s.mode)
