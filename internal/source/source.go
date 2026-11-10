@@ -150,25 +150,7 @@ func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool) (*Snapsh
 		return nil, err
 	}
 	s := &Snapshot{db: sdb, conn: conn, noLock: noLock}
-	// Pin every session setting that changes SHOW CREATE output or value
-	// text, so the dump never depends on server or account defaults:
-	// ANSI_QUOTES would quote identifiers with '"', PAD_CHAR_TO_FULL_LENGTH
-	// would pad CHAR values, NO_BACKSLASH_ESCAPES would change how SHOW
-	// CREATE escapes strings (schemafile relies on backslash escapes).
-	for _, stmt := range []string{
-		"SET SESSION sql_mode = ''",
-		"SET SESSION sql_quote_show_create = 1",
-		"SET SESSION show_create_table_verbosity = 0",
-		"SET time_zone = '+00:00'",
-		"SET NAMES utf8mb4",
-		"SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ",
-	} {
-		if _, err := conn.ExecContext(ctx, stmt); err != nil {
-			_ = conn.Close()
-			return nil, fmt.Errorf("%s: %w", stmt, err)
-		}
-	}
-
+	// The dialect decides which session settings exist, so it comes first.
 	var version string
 	if err := conn.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
 		_ = conn.Close()
@@ -177,6 +159,18 @@ func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool) (*Snapsh
 	if s.dialect, err = dialectFor(version); err != nil {
 		_ = conn.Close()
 		return nil, err
+	}
+
+	// Pin every session setting that changes SHOW CREATE output or value
+	// text, so the dump never depends on server or account defaults:
+	// ANSI_QUOTES would quote identifiers with '"', PAD_CHAR_TO_FULL_LENGTH
+	// would pad CHAR values, NO_BACKSLASH_ESCAPES would change how SHOW
+	// CREATE escapes strings (schemafile relies on backslash escapes).
+	for _, stmt := range s.dialect.session {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("%s: %w", stmt, err)
+		}
 	}
 
 	// MVCC does not cover non-transactional tables (MyISAM and so on). When
@@ -307,6 +301,9 @@ func (s *Snapshot) listTables(ctx context.Context) ([]tableRow, error) {
 			return nil, err
 		}
 		r.engine, r.rows = engine.String, n.Int64
+		if err := checkTableType(r.name, r.typ); err != nil {
+			return nil, err
+		}
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -314,6 +311,18 @@ func (s *Snapshot) listTables(ctx context.Context) ([]tableRow, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
 	return out, nil
+}
+
+// checkTableType accepts the two kinds of object a dump carries, tables and
+// views. Any other TABLE_TYPE (a MariaDB SEQUENCE or SYSTEM VERSIONED table,
+// whose history rows a plain SELECT does not return) would otherwise be left
+// out of the output without a word, so it is an error.
+func checkTableType(name, typ string) error {
+	if typ == "BASE TABLE" || typ == "VIEW" {
+		return nil
+	}
+	return fmt.Errorf("%s has the table type %q, which cannot be dumped; refusing to leave it out silently",
+		sqlvalue.QuoteIdent(name), typ)
 }
 
 type columnRow struct {
@@ -593,23 +602,19 @@ func (s *Snapshot) Views(ctx context.Context) ([]schemafile.View, map[string][]s
 		isView[r.name] = true
 	}
 
-	rows, err := s.conn.QueryContext(ctx, s.dialect.viewDeps, s.name, s.name)
+	names := make([]string, len(views))
+	for i, v := range views {
+		names[i] = v.Name
+	}
+	found, err := s.dialect.viewDeps(ctx, s.conn, s.name, names)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer func() { _ = rows.Close() }()
 	deps := map[string][]string{}
-	for rows.Next() {
-		var view, ref string
-		if err := rows.Scan(&view, &ref); err != nil {
-			return nil, nil, err
+	for _, d := range found {
+		if isView[d.view] && isView[d.ref] && d.view != d.ref {
+			deps[d.view] = append(deps[d.view], d.ref)
 		}
-		if isView[view] && isView[ref] && view != ref {
-			deps[view] = append(deps[view], ref)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, err
 	}
 	for v, ds := range deps {
 		sort.Strings(ds)

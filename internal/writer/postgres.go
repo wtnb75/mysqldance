@@ -273,7 +273,9 @@ func pgColumnType(c source.ColumnDef) (string, sqlvalue.PGColumn, error) {
 	num := sqlvalue.PGColumn{Kind: sqlvalue.PGNumber}
 	switch c.DataType {
 	case "tinyint":
-		if strings.HasPrefix(c.Type, "tinyint(1)") {
+		// An unsigned TINYINT is never a boolean, whether the server reports
+		// its display width ("tinyint(1) unsigned") or not ("tinyint unsigned").
+		if strings.HasPrefix(c.Type, "tinyint(1)") && !unsigned {
 			return "boolean", sqlvalue.PGColumn{Kind: sqlvalue.PGBool}, nil
 		}
 		return "smallint", num, nil

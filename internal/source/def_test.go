@@ -3,11 +3,18 @@ package source
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 )
 
 func TestDefs(t *testing.T) {
 	cfg, db, conn := testDB(t)
+	// MariaDB has no functional key parts.
+	functionalKey, wantFunctional := " KEY ((qty + 1)),", 1
+	mariadb := isMariaDB(t, conn)
+	if mariadb {
+		functionalKey, wantFunctional = "", 0
+	}
 	mustExec(t, conn,
 		"CREATE TABLE parent (id BIGINT UNSIGNED NOT NULL PRIMARY KEY, code VARCHAR(10) NOT NULL, UNIQUE KEY uk_code (code), UNIQUE KEY uk_id_code (id, code))",
 		"CREATE TABLE child ("+
@@ -20,7 +27,7 @@ func TestDefs(t *testing.T) {
 			" twice INT AS (parent_id * 2) VIRTUAL,"+
 			" PRIMARY KEY (id),"+
 			" KEY idx_note (note(10), created DESC),"+
-			" KEY ((qty + 1)),"+
+			functionalKey+
 			" FULLTEXT KEY ft_note (note),"+
 			" CONSTRAINT fk_parent FOREIGN KEY (parent_id, code) REFERENCES parent (id, code) ON DELETE CASCADE ON UPDATE RESTRICT,"+
 			" CONSTRAINT ck_qty CHECK (qty >= 0))",
@@ -46,7 +53,12 @@ func TestDefs(t *testing.T) {
 	for _, c := range child.Columns {
 		byName[c.Name] = c
 	}
-	if c := byName["parent_id"]; c.Type != "bigint unsigned" || c.DataType != "bigint" || !c.Nullable || c.Default != nil {
+	// MariaDB (and MySQL before 8.0.19) report the display width of integers.
+	wantType := "bigint unsigned"
+	if mariadb {
+		wantType = "bigint(20) unsigned"
+	}
+	if c := byName["parent_id"]; c.Type != wantType || c.DataType != "bigint" || !c.Nullable || c.Default != nil {
 		t.Errorf("parent_id = %+v", c)
 	}
 	if c := byName["code"]; c.Default == nil || *c.Default != "x" || c.Nullable {
@@ -55,7 +67,9 @@ func TestDefs(t *testing.T) {
 	if c := byName["qty"]; c.Default == nil || *c.Default != "1.50" || c.Type != "decimal(10,2)" {
 		t.Errorf("qty = %+v", c)
 	}
-	if c := byName["created"]; c.Default == nil || *c.Default != "CURRENT_TIMESTAMP" || !c.DefaultExpr || !c.OnUpdate {
+	// MariaDB writes the function as current_timestamp().
+	if c := byName["created"]; c.Default == nil || !c.DefaultExpr || !c.OnUpdate ||
+		strings.ToUpper(strings.TrimSuffix(*c.Default, "()")) != "CURRENT_TIMESTAMP" {
 		t.Errorf("created = %+v", c)
 	}
 	if c := byName["id"]; !c.AutoIncrement {
@@ -88,8 +102,8 @@ func TestDefs(t *testing.T) {
 			}
 		}
 	}
-	if functional != 1 {
-		t.Errorf("functional key parts = %d, want 1; indexes %+v", functional, child.Indexes)
+	if functional != wantFunctional {
+		t.Errorf("functional key parts = %d, want %d; indexes %+v", functional, wantFunctional, child.Indexes)
 	}
 
 	if len(child.ForeignKeys) != 1 {

@@ -57,18 +57,6 @@
   - [ ] 手動実行で PR が作られ、PR 上で CI が通る
   - [ ] 統合テストが必要な更新でも、B-026 の CI で検証される
 
-## B-038 [todo|P2] MariaDB に対応する
-- 依存: B-037
-- 概要: B-037 の調査結果（設計書 11 節）に基づき、MariaDB 向けの `dialect` を足して `dialectFor` の「MariaDB は対象外」のエラーを外す。「バージョン差」ではなく「DBMS の方言差」として扱い、バージョン依存の処理を 1 か所にまとめる方針を方言差にも広げる（設計書 10.5 節）。`dialect` は SQL 文字列だけでなく、セッション設定、ビュー依存の取得、既定値の読み方も持つように広げる。
-- 受け入れ条件:
-  - [ ] `SET SESSION show_create_table_verbosity` を MySQL だけに適用し、MariaDB 10.11 と 11.4 の両方でスナップショットを開始できる（今は `Unknown system variable` で失敗する）
-  - [ ] ビュー依存を `VIEW_TABLE_USAGE` なしで取得できる（`VIEW_DEFINITION` の解析など。方式は実装者が決める）。依存したビューが先に来ない並びにならない
-  - [ ] `COLUMN_DEFAULT` を方言ごとに読む。MariaDB の文字列 `"NULL"` は既定値なし、引用符つきの文字列は引用を外す、式（`current_timestamp()`、`uuid()` など）は式として扱う。SQLite / PostgreSQL 向けの出力に反映される
-  - [ ] `TABLE_TYPE` が `SEQUENCE` / `SYSTEM VERSIONED` のものを黙って落とさない（エラーにするか、出力する。方針は実装者が決めて README に書く）
-  - [ ] MariaDB の実機（10.11 と 11.4）で統合テストが通る（ダンプと、MariaDB への復元での行数・値の一致）
-  - [ ] `dialect` 以外のコードに MariaDB 固有の分岐を入れない
-  - [ ] README の対象バージョンと、MariaDB の出力は MySQL に流せない（照合順序など）注意を更新する
-
 ## B-039 [todo|P2] MySQL 5.7 の 8.0 との差異を実機で確かめる
 - 概要: 5.7 には `VIEW_TABLE_USAGE` と `INVISIBLE` 列がなく、`CREATE TABLE` の出力形式にも差がある（`dialect.go` のコメントにも記載）。古いバージョンのデータを持ってきたい意向がある（設計書 10.5 節）。実機で差異を確かめ、対応の方針を決める。この項目はコードを変えず、調査結果を設計書に書く。
 - 受け入れ条件:
@@ -259,6 +247,19 @@
   - [ ] 1 つの DB だけをダンプしたときの出力は変わらない
 
 # Done
+
+## B-038 [done|P2] MariaDB に対応する
+- 依存: B-037
+- 概要: B-037 の調査結果（設計書 11 節）に基づき、MariaDB 向けの `dialect` を足して `dialectFor` の「MariaDB は対象外」のエラーを外す。「バージョン差」ではなく「DBMS の方言差」として扱い、バージョン依存の処理を 1 か所にまとめる方針を方言差にも広げる（設計書 10.5 節）。`dialect` は SQL 文字列だけでなく、セッション設定、ビュー依存の取得、既定値の読み方も持つように広げる。
+- 確定した仕様: MariaDB の最小バージョンは設けない（MariaDB と名乗るサーバーはバージョンで拒否しない。確認したのは 10.11 と 11.4 だけで、README に書いた）。`SELECT VERSION()` と `dialectFor` を `SET` より先に行い、セッション設定は `dialect` が持つ。`SEQUENCE` / `SYSTEM VERSIONED` はエラーにする（出力しない）。
+- 受け入れ条件:
+  - [x] `SET SESSION show_create_table_verbosity` を MySQL だけに適用し、MariaDB 10.11 と 11.4 の両方でスナップショットを開始できる（今は `Unknown system variable` で失敗する）
+  - [x] ビュー依存を `VIEW_TABLE_USAGE` なしで取得できる（`VIEW_DEFINITION` の解析など。方式は実装者が決める）。依存したビューが先に来ない並びにならない
+  - [x] `COLUMN_DEFAULT` を方言ごとに読む。MariaDB の文字列 `"NULL"` は既定値なし、引用符つきの文字列は引用を外す、式（`current_timestamp()`、`uuid()` など）は式として扱う。SQLite / PostgreSQL 向けの出力に反映される
+  - [x] `TABLE_TYPE` が `BASE TABLE` / `VIEW` 以外（`SEQUENCE` / `SYSTEM VERSIONED`）のものを黙って落とさない。方針は「エラーにする」（出力はしない）。ダンプの検査の段階で、古いファイルを消す前に失敗し、テーブル名と種別をエラーに書く。README に書く
+  - [x] MariaDB の実機（10.11 と 11.4）で、既存の統合テスト全体（MySQL 固有のテキストを前提にするものは、テスト専用の判定で skip）と、MariaDB 専用の往復テスト（ダンプ → MariaDB への復元 → 行数・値の一致）が通る。`task test:integration:mariadb` で実行する（`task test:integration` の既定には含めない）
+  - [x] `dialect` 以外のコードに MariaDB 固有の分岐を入れない
+  - [x] README の対象バージョンと、MariaDB の出力は MySQL に流せない（照合順序など）注意を更新する
 
 ## B-037 [done|P2] MariaDB の MySQL との差異を実機で確かめる
 - 概要: 設計書 12 節に挙げた MariaDB の差異（`SHOW CREATE TABLE` の既定値の書式、照合順序、JSON が `LONGTEXT` + `CHECK`、シーケンス、`VIEW_TABLE_USAGE` がないことなど）は記憶ベースで未確認。実機で確かめ、対応の方針を決める。この項目はコードを変えず、調査結果を設計書に書く。

@@ -178,7 +178,9 @@ func TestPostgresConstraintsNeedAUniqueTarget(t *testing.T) {
 func TestPostgresTypes(t *testing.T) {
 	cases := []struct{ typ, data, want string }{
 		{"tinyint(1)", "tinyint", "boolean"},
-		{"tinyint(1) unsigned", "tinyint", "boolean"},
+		// MariaDB reports the width of an unsigned TINYINT(1); MySQL 8.0.19+ does
+		// not. Both are smallint (README, "PostgreSQL").
+		{"tinyint(1) unsigned", "tinyint", "smallint"},
 		{"tinyint(4)", "tinyint", "smallint"},
 		{"tinyint unsigned", "tinyint", "smallint"},
 		{"smallint", "smallint", "smallint"},

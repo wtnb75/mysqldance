@@ -1,0 +1,186 @@
+package source
+
+import (
+	"database/sql"
+	"reflect"
+	"slices"
+	"strings"
+	"testing"
+)
+
+func TestDialectFor(t *testing.T) {
+	for _, v := range []string{"8.0.46", "8.4.13", "9.1.0", "8.0.46-0ubuntu0.22.04.1"} {
+		d, err := dialectFor(v)
+		if err != nil {
+			t.Errorf("dialectFor(%q): %v", v, err)
+			continue
+		}
+		if !slices.Contains(d.session, "SET SESSION show_create_table_verbosity = 0") {
+			t.Errorf("dialectFor(%q).session = %q, want show_create_table_verbosity", v, d.session)
+		}
+	}
+	// MariaDB reports its own version, sometimes behind the "5.5.5-" prefix of
+	// the replication handshake. It has no show_create_table_verbosity.
+	for _, v := range []string{"10.11.19-MariaDB-ubu2204", "11.4.13-MariaDB-ubu2404", "5.5.5-10.11.19-MariaDB", "10.5.0-mariadb"} {
+		d, err := dialectFor(v)
+		if err != nil {
+			t.Errorf("dialectFor(%q): %v", v, err)
+			continue
+		}
+		for _, stmt := range d.session {
+			if strings.Contains(stmt, "show_create_table_verbosity") {
+				t.Errorf("dialectFor(%q).session has %q, which MariaDB does not know", v, stmt)
+			}
+		}
+		for _, want := range []string{"SET SESSION sql_mode = ''", "SET SESSION sql_quote_show_create = 1"} {
+			if !slices.Contains(d.session, want) {
+				t.Errorf("dialectFor(%q).session = %q, want %q", v, d.session, want)
+			}
+		}
+	}
+	for _, v := range []string{"5.7.44", "garbage", ""} {
+		if _, err := dialectFor(v); err == nil {
+			t.Errorf("dialectFor(%q) succeeded, want an error", v)
+		}
+	}
+}
+
+func TestCheckTableType(t *testing.T) {
+	for _, typ := range []string{"BASE TABLE", "VIEW"} {
+		if err := checkTableType("t", typ); err != nil {
+			t.Errorf("checkTableType(%q): %v", typ, err)
+		}
+	}
+	// A type that is neither would be left out of the dump without a word.
+	for _, typ := range []string{"SEQUENCE", "SYSTEM VERSIONED", "SYSTEM VIEW", ""} {
+		err := checkTableType("t", typ)
+		if err == nil {
+			t.Errorf("checkTableType(%q) succeeded, want an error", typ)
+			continue
+		}
+		if !strings.Contains(err.Error(), "`t`") || !strings.Contains(err.Error(), typ) {
+			t.Errorf("checkTableType(%q) = %q, want the table name and the type", typ, err)
+		}
+	}
+}
+
+//go:fix inline
+func TestColumnDefault(t *testing.T) {
+	null := sql.NullString{}
+	val := func(s string) sql.NullString { return sql.NullString{String: s, Valid: true} }
+	tests := []struct {
+		name      string
+		raw       sql.NullString
+		extra     string
+		want      *string
+		wantIsExp bool
+	}{
+		{"no default", null, "", nil, false},
+		{"plain", val("x"), "", new("x"), false},
+		{"expression", val("uuid()"), "DEFAULT_GENERATED", new("uuid()"), true},
+		{"timestamp", val("CURRENT_TIMESTAMP"), "DEFAULT_GENERATED on update CURRENT_TIMESTAMP", new("CURRENT_TIMESTAMP"), true},
+	}
+	for _, tc := range tests {
+		got, isExp := mysql8.columnDefault(tc.raw, tc.extra)
+		if !reflect.DeepEqual(got, tc.want) || isExp != tc.wantIsExp {
+			t.Errorf("mysql %s: = %v, %v; want %v, %v", tc.name, deref(got), isExp, deref(tc.want), tc.wantIsExp)
+		}
+	}
+}
+
+func deref(s *string) any {
+	if s == nil {
+		return nil
+	}
+	return *s
+}
+
+// TestMariaDBColumnDefault covers COLUMN_DEFAULT as MariaDB reports it
+// (checked on 10.11 and 11.4): the text of the DEFAULT clause, not a value.
+func TestMariaDBColumnDefault(t *testing.T) {
+	d, err := dialectFor("11.4.13-MariaDB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	val := func(s string) sql.NullString { return sql.NullString{String: s, Valid: true} }
+	tests := []struct {
+		name    string
+		raw     sql.NullString
+		want    *string
+		wantExp bool
+	}{
+		{"no default (NOT NULL)", sql.NullString{}, nil, false},
+		{"DEFAULT NULL is the text NULL", val("NULL"), nil, false},
+		{"string", val("'x'"), new("x"), false},
+		{"empty string", val("''"), new(""), false},
+		{"the string NULL is quoted", val("'NULL'"), new("NULL"), false},
+		{"doubled quote", val("'it''s'"), new("it's"), false},
+		{"quote only", val("'''quoted'''"), new("'quoted'"), false},
+		{"backslash", val(`'a\\b'`), new(`a\b`), false},
+		{"newline", val(`'l1\nl2'`), new("l1\nl2"), false},
+		{"escaped quote", val(`'a\'b'`), new("a'b"), false},
+		{"nul and ctrl-z", val(`'a\0b\Zc'`), new("a\x00b\x1ac"), false},
+		{"a string that looks like hex", val("'0x41'"), new("0x41"), false},
+		{"integer", val("0"), new("0"), false},
+		{"negative integer", val("-5"), new("-5"), false},
+		{"decimal", val("-1.50"), new("-1.50"), false},
+		{"float", val("1.5"), new("1.5"), false},
+		{"exponent", val("1e-10"), new("1e-10"), false},
+		{"bit", val("b'10101'"), new("b'10101'"), false},
+		{"date is quoted", val("'2020-01-02'"), new("2020-01-02"), false},
+		{"current_timestamp", val("current_timestamp()"), new("current_timestamp()"), true},
+		{"current_timestamp with precision", val("current_timestamp(3)"), new("current_timestamp(3)"), true},
+		{"function", val("uuid()"), new("uuid()"), true},
+		{"parenthesized expression", val("(`r` + 1)"), new("(`r` + 1)"), true},
+	}
+	for _, tc := range tests {
+		got, isExp := d.columnDefault(tc.raw, "")
+		if !reflect.DeepEqual(got, tc.want) || isExp != tc.wantExp {
+			t.Errorf("%s: columnDefault(%q) = %v, %v; want %v, %v", tc.name, tc.raw.String, deref(got), isExp, deref(tc.want), tc.wantExp)
+		}
+	}
+	// ON UPDATE and AUTO_INCREMENT in EXTRA do not make a default an expression.
+	if got, isExp := d.columnDefault(val("'x'"), "on update current_timestamp()"); got == nil || *got != "x" || isExp {
+		t.Errorf("EXTRA changed a quoted default: %v, %v", deref(got), isExp)
+	}
+}
+
+func TestViewRefs(t *testing.T) {
+	views := []string{"a_top", "v1", "v2", "weird`name"}
+	defs := map[string]string{
+		// Names are qualified with the schema, as information_schema.VIEWS shows them.
+		"a_top":       "select `x`.`id` AS `id` from (`pr`.`v2` `x` join `pr`.`t` `y` on(`y`.`id` = `x`.`id`))",
+		"v1":          "select `pr`.`t`.`id` AS `id` from `pr`.`t`",
+		"v2":          "select `v1`.`id` AS `id` from `pr`.`v1`",
+		"weird`name":  "select `id` from `pr`.`t`",
+		"unqualified": "",
+	}
+	got := viewRefs(defs, "pr", views)
+	want := []viewDep{{"a_top", "v2"}, {"v2", "v1"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("viewRefs = %v, want %v", got, want)
+	}
+
+	// A view named like a prefix of another is not a reference to it, a view in
+	// another schema is not either, and a quote inside a name is doubled.
+	defs = map[string]string{
+		"v1":         "select 1 from `pr`.`v10`, `other`.`v2`",
+		"v10":        "select 1 from `pr`.`weird``name`",
+		"v2":         "select 1",
+		"weird`name": "select 1",
+	}
+	got = viewRefs(defs, "pr", []string{"v1", "v10", "v2", "weird`name"})
+	want = []viewDep{{"v1", "v10"}, {"v10", "weird`name"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("viewRefs = %v, want %v", got, want)
+	}
+
+	// With lower_case_table_names=2 the definition may spell a name in another
+	// case than TABLE_NAME does; missing the reference would misorder the views.
+	defs = map[string]string{"Top": "select 1 from `PR`.`base_V`", "base_v": "select 1"}
+	got = viewRefs(defs, "pr", []string{"Top", "base_v"})
+	want = []viewDep{{"Top", "base_v"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("viewRefs (case) = %v, want %v", got, want)
+	}
+}

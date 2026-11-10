@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
@@ -76,6 +77,18 @@ func testDB(t *testing.T) (Config, string, *sql.Conn) {
 	})
 	mustExec(t, conn, "CREATE DATABASE `"+name+"`", "USE `"+name+"`")
 	return cfg, name, conn
+}
+
+// isMariaDB reports whether the test server is MariaDB. Tests use it only to
+// skip checks written in MySQL's SHOW CREATE or JSON text, or to run a check
+// of MariaDB-only behavior; production code never asks.
+func isMariaDB(t *testing.T, conn *sql.Conn) bool {
+	t.Helper()
+	var v string
+	if err := conn.QueryRowContext(context.Background(), "SELECT VERSION()").Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	return strings.Contains(strings.ToLower(v), "mariadb")
 }
 
 func mustExec(t *testing.T, conn *sql.Conn, stmts ...string) {
