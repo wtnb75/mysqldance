@@ -170,9 +170,59 @@ func (e *env) restore(t *testing.T, dir string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.ExecContext(context.Background(), string(text)); err != nil {
-			t.Fatalf("restore %s: %v", name, err)
+		conn, err := db.Conn(context.Background())
+		if err != nil {
+			t.Fatal(err)
 		}
+		for _, stmt := range clientStatements(string(text)) {
+			if _, err := conn.ExecContext(context.Background(), stmt); err != nil {
+				_ = conn.Close()
+				t.Fatalf("restore %s: %v\nstatement: %s", name, err, stmt)
+			}
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// clientStatements splits a script the way the mysql client does for the one
+// command the dump uses: DELIMITER. Text under the default ";" delimiter is
+// kept as one chunk (the multi-statement connection runs it), and each
+// statement under another delimiter is its own chunk without the delimiter.
+func clientStatements(script string) []string {
+	var out []string
+	var cur strings.Builder
+	delim := ";"
+	flush := func() {
+		if s := strings.TrimSpace(cur.String()); s != "" {
+			out = append(out, s)
+		}
+		cur.Reset()
+	}
+	for _, line := range strings.SplitAfter(script, "\n") {
+		if rest, ok := strings.CutPrefix(line, "DELIMITER "); ok {
+			flush()
+			delim = strings.TrimSpace(rest)
+			continue
+		}
+		cur.WriteString(line)
+		if delim != ";" && strings.HasSuffix(strings.TrimRight(cur.String(), " \t\r\n"), delim) {
+			s := strings.TrimRight(cur.String(), " \t\r\n")
+			cur.Reset()
+			cur.WriteString(strings.TrimSuffix(s, delim))
+			flush()
+		}
+	}
+	flush()
+	return out
+}
+
+func TestClientStatements(t *testing.T) {
+	script := "SET a=1;\nSET b=2;\nDELIMITER $$\n\nDROP TRIGGER IF EXISTS `t`$$\nCREATE TRIGGER x BEGIN\n SET @a=1;\nEND$$\n\nDELIMITER ;\nSET c=3;\n"
+	want := []string{"SET a=1;\nSET b=2;", "DROP TRIGGER IF EXISTS `t`", "CREATE TRIGGER x BEGIN\n SET @a=1;\nEND", "SET c=3;"}
+	if got := clientStatements(script); !reflect.DeepEqual(got, want) {
+		t.Errorf("clientStatements = %q, want %q", got, want)
 	}
 }
 

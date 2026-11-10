@@ -41,6 +41,18 @@ func (m *MySQL) WriteSchema(w io.Writer, s Schema) error {
 	return schemafile.Write(w, s.DB, s.CreateDatabase, tables, ordered)
 }
 
+// WriteTriggers implements TriggerWriter. The DEFINER clause is removed, as for
+// views, so the triggers belong to the restoring user and the name of the
+// dumping user stays out of the output.
+func (m *MySQL) WriteTriggers(w io.Writer, s Schema) error {
+	triggers := make([]schemafile.Trigger, len(s.Triggers))
+	for i, t := range s.Triggers {
+		t.Create = schemafile.StripDefiner(t.Create)
+		triggers[i] = t
+	}
+	return schemafile.WriteTriggers(w, s.DB, triggers)
+}
+
 // NewRowWriter implements Writer. Each value is rendered as a MySQL literal
 // when its row arrives; the split and the INSERT boundaries are decided on the
 // rendered text of that row alone, so no row is held.

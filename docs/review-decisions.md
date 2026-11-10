@@ -620,3 +620,38 @@
 - 却下の理由: 好みの問題で、失敗のシナリオがない。`Rows` は `EachRow` を集めるだけの薄い関数で、統合テストの比較に使う。`Write` / `WriteStatements` は `Stream` の 1 ファイル用の入口で、`Split` は旧実装との差分テストで境界の規則を独立に確かめる基準（コピーを持つと規則がずれたときに検出できない）。
 - 初出: B-044
 - 再出: 0
+
+## R-087 トリガーの `character_set_client` / `collation_connection` を残さない
+- 対象: internal/schemafile/triggers.go の WriteTriggers
+- 指摘: 作成時の接続の文字コードを残さないと、復元したトリガーの属性が変わり、照合順序に敏感な比較の挙動が変わりうる。
+- 却下の理由: B-046 で確定した仕様（設計書 12 節の B-046、README の Triggers 節）。全ファイルは固定ヘッダーの `SET NAMES utf8mb4` で流し、本体のテキストは `utf8mb4` で読み書きするので、本体は変わらない。属性まで残すと、サーバーや接続の設定でダンプが変わり、「環境依存の値を出力に混ぜない」（決定性）に反する。`sql_mode` は本体の解釈を変えるので残す。
+- 初出: B-046
+- 再出: 0
+
+## R-088 ダンプしたテーブルに属さないトリガーも出力される
+- 対象: internal/dump/dump.go の dumpDB（snap.Triggers）
+- 指摘: `snap.Tables` が飛ばしたテーブルのトリガーが出て、復元で `CREATE TRIGGER` がテーブル欠落で失敗する。
+- 却下の理由: `source.Tables` は BASE TABLE を 1 つも飛ばさない（警告は出すが全て返す。source.go の Tables）。トリガーは BASE TABLE にしか付かないので、全トリガーの表はダンプされるテーブルに含まれる。
+- 初出: B-046
+- 再出: 0
+
+## R-089 SHOW CREATE TRIGGER を `snap.Readers()` で並列化する
+- 対象: internal/source/triggers.go の Triggers
+- 指摘: トリガーが数千あると 1 件ずつの往復で遅い。
+- 却下の理由: 失敗のシナリオがない速度の好み。ビューの `SHOW CREATE VIEW` も同じ直列で、トリガーが数千ある DB は想定の規模（MVP は小さな DB）の外。並列化は別の項目で測ってから決める。
+- 初出: B-046
+- 再出: 0
+
+## R-090 トリガーに `StripDefiner`（ビュー向けの正規表現）を使っている
+- 対象: internal/writer/mysql.go の WriteTriggers
+- 指摘: 特殊な DEFINER の書き方だと正規表現に一致せず、DEFINER が残る。
+- 却下の理由: `SHOW CREATE TRIGGER` の DEFINER は `SHOW CREATE VIEW` と同じく常にバッククォートで引用された `` `u`@`h` `` で出る。正規表現の `ident` はこの形を扱い、`TestStripDefinerQuotedUsers` が特殊な文字を含むユーザー名を確かめている。トリガーの出力でも `DEFINER` が残らないことは統合テストで確認した。
+- 初出: B-046
+- 再出: 0
+
+## R-091 テストの `clientStatements` が mysql クライアントの近似でしかない
+- 対象: internal/dump/dump_test.go の clientStatements
+- 指摘: 文字列やコメントの中の区切り文字など、本物のクライアントと違う扱いがあり、テストが通っても実際の復元が失敗しうる。
+- 却下の理由: ヘルパーはダンプが出す形（`DELIMITER` の行と、文の末尾の区切り）だけを扱う。文字列やコメントの中の区切り文字は、`chooseDelimiter` が文の中に現れない区切りを選ぶので起きない（`TestWriteTriggersDelimiterAvoidsBody`）。本物の `mysql` クライアントでの復元は、検証（完了前）で手で確かめる。
+- 初出: B-046
+- 再出: 0

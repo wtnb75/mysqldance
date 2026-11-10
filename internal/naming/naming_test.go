@@ -74,6 +74,29 @@ func TestIsOwnedBy(t *testing.T) {
 	}
 }
 
+func TestTriggersFile(t *testing.T) {
+	if got := TriggersFile("my db"); got != "my%20db.20-triggers.sql" {
+		t.Errorf("TriggersFile = %q", got)
+	}
+	if !IsOwnedBy("a.20-triggers.sql", "a") || IsOwnedBy("a-b.20-triggers.sql", "a") {
+		t.Error("IsOwnedBy does not recognize exactly the triggers file of its database")
+	}
+	// Restoring runs the files in name order: the triggers go in after every
+	// data file (so loading fires none) and before the constraints file.
+	for _, db := range []string{"a", "a-b", "a_b", "a.b"} {
+		for _, tbl := range []string{"t", "0", "-", "A", "a.b", "~"} {
+			for _, d := range DataFileParts(db, tbl, 12345) {
+				if tr := TriggersFile(db); tr <= d {
+					t.Errorf("TriggersFile(%q)=%q not > data file %q", db, tr, d)
+				}
+			}
+		}
+		if TriggersFile(db) >= ConstraintsFile(db) {
+			t.Errorf("TriggersFile(%q) is not before the constraints file", db)
+		}
+	}
+}
+
 func TestConstraintsFile(t *testing.T) {
 	if got := ConstraintsFile("my db"); got != "my%20db.90-constraints.sql" {
 		t.Errorf("ConstraintsFile = %q", got)

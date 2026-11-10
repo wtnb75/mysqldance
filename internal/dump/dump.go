@@ -170,6 +170,20 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	if err != nil {
 		return err
 	}
+	// Every trigger is on a base table, and Tables returns all of them (R-088).
+	triggers, err := snap.Triggers(ctx)
+	if err != nil {
+		return err
+	}
+	tw, hasTriggers := opt.Writer.(writer.TriggerWriter)
+	if !hasTriggers {
+		// Say so rather than leave them out silently.
+		for _, t := range triggers {
+			_, _ = fmt.Fprintf(opt.Log, "warning: database %q: trigger %s on table %s is not output\n",
+				db, sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(t.Table))
+		}
+		triggers = nil
+	}
 	var defs map[string]source.TableDef
 	if opt.Writer.NeedsDefs() {
 		if defs, err = snap.Defs(ctx); err != nil {
@@ -182,7 +196,7 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		}
 	}
 	schema := writer.Schema{
-		DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps, Defs: defs,
+		DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps, Triggers: triggers, Defs: defs,
 		Warn: func(msg string) { _, _ = fmt.Fprintf(opt.Log, "warning: database %q: %s\n", db, msg) },
 	}
 
@@ -190,6 +204,15 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	schemaName := naming.SchemaFile(db)
 	if err := claim(seen, schemaName, fmt.Sprintf("the schema of database %q", db)); err != nil {
 		return err
+	}
+	// A database without triggers has no triggers file, so the file of an
+	// earlier dump does not outlive its triggers (see removeStale).
+	// triggers is nil for a writer that cannot write them (see above).
+	writeTriggers := len(triggers) > 0
+	if writeTriggers {
+		if err := claim(seen, naming.TriggersFile(db), fmt.Sprintf("the triggers of database %q", db)); err != nil {
+			return err
+		}
 	}
 	cw, hasConstraints := opt.Writer.(writer.ConstraintWriter)
 	if hasConstraints {
@@ -242,6 +265,13 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 			if err := claim(seen, n, fmt.Sprintf("table %q of database %q", t.Name, db)); err != nil {
 				return err
 			}
+		}
+	}
+	if writeTriggers {
+		if err := st.create(filepath.Join(opt.OutDir, naming.TriggersFile(db)), func(w io.Writer) error {
+			return tw.WriteTriggers(w, schema)
+		}); err != nil {
+			return err
 		}
 	}
 	if hasConstraints {

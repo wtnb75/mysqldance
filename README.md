@@ -83,6 +83,7 @@ The output directory is flat (no subdirectories). For each database, these files
 | --- | --- |
 | `<db>.00-schema.sql` | The fixed header (with `CREATE DATABASE IF NOT EXISTS` between the `SET` statements and `USE`), then `DROP ... IF EXISTS` and `CREATE` for tables (by name) and views (in dependency order) |
 | `<db>.10-data.<table>.sql` | The fixed header, then the table's `INSERT` statements |
+| `<db>.20-triggers.sql` | Only for a database that has triggers (see "Triggers"): the fixed header, then `DROP TRIGGER IF EXISTS`, `SET SQL_MODE` and `CREATE TRIGGER` for each trigger |
 
 Every file starts with the same fixed header. In the schema file, `CREATE DATABASE IF NOT EXISTS ...;` goes between the `SET` statements and `USE` (`SET NAMES utf8mb4` runs first so that non-ASCII database names are read correctly even when the client's default character set is not `utf8mb4`).
 
@@ -97,6 +98,18 @@ USE `<db>`;
 
 A data file has ``INSERT INTO `t` VALUES`` followed by the values, one record per line. Generated columns are not written, and column names are listed explicitly (``INSERT INTO `t` (`c1`, ...) VALUES``) only for tables that have a generated or `INVISIBLE` column. A table with zero rows produces a file containing only the header.
 
+### Triggers
+
+A database with triggers also gets `<db>.20-triggers.sql` (a database without any gets no such file, and one left from an earlier dump is removed). The name sorts after every data file, so the triggers are created once all rows are in and loading fires none of them; it sorts before `<db>.90-constraints.sql`.
+
+- Each trigger is written as `DROP TRIGGER IF EXISTS`, `SET SQL_MODE='...'` and the statement of `SHOW CREATE TRIGGER`. The `sql_mode` is the one the trigger was created under, because it changes how the body is parsed (`ANSI_QUOTES`, for one).
+- **The `DEFINER=...` clause is not written**, as for views: the triggers are created as the user who restores the dump, and the name of the dumping user stays out of the output.
+- Bodies may contain `;`, so the statements end with a delimiter set by `DELIMITER` (`$$`; if a statement contains it, or ends with a character that would join it, the next of `//`, `##`, `%%`, `!!`, `$$$` and so on). A trigger with a line that starts with `DELIMITER` fails the run, because the client would run that line as a command. `DELIMITER` is a command of the `mysql` client: the file restores with the client (which is what `docker-entrypoint-initdb.d` runs), not through a driver that sends the whole file as one multi-statement query.
+- Triggers are ordered by table, timing (`AFTER` before `BEFORE`) and event, then in the order the server runs them (their creation order), then by name. Triggers of the same table, timing and event are therefore created in the order they run in, so the restored ones run in that order too.
+- The character set and collation of the connection the trigger was created with are not kept: the file runs with `SET NAMES utf8mb4`.
+- A trigger whose statement cannot be read (the account lacks the `TRIGGER` privilege) is an error, not a silent omission.
+- `--target sqlite` and `--target postgres` do not write triggers (their bodies are MySQL syntax); a warning names each one.
+
 ### SQLite output
 
 `--target sqlite` writes the same files (same names, same one-record-per-line `INSERT`s, same splitting and determinism) in SQL that SQLite runs. The files of one MySQL database restore into one SQLite database; run them in lexicographic file name order:
@@ -110,7 +123,7 @@ LC_ALL=C cat dump/mydb.*.sql | sqlite3 mydb.db
 - Index names are made unique in the database as `<table>__<index>`; if that collides with another table or index name, the run fails.
 - A line break inside a string value is written as `'a'||char(10)||'b'`, so one record stays on one line.
 - MySQL's `AUTO_INCREMENT` is not carried over (as in the MySQL output, the counter is not restored). Table and column comments, character sets and collations are dropped; text compares as plain bytes in SQLite, which is never stricter than MySQL's collations, so the data always loads.
-- **Not output, with a warning for each** (printed to standard error as `warning: database "db": ...`, the dump continues): views (their `SELECT` is MySQL syntax; converting them is a separate backlog item), generated columns (their values are not dumped either), `ON UPDATE CURRENT_TIMESTAMP`, default expressions other than `CURRENT_TIMESTAMP`, `FULLTEXT` and `SPATIAL` indexes, indexes with an expression key part or on a generated column, CHECK constraints, and foreign keys into another database. A prefix index (`col(10)`) is created on the whole column, which is also reported. Triggers, routines and events are not dumped for any target.
+- **Not output, with a warning for each** (printed to standard error as `warning: database "db": ...`, the dump continues): views (their `SELECT` is MySQL syntax; converting them is a separate backlog item), generated columns (their values are not dumped either), `ON UPDATE CURRENT_TIMESTAMP`, default expressions other than `CURRENT_TIMESTAMP`, `FULLTEXT` and `SPATIAL` indexes, indexes with an expression key part or on a generated column, CHECK constraints, and foreign keys into another database. A prefix index (`col(10)`) is created on the whole column, which is also reported. Triggers are not output either, with a warning for each (their bodies are MySQL syntax). Routines and events are not dumped for any target.
 - A column type with no SQLite counterpart makes the run fail instead of guessing.
 
 ### PostgreSQL output
@@ -131,7 +144,7 @@ The foreign keys are in the last file because the data files run in table-name o
 - A line break inside a string value is written as an `E'a\nb'` string, so one record stays on one line.
 - MySQL's `AUTO_INCREMENT` is not carried over: the column is a plain integer, the counter is not restored (as in the MySQL output), and a later `INSERT` has to give the key. Comments, character sets and collations are dropped.
 - **A value or name PostgreSQL cannot hold fails the run** with the table and column named: a NUL byte in text, a zero or partial date (`0000-00-00`, `2024-00-10`), a name over 63 bytes, a database name starting with `pg_`, a column type with no PostgreSQL counterpart.
-- **Not output, with a warning for each** (printed to standard error as `warning: database "db": ...`, the dump continues): views (their `SELECT` is MySQL syntax; converting them is a separate backlog item), generated columns (their values are not dumped either), `ON UPDATE CURRENT_TIMESTAMP`, default expressions other than `CURRENT_TIMESTAMP`, `FULLTEXT` and `SPATIAL` indexes, indexes with an expression key part or on a generated column, CHECK constraints, and foreign keys that PostgreSQL cannot take: into another database (the constraints file of one database runs before the schema file of a later one), onto columns that are not a primary or unique key (InnoDB accepts any index, PostgreSQL does not), or onto a generated column. A prefix index (`col(10)`) is created on the whole column, which is also reported. Triggers, routines and events are not dumped for any target.
+- **Not output, with a warning for each** (printed to standard error as `warning: database "db": ...`, the dump continues): views (their `SELECT` is MySQL syntax; converting them is a separate backlog item), generated columns (their values are not dumped either), `ON UPDATE CURRENT_TIMESTAMP`, default expressions other than `CURRENT_TIMESTAMP`, `FULLTEXT` and `SPATIAL` indexes, indexes with an expression key part or on a generated column, CHECK constraints, and foreign keys that PostgreSQL cannot take: into another database (the constraints file of one database runs before the schema file of a later one), onto columns that are not a primary or unique key (InnoDB accepts any index, PostgreSQL does not), or onto a generated column. A prefix index (`col(10)`) is created on the whole column, which is also reported. Triggers are not output either, with a warning for each (their bodies are MySQL syntax). Routines and events are not dumped for any target.
 
 ### MariaDB
 
@@ -181,7 +194,7 @@ In file names, database and table names keep only ASCII letters, digits, `_` and
 - Row order: primary key; if there is none, the first NOT NULL unique key (by index name in lexicographic order); if there is neither, the byte order of each row's output string. String keys are compared as binary, not by collation.
 - `INSERT` statement boundaries are decided by row content (a hash), so updating one row normally changes just that row in the diff (one deletion plus one addition). Adding or deleting rows only changes the area around them.
 - Value formats: strings are `'...'` (with `\`, `'`, `"`, newlines, NUL and so on escaped); `BLOB`, `BINARY`, `VARBINARY` and `GEOMETRY` are `0x` followed by hex (empty is `''`); `BIT` is `b'...'`; NULL is `NULL`. Times are read and written with `TIME_ZONE='+00:00'`.
-- The `DEFINER=...` clause of views is not written (views are created as the restoring user).
+- The `DEFINER=...` clause of views and triggers is not written (they are created as the restoring user).
 - Reads use a single connection and a single transaction (`REPEATABLE READ` with `START TRANSACTION WITH CONSISTENT SNAPSHOT`) for all databases, so every table of every database is from the same point in time. With `--jobs` above 1 there are several such connections, started at one point in time (see "Parallel reads"). Schema objects are read from the catalog (`information_schema`, `SHOW CREATE`), which the snapshot does not cover, so DDL run during the dump may still show up.
 - The reading connection pins `sql_mode=''`, `sql_quote_show_create=1` and `show_create_table_verbosity=0` at session level, so output does not change even if the server's default `sql_mode` has `ANSI_QUOTES` (identifiers would become `"t"`, which cannot be restored) or `PAD_CHAR_TO_FULL_LENGTH` (`CHAR` values would be padded with spaces).
 - A table with a column that cannot be read because only column-level privileges exist (`GRANT SELECT (c1, c2) ON ...`) is an error rather than silently dropping the column (the columns of `SHOW CREATE TABLE` are cross-checked against `information_schema.COLUMNS`).
@@ -222,7 +235,7 @@ With `--no-lock`, tables that are not InnoDB (MyISAM and so on) cannot guarantee
 
 ## Re-dumping and removing stale files
 
-Re-dumping into the same output directory replaces **each dumped database's files** (`<db>.00-schema.sql`, `<db>.10-data.*.sql` and, for `--target postgres`, `<db>.90-constraints.sql`) once every database has been written, and deletes the files of that database from last time that were not written again. Data files of tables that existed last time but are gone now therefore do not remain. Files of other databases and unrelated files such as `README.txt` are left alone. New files are always created fresh under temporary names (existing paths are never followed).
+Re-dumping into the same output directory replaces **each dumped database's files** (`<db>.00-schema.sql`, `<db>.10-data.*.sql`, `<db>.20-triggers.sql` and, for `--target postgres`, `<db>.90-constraints.sql`) once every database has been written, and deletes the files of that database from last time that were not written again. Data files of tables that existed last time but are gone now therefore do not remain. Files of other databases and unrelated files such as `README.txt` are left alone. New files are always created fresh under temporary names (existing paths are never followed).
 
 A table hidden from the dump account by missing privileges is indistinguishable from a dropped table. If a table that was visible last time becomes invisible after a privilege change, its data file is deleted as stale and is not part of the new output. Always dump with an account that has the same privileges.
 
@@ -249,7 +262,7 @@ A dump contains the table data itself, which may include personal information or
 
 - Source servers other than MySQL 5.7 and later and MariaDB (MySQL 5.6 and earlier), and output for DBMSs other than MySQL, SQLite and PostgreSQL. Parallel reading is per table (`--jobs`); one table is never read on several connections.
 - Streaming for tables without a key. A table with a primary key or a NOT NULL unique key is read and written row by row, so its memory use does not grow with its size (a table of one million rows needs a few megabytes). A table without such a key is still read into memory and sorted there by the byte order of each row's output string (the intended scale for those is up to about 100,000 rows); with `--jobs N`, up to N of them are in memory at once. A temporary-file sort for them is planned.
-- Triggers, stored routines, events, and users and privileges.
+- Stored routines, events, and users and privileges. (Triggers are dumped for `--target mysql` only.)
 - Flags must be placed before the database names.
 
 ## Development

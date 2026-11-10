@@ -56,6 +56,44 @@ func TestMySQLSchemaMatchesSchemafile(t *testing.T) {
 	}
 }
 
+// The MySQL writer writes triggers. Trigger bodies are MySQL syntax, so the
+// PostgreSQL and SQLite writers must not claim to (dump warns for them).
+var _ TriggerWriter = (*MySQL)(nil)
+
+func TestOnlyMySQLWritesTriggers(t *testing.T) {
+	for name, w := range map[string]Writer{"postgres": NewPostgres(datafile.Options{}), "sqlite": NewSQLite(datafile.Options{})} {
+		if _, ok := w.(TriggerWriter); ok {
+			t.Errorf("%s writer implements TriggerWriter", name)
+		}
+	}
+}
+
+func TestMySQLTriggersWithoutDefiner(t *testing.T) {
+	w := NewMySQL(datafile.Options{})
+	triggers := []schemafile.Trigger{
+		{Name: "t1", Table: "a", SQLMode: "ANSI_QUOTES",
+			Create: "CREATE DEFINER=`x`@`%` TRIGGER `t1` BEFORE INSERT ON `a` FOR EACH ROW SET NEW.x = 1"},
+	}
+	var got bytes.Buffer
+	if err := w.WriteTriggers(&got, Schema{DB: "d", Triggers: triggers}); err != nil {
+		t.Fatal(err)
+	}
+	var want bytes.Buffer
+	err := schemafile.WriteTriggers(&want, "d", []schemafile.Trigger{
+		{Name: "t1", Table: "a", SQLMode: "ANSI_QUOTES",
+			Create: "CREATE TRIGGER `t1` BEFORE INSERT ON `a` FOR EACH ROW SET NEW.x = 1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != want.String() {
+		t.Errorf("triggers differ:\n got: %q\nwant: %q", got.String(), want.String())
+	}
+	if strings.Contains(got.String(), "DEFINER") {
+		t.Errorf("DEFINER left in %q", got.String())
+	}
+}
+
 func TestMySQLDataMatchesDatafile(t *testing.T) {
 	opt := datafile.Options{RowsPerInsert: 3, RowsPerFile: 4}
 	w := NewMySQL(opt)
