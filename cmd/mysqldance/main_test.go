@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -41,7 +42,7 @@ func TestRunUsageErrors(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var stderr bytes.Buffer
-			if code := run(tt.args, noEnv, &stderr); code != 1 {
+			if code := run(tt.args, noEnv, io.Discard, &stderr); code != 1 {
 				t.Errorf("run(%q) = %d, want 1", tt.args, code)
 			}
 			if stderr.Len() == 0 {
@@ -185,10 +186,34 @@ func TestParseArgsPasswordFile(t *testing.T) {
 
 func TestRunHelp(t *testing.T) {
 	var stderr bytes.Buffer
-	if code := run([]string{"-help"}, noEnv, &stderr); code != 0 {
+	if code := run([]string{"-help"}, noEnv, io.Discard, &stderr); code != 0 {
 		t.Errorf("run(-help) = %d, want 0", code)
 	}
 	if !strings.Contains(stderr.String(), "--password-file") {
 		t.Errorf("usage does not mention --password-file:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--version") {
+		t.Errorf("usage does not mention --version:\n%s", stderr.String())
+	}
+}
+
+func TestRunVersion(t *testing.T) {
+	oldVersion, oldCommit := version, commit
+	t.Cleanup(func() { version, commit = oldVersion, oldCommit })
+	version, commit = "1.2.3", "abc1234"
+
+	for _, arg := range []string{"--version", "-version"} {
+		// --version needs neither -o nor a database name. It is checked only
+		// after the flags parse, so a malformed flag is still a usage error.
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{arg}, noEnv, &stdout, &stderr); code != 0 {
+			t.Errorf("run(%s) = %d, want 0; stderr: %s", arg, code, stderr.String())
+		}
+		if got, want := stdout.String(), "mysqldance 1.2.3 (commit abc1234)\n"; got != want {
+			t.Errorf("run(%s) stdout = %q, want %q", arg, got, want)
+		}
+		if stderr.Len() != 0 {
+			t.Errorf("run(%s) wrote to stderr: %q", arg, stderr.String())
+		}
 	}
 }
