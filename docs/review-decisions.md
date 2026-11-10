@@ -94,7 +94,7 @@
 - 指摘: `e.exec` が接続プールを使うので、`USE` の状態が次の文に引き継がれない。
 - 却下の理由: `e.admin` は `newEnv` で `db.Conn` により固定した 1 本の接続で、プールではない。既存のテストも同じ書き方をしている。
 - 初出: B-004
-- 再出: 0
+- 再出: 1（B-043: internal/dump/jobs_determinism_test.go の jobsFixture。理由のコメントを足した）
 
 ## R-012 同じ出力先への並行実行で、一時ファイルの掃除と名前が衝突する
 - 対象: internal/dump/dump.go の sweepTemps / stage.create
@@ -577,4 +577,25 @@
 - 指摘: 同じ検査が 2 か所にあり、ずれうる。
 - 却下の理由: 好みの問題。`main` は使い方のエラー（フラグ名つき）、`Open` はライブラリとして直接呼ばれたときの防御で、メッセージの宛先が違う。両方をテスト済み（TestRunUsageErrors、TestJobsRejectedBeforeConnecting）。
 - 初出: B-042
+- 再出: 0
+
+## R-081 `TestJobsTablesAndWarningsSameAsSerial` は `Tables` が `Jobs` を読まないので失敗しえない
+- 対象: internal/source/jobs_test.go の TestJobsTablesAndWarningsSameAsSerial
+- 指摘: `Snapshot.Tables` は先頭の接続だけを使い `Jobs` を参照しないので、並列度を変えても比べるのは同じ呼び出しで、何も確かめていない。
+- 却下の理由: 確定した仕様（B-043）は「テーブル一覧と警告は並列度によらず先頭の接続で直列に出る」ことの固定で、今の実装がそうであることが前提。メタデータの読み出しを並列側に移す変更が入ったときに、順序の退行を捕まえる回帰テストとして置いている。失敗するシナリオを今の実装で作れないのは、テストが守る性質が成り立っているため。
+- 初出: B-043
+- 再出: 0
+
+## R-082 並列の読み出し中に出る警告の順序が検証されていない
+- 対象: internal/dump/jobs_determinism_test.go の TestJobsOutputAndLogIndependentOfJobs
+- 指摘: MySQL ライタのログは空どうしの比較で、並列の読み出し中の警告の順序は確かめていない。
+- 却下の理由: 並列の読み出し・描画（`writeTable`）は警告を出さない。警告の出どころは `source.Tables`（先頭の接続）と `Schema.Warn`（`WriteSchema` の中）で、どちらも直列。存在しない経路のテストは書けない。`writeTable` が警告を出すようになる項目で、その順序のテストも一緒に足す。
+- 初出: B-043
+- 再出: 0
+
+## R-083 グローバルの `largeTableRows` の書き換えと、閉じないスナップショットの接続数
+- 対象: internal/source/jobs_test.go の TestJobsTablesAndWarningsSameAsSerial
+- 指摘: `t.Parallel` が入ると競合する。1 テストで最大 1 + 2 + 8 接続を開き、`max_connections` を使い切りうる。
+- 却下の理由: 前者は TestWarningsLargeTable と同じ方式で、このパッケージに `t.Parallel` はない（`t.Parallel` を使わない理由は、このファイルの「競合する読み手がいない」の項と同じ）。後者は `openSnapshot` が `t.Cleanup` で閉じ、使う接続は最大 11 本で、既定の `max_connections`（151）に対して十分小さい。
+- 初出: B-043
 - 再出: 0
