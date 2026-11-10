@@ -25,6 +25,7 @@ task fmt                # go fmt と go fix
 | `internal/source` | MySQL からの読み出し（スキーマ、メタデータ、行） |
 | `internal/schemafile` | スキーマファイルの生成、`SHOW CREATE` の正規化 |
 | `internal/datafile` | データファイルの生成（1 行 1 レコード、内容ハッシュで `INSERT` を区切る） |
+| `internal/writer` | 出力ライタのインターフェースと MySQL 向けの実装（`datafile` / `schemafile` を包む） |
 | `internal/sqlvalue` | 値の SQL リテラル化 |
 | `internal/naming` | ファイル名のスキーム・エスケープ |
 

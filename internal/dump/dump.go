@@ -11,14 +11,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/naming"
-	"mysqldance/internal/schemafile"
 	"mysqldance/internal/source"
 	"mysqldance/internal/sqlvalue"
+	"mysqldance/internal/writer"
 )
 
 // maxFileNameBytes is the common file-name length limit of file systems.
@@ -29,7 +28,11 @@ type Options struct {
 	Source source.Config
 	DBs    []string
 	OutDir string
-	Data   datafile.Options
+	// Data configures the default MySQL writer; it is ignored when Writer is
+	// set.
+	Data datafile.Options
+	// Writer renders the dump files; nil means the MySQL writer built from Data.
+	Writer writer.Writer
 	// FileMode is the exact permission of the output files; 0 means 0666
 	// filtered by the umask.
 	FileMode os.FileMode
@@ -57,6 +60,11 @@ func Run(ctx context.Context, opt Options) (err error) {
 	}
 	if opt.Log == nil {
 		opt.Log = io.Discard
+	}
+	if opt.Writer == nil {
+		opt.Writer = writer.NewMySQL(opt.Data)
+	} else if opt.Data != (datafile.Options{}) {
+		return errors.New("Options.Data configures the default writer and cannot be combined with Options.Writer")
 	}
 	if err := prepareOutDir(opt.OutDir, opt.DirMode); err != nil {
 		return err
@@ -179,23 +187,10 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		return err
 	}
 
-	schemaTables := make([]schemafile.Table, len(tables))
-	for i, t := range tables {
-		schemaTables[i] = schemafile.Table{Name: t.Name, Create: schemafile.StripAutoIncrement(t.Create)}
-	}
-	byName := map[string]schemafile.View{}
-	names := make([]string, len(views))
-	for i, v := range views {
-		byName[v.Name] = v
-		names[i] = v.Name
-	}
-	ordered := make([]schemafile.View, 0, len(views))
-	for _, n := range schemafile.OrderViews(names, deps) {
-		v := byName[n]
-		ordered = append(ordered, schemafile.View{Name: v.Name, Create: schemafile.StripDefiner(v.Create)})
-	}
 	if err := st.create(filepath.Join(opt.OutDir, schemaName), func(w io.Writer) error {
-		return schemafile.Write(w, db, createDB, schemaTables, ordered)
+		return opt.Writer.WriteSchema(w, writer.Schema{
+			DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps,
+		})
 	}); err != nil {
 		return err
 	}
@@ -205,19 +200,12 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		if err != nil {
 			return fmt.Errorf("table %q: %w", t.Name, err)
 		}
-		cols := make([]string, len(t.Columns))
-		for j, c := range t.Columns {
-			cols[j] = c.Name
+		parts, err := dataParts(opt.Writer, db, t, rows)
+		if err != nil {
+			return err
 		}
-		// The MySQL writer renders the typed values as literals here; the
-		// split and the INSERT boundaries are decided on the rendered text.
-		literals := make([][]string, len(rows))
-		for i, row := range rows {
-			literals[i] = sqlvalue.Literals(row)
-		}
-		groups := datafile.Split(literals, keyColumns(t), opt.Data.RowsPerFile)
-		names := naming.DataFileParts(db, t.Name, len(groups))
-		if len(groups) > 1 {
+		names := naming.DataFileParts(db, t.Name, len(parts))
+		if len(parts) > 1 {
 			// The part names are known only now. Claim them like the others,
 			// before anything is committed.
 			for _, n := range names {
@@ -226,10 +214,8 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 				}
 			}
 		}
-		for g, group := range groups {
-			if err := st.create(filepath.Join(opt.OutDir, names[g]), func(w io.Writer) error {
-				return datafile.Write(w, db, t.Name, cols, t.ListColumns, group, opt.Data)
-			}); err != nil {
+		for g, part := range parts {
+			if err := st.create(filepath.Join(opt.OutDir, names[g]), part); err != nil {
 				return err
 			}
 		}
@@ -237,19 +223,14 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	return nil
 }
 
-// keyColumns returns the indexes in a row of the columns the rows of t are
-// ordered by, or nil when t has no such key or a key column is not part of the
-// row (a generated column), in which case the whole row is used.
-func keyColumns(t source.TableInfo) []int {
-	idx := make([]int, 0, len(t.OrderBy))
-	for _, k := range t.OrderBy {
-		at := slices.IndexFunc(t.Columns, func(c sqlvalue.Column) bool { return c.Name == k })
-		if at < 0 {
-			return nil
-		}
-		idx = append(idx, at)
+// dataParts asks w for the data files of t. A writer that returns none would
+// leave the table without a file and no error, so that is refused.
+func dataParts(w writer.Writer, db string, t source.TableInfo, rows [][]sqlvalue.Value) ([]writer.Part, error) {
+	parts := w.DataParts(db, t, rows)
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("table %q: the writer produced no data file", t.Name)
 	}
-	return idx
+	return parts, nil
 }
 
 // claim checks the length of an output file name and records it in seen,

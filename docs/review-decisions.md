@@ -325,7 +325,7 @@
 - 指摘: `rows`（`[][]sqlvalue.Value`）と `literals`（`[][]string`）が表ごとに同時に生きる。
 - 却下の理由: `Rows` は表全体をメモリに載せる設計で、これは MVP から変わらない。表全体を載せない行ストリーム化は B-044（キーのあるテーブル）と B-045（キーのないテーブル）の範囲で、B-033 の範囲外。出力のバイト列は変わらず、失敗のシナリオ（具体的な OOM の閾値）も示せない。
 - 初出: B-033
-- 再出: 0
+- 再出: 1（B-034: `DataParts` の `Part` がリテラルを持つ。`internal/writer/mysql.go` の `DataParts` にコメントを足した）
 
 ## R-045 キーのない表で、並べ替えキーの作成と dump で、リテラル化が 2 回走る
 - 対象: internal/source/source.go の Rows（キーなしの並べ替え）
@@ -360,4 +360,25 @@
 - 指摘: CLAUDE.md の「テストを先に書く」に反して、`dump` 側の変換のテストが単体テストにない。
 - 却下の理由: 変換は `sqlvalue.Literals`（`TestLiterals`）と `Value.Literal`（`TestValueLiteral`）で単体テスト済み。`Rows` の並べ替えと出力のバイト列は、既存の統合テスト（`TestRowsNoKeyDuplicates`、`TestValueLiterals`、dump の統合テスト）が見ており、MySQL 8.0 / 8.4 で実行済み。受け入れ条件は「既存のテストが変更なしで通る」。
 - 初出: B-033
+- 再出: 0
+
+## R-050 `Writer` のインターフェースが `schemafile.View` と MySQL の `SHOW CREATE` 文字列を持つ
+- 対象: internal/writer/writer.go の Schema
+- 指摘: 他 DBMS のライタが MySQL 向けの型・DDL 文字列に依存する。ビューやテーブル定義を構造で持つべき。
+- 却下の理由: B-034 の範囲は「インターフェースを定義し、MySQL 向けをその実装にする」こと（受け入れ条件）。定義を構造化するには `source` が読み出す形を変える必要があり、PostgreSQL / SQLite の方言差を扱う B-035、B-036 の範囲。`Schema` の doc コメントで MySQL の `SHOW CREATE` 文字列であることを明記済み。失敗のシナリオ（現時点で壊れるもの）は示せない。
+- 初出: B-034
+- 再出: 0
+
+## R-051 `DataParts` にエラー戻り値がない
+- 対象: internal/writer/writer.go の Writer.DataParts
+- 指摘: 描画できない値を持つ将来のライタが、エラーを返せず `Part` の中で失敗するしかない。
+- 却下の理由: MySQL 向けの実装は失敗しない（`sqlvalue.Literals` はエラーを返さない）。失敗を返す具体的なライタは存在せず、推測。`Part` の戻り値でエラーは報告でき、`dump` はそれを書き出し失敗として扱う（一時ファイルは残らない）。必要になる B-035 で、実際の失敗の形に合わせてシグネチャを決める。
+- 初出: B-034
+- 再出: 0
+
+## R-052 `dump` の `Writer` 経由の配線が単体テストにない
+- 対象: internal/dump/dump_test.go の TestWritesThroughWriter
+- 指摘: ライタ経由で書く配線のテストが `MYSQLDANCE_TEST_DSN` を要する統合テストで、`task test` では走らない。
+- 却下の理由: `Run` は先に MySQL に接続するので、配線を通すには実機が要る。CLAUDE.md の運用どおり、`internal/dump` を変えたときは `task test:integration` を通す。この項目では MySQL 8.0 / 8.4 で実行済み。切り出せる部分（`dataParts` の 0 件の拒否、`Data` と `Writer` の併用の拒否）は単体テストにした。
+- 初出: B-034
 - 再出: 0

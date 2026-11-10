@@ -24,6 +24,7 @@ import (
 	"mysqldance/internal/naming"
 	"mysqldance/internal/source"
 	"mysqldance/internal/sqlvalue"
+	"mysqldance/internal/writer"
 )
 
 // Integration tests. They are skipped unless MYSQLDANCE_TEST_DSN is set,
@@ -1059,4 +1060,44 @@ func TestMultipleDatabases(t *testing.T) {
 	}
 
 	e.roundTrip(t, dir, db1, db2)
+}
+
+// recordingWriter wraps a Writer and records what dump asked it to write.
+type recordingWriter struct {
+	writer.Writer
+	schemas []writer.Schema
+	tables  []string
+}
+
+func (r *recordingWriter) WriteSchema(w io.Writer, s writer.Schema) error {
+	r.schemas = append(r.schemas, s)
+	return r.Writer.WriteSchema(w, s)
+}
+
+func (r *recordingWriter) DataParts(db string, t source.TableInfo, rows [][]sqlvalue.Value) []writer.Part {
+	r.tables = append(r.tables, t.Name)
+	return r.Writer.DataParts(db, t, rows)
+}
+
+// TestWritesThroughWriter checks that dump writes only through Options.Writer,
+// and that an explicit MySQL writer gives the same bytes as the default one.
+func TestWritesThroughWriter(t *testing.T) {
+	e := newEnv(t)
+	db := e.threeTables(t)
+	rec := &recordingWriter{Writer: writer.NewMySQL(datafile.Options{})}
+	dir := t.TempDir()
+	if err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, Writer: rec}); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.schemas) != 1 || rec.schemas[0].DB != db || len(rec.schemas[0].Tables) != 3 {
+		t.Errorf("schema calls = %+v, want one call for %s with 3 tables", rec.schemas, db)
+	}
+	if want := []string{"a", "b", "c"}; !reflect.DeepEqual(rec.tables, want) {
+		t.Errorf("data calls = %v, want %v", rec.tables, want)
+	}
+	def := t.TempDir()
+	e.dump(t, def, db)
+	if got, want := readFiles(t, dir), readFiles(t, def); !reflect.DeepEqual(got, want) {
+		t.Errorf("explicit MySQL writer output differs from the default:\n%q\n%q", got, want)
+	}
 }
