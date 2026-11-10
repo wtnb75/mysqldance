@@ -382,3 +382,38 @@
 - 却下の理由: `Run` は先に MySQL に接続するので、配線を通すには実機が要る。CLAUDE.md の運用どおり、`internal/dump` を変えたときは `task test:integration` を通す。この項目では MySQL 8.0 / 8.4 で実行済み。切り出せる部分（`dataParts` の 0 件の拒否、`Data` と `Writer` の併用の拒否）は単体テストにした。
 - 初出: B-034
 - 再出: 0
+
+## R-053 SQLite ライタで、大文字小文字だけ違うテーブル名が衝突する
+- 対象: internal/writer/sqlite.go の WriteSchema（`taken`）
+- 指摘: `Users` と `users` が同じ DB にあると、`taken` を小文字で引くので後のテーブルが前のテーブルを上書きし、リストアで `table already exists` になる。
+- 却下の理由: 到達しない。`dump` が出力ファイル名を小文字にして衝突を検査し（`claim`）、衝突する名前は書き出す前にエラーにする（設計書 4.1 節、`TestOddNamesAndCaseCollision`）。ライタに届くテーブル名は、小文字にして一意である。
+- 初出: B-036
+- 再出: 0
+
+## R-054 SQLite ライタが AUTO_INCREMENT を警告しない
+- 対象: internal/writer/sqlite.go の sqliteColumn（`ColumnDef.AutoIncrement`）
+- 指摘: 単一列の `INTEGER PRIMARY KEY` でない `AUTO_INCREMENT` 列は、SQLite で自動採番されなくなるのに、警告がない。
+- 却下の理由: 仕様どおり。MySQL 向けも `AUTO_INCREMENT=N` を出力から除いており（README の「AUTO_INCREMENT is not restored」）、SQLite 向けは README の「SQLite output」に「`AUTO_INCREMENT` は引き継がない」と書いた。出力されるデータの値は変わらない。単一列の整数主キーは SQLite の rowid の別名になり、採番は続く。
+- 初出: B-036
+- 再出: 0
+
+## R-055 SQLite ライタの警告が、後続の失敗で捨てられるファイルについても出る
+- 対象: internal/dump/dump.go の dumpDB（`Warn`）、internal/writer/sqlite.go の WriteSchema
+- 指摘: スキーマの書き出し後に別の失敗でダンプ全体が巻き戻っても、そのスキーマファイルについての警告が残る。
+- 却下の理由: 警告は入力（MySQL の定義）について出すもので、MySQL 向けの警告（非 InnoDB、大きなテーブル）も、書き出しの前に出して同じく巻き戻りで残る。失敗した実行の警告が残っても害はなく、実行が失敗したことはエラーで分かる。`WriteSchema` が失敗したときに出さないのは、出力できなかった定義を「出力しない」と言わないための最低限。
+- 初出: B-036
+- 再出: 0
+
+## R-056 `Snapshot.Defs` が `listTables` をもう一度実行する
+- 対象: internal/source/def.go の Defs
+- 指摘: `Tables` と `Views` が読んだテーブル一覧を再利用せず、`--target sqlite` のとき DB ごとに `information_schema.TABLES` を余分に 1 回引く。
+- 却下の理由: 効率だけの指摘で、失敗のシナリオはない。`--target sqlite` のときだけ、DB ごとに 1 クエリ。`Tables`、`Views` も同じ方式で独立に引いており（取得部をテーブル単位で独立に呼べる構造、設計書 8 節）、一覧のキャッシュを `Snapshot` に持たせると、`Use` で捨てる状態が増える（R-007、B-021 の「隠れた状態をなくす」と逆向き）。
+- 初出: B-036
+- 再出: 0
+
+## R-057 BIT の規則が `sqliteType`、`sqliteDefault`、`SQLiteLiteral` に分かれている
+- 対象: internal/writer/sqlite.go の sqliteType・sqliteDefault、internal/sqlvalue/sqlite.go の SQLiteLiteral
+- 指摘: BIT(n) の幅の閾値（63）が列の型を決める側にだけあり、値のリテラル化は幅を知らないので、食い違うと型と値がずれる。
+- 却下の理由: 食い違いは起きない。`SQLiteLiteral` は、値が int64 に収まれば素の整数、収まらなければ文字列で書く。列が `INTEGER`（幅 63 以下）なら値は必ず収まり、`TEXT`（幅 64）なら素の整数も文字列も値を変えずに入る。`TestSQLiteValuesRoundTrip` が BIT(64) の 0x7f..、0xff..、BIT(8) で確認している。型の規則を 1 つにまとめる変更は、挙動を変えずに構造だけ変える好みの問題。
+- 初出: B-036
+- 再出: 0

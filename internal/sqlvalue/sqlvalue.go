@@ -91,9 +91,13 @@ func hexLiteral(raw []byte) string {
 	if len(raw) == 0 {
 		return "''"
 	}
+	return "0x" + hexBody(raw)
+}
+
+// hexBody returns raw as uppercase hex digits.
+func hexBody(raw []byte) string {
 	var b strings.Builder
-	b.Grow(2 + 2*len(raw))
-	b.WriteString("0x")
+	b.Grow(2 * len(raw))
 	for _, c := range raw {
 		b.WriteByte(hexDigits[c>>4])
 		b.WriteByte(hexDigits[c&0x0f])

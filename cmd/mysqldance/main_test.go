@@ -13,6 +13,7 @@ import (
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/dump"
 	"mysqldance/internal/source"
+	"mysqldance/internal/writer"
 )
 
 func noEnv(string) string { return "" }
@@ -39,6 +40,8 @@ func TestRunUsageErrors(t *testing.T) {
 		{"ssl-ca with default mode", []string{"--ssl-ca", "ca.pem", "-o", t.TempDir(), "db1"}},
 		{"ssl-ca with disabled", []string{"--ssl-mode", "disabled", "--ssl-ca", "ca.pem", "-o", t.TempDir(), "db1"}},
 		{"missing password file", []string{"--password-file", filepath.Join(t.TempDir(), "none"), "-o", t.TempDir(), "db1"}},
+		{"unknown target", []string{"--target", "oracle", "-o", t.TempDir(), "db1"}},
+		{"empty target", []string{"--target", "", "-o", t.TempDir(), "db1"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var stderr bytes.Buffer
@@ -65,6 +68,35 @@ func TestParseArgsDefaults(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("parseArgs = %+v, want %+v", got, want)
+	}
+}
+
+// --target mysql is the default and leaves the writer to dump.
+func TestParseArgsTargetMySQL(t *testing.T) {
+	got, err := parseArgs([]string{"--target", "mysql", "-o", "out", "d"}, noEnv)
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	if got.Writer != nil {
+		t.Errorf("Writer = %T, want nil so that dump builds the MySQL writer from Data", got.Writer)
+	}
+	if got.Data != (datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576}) {
+		t.Errorf("Data = %+v", got.Data)
+	}
+}
+
+// --target sqlite sets the writer, which takes the INSERT options itself, so
+// Data stays empty (dump rejects both).
+func TestParseArgsTargetSQLite(t *testing.T) {
+	got, err := parseArgs([]string{"--target", "sqlite", "--rows-per-insert", "7", "-o", "out", "d"}, noEnv)
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	if _, ok := got.Writer.(*writer.SQLite); !ok {
+		t.Fatalf("Writer = %T, want *writer.SQLite", got.Writer)
+	}
+	if got.Data != (datafile.Options{}) {
+		t.Errorf("Data = %+v, want it empty next to a Writer", got.Data)
 	}
 }
 
