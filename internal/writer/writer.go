@@ -25,6 +25,9 @@ type Schema struct {
 	Views          []schemafile.View
 	// ViewDeps maps a view to the views it depends on.
 	ViewDeps map[string][]string
+	// Triggers are the triggers of the database in the order to create them
+	// in. Like the views, they are still MySQL SHOW CREATE text.
+	Triggers []schemafile.Trigger
 	// Defs is the structure of each table by name. It is set only for a writer
 	// whose NeedsDefs is true.
 	Defs map[string]source.TableDef
@@ -101,6 +104,16 @@ func outputColumns(t source.TableInfo, def source.TableDef, warn func(format str
 		}
 	}
 	return cols, nil
+}
+
+// TriggerWriter is implemented by a writer that can carry triggers over to its
+// target. dump writes the result to the database's triggers file
+// (naming.TriggersFile), which sorts after every data file, so loading the rows
+// fires no trigger. For a writer without it, dump warns about each trigger
+// instead of dropping it silently.
+type TriggerWriter interface {
+	// WriteTriggers writes the triggers file of one database.
+	WriteTriggers(w io.Writer, s Schema) error
 }
 
 // ConstraintWriter is implemented by a writer whose target needs some

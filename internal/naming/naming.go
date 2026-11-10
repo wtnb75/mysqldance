@@ -9,6 +9,7 @@ import (
 const (
 	schemaSuffix      = ".00-schema.sql"
 	dataInfix         = ".10-data."
+	triggersSuffix    = ".20-triggers.sql"
 	constraintsSuffix = ".90-constraints.sql"
 	sqlExt            = ".sql"
 )
@@ -32,6 +33,13 @@ func EscapeName(s string) string {
 // SchemaFile returns the schema file name of a database.
 func SchemaFile(db string) string {
 	return EscapeName(db) + schemaSuffix
+}
+
+// TriggersFile returns the name of the file that holds the triggers of a
+// database. "20" sorts after every data file (they continue with ".10-data.")
+// so loading the rows fires no trigger, and before the constraints file.
+func TriggersFile(db string) string {
+	return EscapeName(db) + triggersSuffix
 }
 
 // ConstraintsFile returns the name of the file a writer may add after all data
@@ -71,10 +79,10 @@ func DataFileParts(db, table string, n int) []string {
 	return names
 }
 
-// IsOwnedBy reports whether file is the schema file, the constraints file or a
-// data file of db.
+// IsOwnedBy reports whether file is the schema file, the triggers file, the
+// constraints file or a data file of db.
 func IsOwnedBy(file, db string) bool {
-	if file == SchemaFile(db) || file == ConstraintsFile(db) {
+	if file == SchemaFile(db) || file == TriggersFile(db) || file == ConstraintsFile(db) {
 		return true
 	}
 	return strings.HasPrefix(file, EscapeName(db)+dataInfix) && strings.HasSuffix(file, sqlExt)
