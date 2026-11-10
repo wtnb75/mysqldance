@@ -323,7 +323,7 @@ func TestPostgresData(t *testing.T) {
 		pgRow("2", "0", "\x00", "", "<null>"),
 		pgRow("3", "<null>", "<null>", "<null>", "<null>"),
 	}
-	got := renderParts(t, NewPostgres(datafile.Options{}).DataParts("d", info, rows))
+	got := renderParts(t, dataParts(NewPostgres(datafile.Options{}), "d", info, rows))
 	want := wantSettings + "SET search_path = \"d\";\nBEGIN;\n" +
 		"INSERT INTO \"t\" VALUES\n" +
 		"(1,true,B'10101',E'it''s\\nnew','2024-01-02 03:04:05.678'),\n" +
@@ -337,7 +337,7 @@ func TestPostgresData(t *testing.T) {
 
 func TestPostgresDataEmptyTable(t *testing.T) {
 	info, _ := boolSchema()
-	got := renderParts(t, NewPostgres(datafile.Options{}).DataParts("d", info, nil))
+	got := renderParts(t, dataParts(NewPostgres(datafile.Options{}), "d", info, nil))
 	if want := wantSettings + "SET search_path = \"d\";\nBEGIN;\nCOMMIT;\n"; len(got) != 1 || got[0] != want {
 		t.Errorf("got %q, want one file %q", got, want)
 	}
@@ -346,7 +346,7 @@ func TestPostgresDataEmptyTable(t *testing.T) {
 func TestPostgresDataListsColumnsWhenAsked(t *testing.T) {
 	info, _ := boolSchema()
 	info.ListColumns = true
-	got := renderParts(t, NewPostgres(datafile.Options{}).DataParts("d", info, [][]sqlvalue.Value{pgRow("1", "1", "\x01", "a", "<null>")}))
+	got := renderParts(t, dataParts(NewPostgres(datafile.Options{}), "d", info, [][]sqlvalue.Value{pgRow("1", "1", "\x01", "a", "<null>")}))
 	if !strings.Contains(got[0], `INSERT INTO "t" ("id", "ok", "bits", "s", "ts") VALUES`) {
 		t.Errorf("columns are not listed:\n%s", got[0])
 	}
@@ -366,7 +366,7 @@ func TestPostgresDataRejects(t *testing.T) {
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			parts := NewPostgres(datafile.Options{}).DataParts("d", info, [][]sqlvalue.Value{c.row})
+			parts := dataParts(NewPostgres(datafile.Options{}), "d", info, [][]sqlvalue.Value{c.row})
 			if len(parts) == 0 {
 				t.Fatal("no part")
 			}
@@ -388,7 +388,7 @@ func TestPostgresDataRejects(t *testing.T) {
 func TestPostgresDataRowLongerThanColumns(t *testing.T) {
 	info, _ := boolSchema()
 	row := append(pgRow("1", "1", "\x01", "a", "<null>"), sqlvalue.NewValue("INT", []byte("9"), false))
-	parts := NewPostgres(datafile.Options{}).DataParts("d", info, [][]sqlvalue.Value{row})
+	parts := dataParts(NewPostgres(datafile.Options{}), "d", info, [][]sqlvalue.Value{row})
 	var err error
 	for _, p := range parts {
 		if err = p(&bytes.Buffer{}); err != nil {
@@ -403,7 +403,7 @@ func TestPostgresDataRowLongerThanColumns(t *testing.T) {
 func TestPostgresDataWithoutDefinition(t *testing.T) {
 	info, _ := boolSchema()
 	info.Def = nil
-	parts := NewPostgres(datafile.Options{}).DataParts("d", info, nil)
+	parts := dataParts(NewPostgres(datafile.Options{}), "d", info, nil)
 	if len(parts) != 1 {
 		t.Fatalf("got %d parts, want one that reports the error", len(parts))
 	}
@@ -419,7 +419,7 @@ func TestPostgresDataSplitsLikeMySQL(t *testing.T) {
 		rows = append(rows, pgRow(fmt.Sprint(i), "1", "\x01", "row", "<null>"))
 	}
 	w := NewPostgres(datafile.Options{RowsPerFile: 20, RowsPerInsert: 5})
-	parts := w.DataParts("d", info, rows)
+	parts := dataParts(w, "d", info, rows)
 	if len(parts) < 2 {
 		t.Fatalf("got %d parts, want the table split", len(parts))
 	}

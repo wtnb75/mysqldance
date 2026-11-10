@@ -3,7 +3,6 @@
 package datafile
 
 import (
-	"bufio"
 	"hash/fnv"
 	"io"
 	"strings"
@@ -120,57 +119,19 @@ func Write(w io.Writer, db, table string, columns []string, listColumns bool, ro
 // way the target DBMS wants it (backticks for MySQL and SQLite, double quotes
 // for PostgreSQL).
 func WriteStatements(w io.Writer, header, footer string, quote func(string) string, table string, columns []string, listColumns bool, rows [][]string, opt Options) error {
-	if opt.RowsPerInsert == 0 {
-		opt.RowsPerInsert = defaultRowsPerInsert
-	}
-	if opt.MaxInsertBytes <= 0 {
-		opt.MaxInsertBytes = defaultMaxInsertBytes
-	}
-
-	bw := bufio.NewWriter(w)
-	if _, err := bw.WriteString(header); err != nil {
-		return err
-	}
-
-	var head strings.Builder
-	head.WriteString("INSERT INTO " + quote(table))
-	if listColumns {
-		quoted := make([]string, len(columns))
-		for i, c := range columns {
-			quoted[i] = quote(c)
-		}
-		head.WriteString(" (" + strings.Join(quoted, ", ") + ")")
-	}
-	head.WriteString(" VALUES\n")
-
-	open := false
-	size := 0
-	for i, row := range rows {
-		if !open {
-			if _, err := bw.WriteString(head.String()); err != nil {
-				return err
-			}
-			size = head.Len()
-			open = true
-		}
-		text := "(" + strings.Join(row, ",") + ")"
-		h := fnv.New32a()
-		_, _ = h.Write([]byte(text))
-		size += len(text) + 2
-		closeNow := i == len(rows)-1 || h.Sum32()%opt.RowsPerInsert == 0 || size >= opt.MaxInsertBytes
-		sep := ",\n"
-		if closeNow {
-			sep = ";\n"
-		}
-		if _, err := bw.WriteString(text + sep); err != nil {
+	opt.RowsPerFile = 0 // one file: the caller holds the rows of exactly one group
+	s := NewStream(func() (io.WriteCloser, error) { return nopCloser{w}, nil },
+		header, footer, quote, table, columns, listColumns, nil, opt)
+	for _, row := range rows {
+		if err := s.Add(row); err != nil {
+			_ = s.Close()
 			return err
 		}
-		if closeNow {
-			open = false
-		}
 	}
-	if _, err := bw.WriteString(footer); err != nil {
-		return err
-	}
-	return bw.Flush()
+	return s.Close()
 }
+
+// nopCloser leaves the caller's writer open: WriteStatements does not own it.
+type nopCloser struct{ io.Writer }
+
+func (nopCloser) Close() error { return nil }

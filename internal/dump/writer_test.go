@@ -6,22 +6,13 @@ import (
 	"testing"
 
 	"mysqldance/internal/datafile"
-	"mysqldance/internal/source"
-	"mysqldance/internal/sqlvalue"
 	"mysqldance/internal/writer"
 )
 
-// emptyPartsWriter breaks the Writer contract by returning no data file.
-type emptyPartsWriter struct{ writer.Writer }
-
-func (emptyPartsWriter) DataParts(string, source.TableInfo, [][]sqlvalue.Value) []writer.Part {
-	return nil
-}
-
-func TestDataPartsRejectsEmptyResult(t *testing.T) {
-	_, err := dataParts(emptyPartsWriter{}, "d", source.TableInfo{Name: "t"}, nil)
+func TestDataFileNamesRejectsNoFile(t *testing.T) {
+	_, err := dataFileNames("d", "t", 0)
 	if err == nil || !strings.Contains(err.Error(), `"t"`) {
-		t.Fatalf("dataParts = %v, want an error naming table t", err)
+		t.Fatalf("dataFileNames = %v, want an error naming table t", err)
 	}
 }
 

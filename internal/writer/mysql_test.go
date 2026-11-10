@@ -67,7 +67,7 @@ func TestMySQLDataMatchesDatafile(t *testing.T) {
 		literals[i] = sqlvalue.Literals(r)
 	}
 	groups := datafile.Split(literals, []int{0}, opt.RowsPerFile)
-	parts := w.DataParts("d", tab, rows)
+	parts := dataParts(w, "d", tab, rows)
 	if len(groups) < 2 {
 		t.Fatalf("test needs a split table, got %d group(s)", len(groups))
 	}
@@ -91,7 +91,7 @@ func TestMySQLDataMatchesDatafile(t *testing.T) {
 func TestMySQLDataEmptyTable(t *testing.T) {
 	w := NewMySQL(datafile.Options{})
 	tab := source.TableInfo{Name: "t", Columns: []sqlvalue.Column{intCol("id")}}
-	parts := w.DataParts("d", tab, nil)
+	parts := dataParts(w, "d", tab, nil)
 	if len(parts) != 1 {
 		t.Fatalf("parts = %d, want 1", len(parts))
 	}

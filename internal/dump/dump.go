@@ -252,24 +252,67 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	return nil
 }
 
-// writeTable reads the rows of t through r, renders them and stages the data
-// files, and returns the final names of the files (without the directory).
-func writeTable(ctx context.Context, opt Options, r *source.Snapshot, db string, t source.TableInfo, st *stage) ([]string, error) {
-	rows, err := r.Rows(ctx, t)
-	if err != nil {
-		return nil, fmt.Errorf("table %q: %w", t.Name, err)
+// rowSource is what writeTable reads rows from: a *source.Snapshot, or a fake
+// in tests.
+type rowSource interface {
+	EachRow(ctx context.Context, t source.TableInfo, fn func(row []sqlvalue.Value) error) error
+}
+
+// writeTable streams the rows of t from r into the writer, stages the data
+// files, and returns their final names (without the directory). No row is held:
+// each one is written as it is read. The number of files is known only at the
+// end, and the names depend on it, so the files are renamed to their final
+// names then.
+func writeTable(ctx context.Context, opt Options, r rowSource, db string, t source.TableInfo, st *stage) ([]string, error) {
+	// Hooks and error messages see this path for every file of the table.
+	provisional := filepath.Join(opt.OutDir, naming.DataFile(db, t.Name))
+	var staged []int
+	open := func() (io.WriteCloser, error) {
+		tf, err := st.open(provisional)
+		if err != nil {
+			return nil, err
+		}
+		staged = append(staged, tf.idx)
+		return tf, nil
 	}
-	parts, err := dataParts(opt.Writer, db, t, rows)
+	rw, err := opt.Writer.NewRowWriter(db, t, open)
 	if err != nil {
 		return nil, err
 	}
-	names := naming.DataFileParts(db, t.Name, len(parts))
-	for g, part := range parts {
-		if err := st.create(filepath.Join(opt.OutDir, names[g]), part); err != nil {
-			return nil, err
-		}
+	// A failure of the writer is reported as it is; a failure of the read is
+	// worded with the table.
+	var writeErr error
+	readErr := r.EachRow(ctx, t, func(row []sqlvalue.Value) error {
+		writeErr = rw.Write(row)
+		return writeErr
+	})
+	closeErr := rw.Close()
+	switch {
+	case writeErr != nil:
+		return nil, writeErr
+	case readErr != nil:
+		return nil, fmt.Errorf("table %q: %w", t.Name, readErr)
+	case closeErr != nil:
+		return nil, closeErr
+	}
+	names, err := dataFileNames(db, t.Name, len(staged))
+	if err != nil {
+		return nil, err
+	}
+	for i, idx := range staged {
+		st.setFinal(idx, filepath.Join(opt.OutDir, names[i]))
 	}
 	return names, nil
+}
+
+// dataFileNames returns the final names of the n data files of a table. A
+// writer that wrote none would leave the table without a file and no error, so
+// that is refused.
+func dataFileNames(db, table string, n int) ([]string, error) {
+	if n == 0 {
+		return nil, fmt.Errorf("table %q: the writer produced no data file", table)
+	}
+	return naming.DataFileParts(db, table, n), nil
 }
 
 // eachTable calls fn(ctx, reader, i) for i in [0, n), on len(readers)
@@ -320,16 +363,6 @@ func firstError(ctx context.Context, errs []error) error {
 		}
 	}
 	return first
-}
-
-// dataParts asks w for the data files of t. A writer that returns none would
-// leave the table without a file and no error, so that is refused.
-func dataParts(w writer.Writer, db string, t source.TableInfo, rows [][]sqlvalue.Value) ([]writer.Part, error) {
-	parts := w.DataParts(db, t, rows)
-	if len(parts) == 0 {
-		return nil, fmt.Errorf("table %q: the writer produced no data file", t.Name)
-	}
-	return parts, nil
 }
 
 // claim checks the length of an output file name and records it in seen,
@@ -437,6 +470,31 @@ type stagedFile struct {
 // The temporary file must not exist (O_EXCL never follows a symlink).
 // Permissions follow the umask unless s.mode is set, which is applied exactly.
 func (s *stage) create(final string, write func(io.Writer) error) error {
+	tf, err := s.open(final)
+	if err != nil {
+		return err
+	}
+	err = write(tf.w)
+	if err != nil {
+		err = fmt.Errorf("write %s: %w", tf.label, err)
+	}
+	return tf.finish(err)
+}
+
+// tempFile is a staged file whose contents are written incrementally. Its
+// final path may be set after the contents are written (see setFinal).
+type tempFile struct {
+	idx   int // index in the stage's files
+	f     *os.File
+	w     io.Writer
+	label string // the path in error messages
+}
+
+// open creates a new temporary file and records it before anything is written,
+// so a partial file is removed by discard. final is the path the file is
+// renamed to unless setFinal says otherwise; fileWriter and error messages
+// see it as the file's path.
+func (s *stage) open(final string) (*tempFile, error) {
 	// The number in the temporary name only has to be unique; which table gets
 	// which number does not matter, since the files are renamed to their final
 	// names.
@@ -446,28 +504,54 @@ func (s *stage) create(final string, write func(io.Writer) error) error {
 	s.mu.Unlock()
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, cmp.Or(s.mode, 0o666))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	// Recorded before writing, so a partial file is removed by discard.
 	s.mu.Lock()
 	s.files = append(s.files, stagedFile{tmp: tmp, final: final})
+	idx := len(s.files) - 1
 	s.mu.Unlock()
 	if s.mode != 0 {
 		// The umask filtered the mode given to OpenFile.
-		err = f.Chmod(s.mode)
+		if err := f.Chmod(s.mode); err != nil {
+			return nil, errors.Join(fmt.Errorf("write %s: %w", final, err), f.Close())
+		}
 	}
-	if err == nil {
-		err = write(fileWriter(final, f))
+	return &tempFile{idx: idx, f: f, w: fileWriter(final, f), label: final}, nil
+}
+
+// setFinal changes the path the file is renamed to.
+func (s *stage) setFinal(idx int, final string) {
+	s.mu.Lock()
+	s.files[idx].final = final
+	s.mu.Unlock()
+}
+
+func (t *tempFile) Write(p []byte) (int, error) {
+	n, err := t.w.Write(p)
+	if err != nil {
+		err = fmt.Errorf("write %s: %w", t.label, err)
 	}
+	return n, err
+}
+
+// Close syncs and closes the file, joining the error of the write that led to
+// it, if any (see finish).
+func (t *tempFile) Close() error { return t.finish(nil) }
+
+// finish syncs and closes the file. werr is the error of writing it.
+func (t *tempFile) finish(werr error) error {
+	err := werr // already worded by the caller
 	// Sync before the rename can become durable, or a crash could leave an
 	// empty file in place of the previous dump.
 	if err == nil {
-		err = f.Sync()
+		if err = t.f.Sync(); err != nil {
+			err = fmt.Errorf("write %s: %w", t.label, err)
+		}
 	}
-	if err = errors.Join(err, f.Close()); err != nil {
-		return fmt.Errorf("write %s: %w", final, err)
+	if cerr := t.f.Close(); err == nil && cerr != nil {
+		err = fmt.Errorf("write %s: %w", t.label, cerr)
 	}
-	return nil
+	return err
 }
 
 // commit renames every temporary file to its final path, replacing the file

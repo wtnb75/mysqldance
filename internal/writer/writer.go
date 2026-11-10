@@ -33,8 +33,20 @@ type Schema struct {
 	Warn func(msg string)
 }
 
-// Part writes one output file of a table's data.
-type Part func(w io.Writer) error
+// OpenFile opens the next data file of a table. The writer closes every file it
+// opens, and reports the error of the close.
+type OpenFile func() (io.WriteCloser, error)
+
+// RowWriter receives the rows of one table, one at a time and already in
+// output order, and writes them to its data files as they arrive.
+type RowWriter interface {
+	// Write renders and writes one row.
+	Write(row []sqlvalue.Value) error
+	// Close ends the last file. It must be called once, also after a failed
+	// Write, so that the open file is closed. A table without rows still gets
+	// one file.
+	Close() error
+}
 
 // Writer renders a dump for one target DBMS. File names, staging and removal
 // of stale files are not its concern; package dump owns them.
@@ -45,12 +57,12 @@ type Writer interface {
 	NeedsDefs() bool
 	// WriteSchema writes the schema file of one database.
 	WriteSchema(w io.Writer, s Schema) error
-	// DataParts splits the rows of a table, already in output order, into the
-	// data files it is written to, and returns one Part per file. The result
-	// is never empty: a table without rows still has one file. The number of
-	// parts is known before any of them is written, so that dump can name and
-	// check the files first. Each writer owns its split policy.
-	DataParts(db string, t source.TableInfo, rows [][]sqlvalue.Value) []Part
+	// NewRowWriter starts the data files of a table. The rows are not held: a
+	// file is opened (through open) when its first row arrives, and the number
+	// of files is known only after Close. Each writer owns its split policy.
+	// The error is a table-level problem found before any row (a table the
+	// target cannot hold); a bad row is reported by Write.
+	NewRowWriter(db string, t source.TableInfo, open OpenFile) (RowWriter, error)
 }
 
 // emit passes each message to warn, if there is one.
@@ -101,25 +113,41 @@ type ConstraintWriter interface {
 	WriteConstraints(w io.Writer, s Schema) error
 }
 
-// splitParts renders the rows of t with literal, divides them into the files
-// they are written to (see datafile.Split) and returns one Part per file; write
-// writes one file from the column names and the rendered rows of its group.
-func splitParts(t source.TableInfo, rows [][]sqlvalue.Value, rowsPerFile uint32,
-	literal func([]sqlvalue.Value) []string, write func(w io.Writer, cols []string, group [][]string) error) []Part {
+// streamWriter is the RowWriter of the writers whose data files are INSERT
+// statements: it renders each row with literal and passes it to a
+// datafile.Stream, which cuts statements and files by row content.
+type streamWriter struct {
+	stream  *datafile.Stream
+	literal func([]sqlvalue.Value) ([]string, error)
+}
+
+// newStreamWriter returns a RowWriter for t. header and footer surround every
+// file and quote renders identifiers (see datafile.WriteStatements).
+func newStreamWriter(t source.TableInfo, open OpenFile, header, footer string, quote func(string) string,
+	opt datafile.Options, literal func([]sqlvalue.Value) ([]string, error)) RowWriter {
 	cols := make([]string, len(t.Columns))
 	for i, c := range t.Columns {
 		cols[i] = c.Name
 	}
-	literals := make([][]string, len(rows))
-	for i, row := range rows {
-		literals[i] = literal(row)
+	return &streamWriter{
+		stream:  datafile.NewStream(open, header, footer, quote, t.Name, cols, t.ListColumns, keyColumns(t), opt),
+		literal: literal,
 	}
-	groups := datafile.Split(literals, keyColumns(t), rowsPerFile)
-	parts := make([]Part, len(groups))
-	for i, group := range groups {
-		parts[i] = func(w io.Writer) error { return write(w, cols, group) }
+}
+
+func (w *streamWriter) Write(row []sqlvalue.Value) error {
+	lit, err := w.literal(row)
+	if err != nil {
+		return err
 	}
-	return parts
+	return w.stream.Add(lit)
+}
+
+func (w *streamWriter) Close() error { return w.stream.Close() }
+
+// infallible adapts a literal function that cannot fail.
+func infallible(f func([]sqlvalue.Value) []string) func([]sqlvalue.Value) ([]string, error) {
+	return func(row []sqlvalue.Value) ([]string, error) { return f(row), nil }
 }
 
 // keyColumns returns the indexes in a row of the columns the rows of t are

@@ -1120,9 +1120,9 @@ func (r *recordingWriter) WriteSchema(w io.Writer, s writer.Schema) error {
 	return r.Writer.WriteSchema(w, s)
 }
 
-func (r *recordingWriter) DataParts(db string, t source.TableInfo, rows [][]sqlvalue.Value) []writer.Part {
+func (r *recordingWriter) NewRowWriter(db string, t source.TableInfo, open writer.OpenFile) (writer.RowWriter, error) {
 	r.tables = append(r.tables, t.Name)
-	return r.Writer.DataParts(db, t, rows)
+	return r.Writer.NewRowWriter(db, t, open)
 }
 
 // TestWritesThroughWriter checks that dump writes only through Options.Writer,

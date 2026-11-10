@@ -371,16 +371,16 @@ func postgresDefault(c source.ColumnDef, col sqlvalue.PGColumn) (string, bool) {
 	return lit, true
 }
 
-// DataParts implements Writer. The values are rendered as PostgreSQL literals
-// first; the split and the INSERT boundaries are decided on the rendered text.
-// Each file runs in one transaction. All rows are held in memory, like the
-// MySQL writer. A value PostgreSQL cannot hold makes the only returned part
-// fail with the table and column, so the dump stops instead of changing it.
-func (p *Postgres) DataParts(db string, t source.TableInfo, rows [][]sqlvalue.Value) []Part {
-	fail := func(err error) []Part {
-		err = fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
-		return []Part{func(io.Writer) error { return err }}
+// NewRowWriter implements Writer. Each value is rendered as a PostgreSQL
+// literal when its row arrives; the split and the INSERT boundaries are decided
+// on the rendered text of that row alone. Each file runs in one transaction. A
+// table or a value PostgreSQL cannot hold fails with the table (and column), so
+// the dump stops instead of changing it.
+func (p *Postgres) NewRowWriter(db string, t source.TableInfo, open OpenFile) (RowWriter, error) {
+	wrap := func(err error) error {
+		return fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
 	}
+	fail := func(err error) (RowWriter, error) { return nil, wrap(err) }
 	if t.Def == nil {
 		return fail(fmt.Errorf("no table definition was read"))
 	}
@@ -395,35 +395,22 @@ func (p *Postgres) DataParts(db string, t source.TableInfo, rows [][]sqlvalue.Va
 		}
 	}
 
-	var rowErr error
-	literal := func(row []sqlvalue.Value) []string {
-		if rowErr != nil {
-			return nil
-		}
+	literal := func(row []sqlvalue.Value) ([]string, error) {
 		if len(row) != len(kinds) {
-			rowErr = fmt.Errorf("a row has %d values for %d columns", len(row), len(kinds))
-			return nil
+			return nil, wrap(fmt.Errorf("a row has %d values for %d columns", len(row), len(kinds)))
 		}
 		out := make([]string, len(row))
 		for i, v := range row {
 			lit, err := sqlvalue.PostgresLiteral(kinds[i], v.Bytes(), v.IsNull())
 			if err != nil {
-				rowErr = fmt.Errorf("column %s: %w", sqlvalue.QuoteIdent(defs[i].Name), err)
-				return nil
+				return nil, wrap(fmt.Errorf("column %s: %w", sqlvalue.QuoteIdent(defs[i].Name), err))
 			}
 			out[i] = lit
 		}
-		return out
+		return out, nil
 	}
 	header := pgSettings + pgSearchPath(db) + "BEGIN;\n"
-	parts := splitParts(t, rows, p.data.RowsPerFile, literal,
-		func(w io.Writer, cols []string, group [][]string) error {
-			return datafile.WriteStatements(w, header, "COMMIT;\n", sqlvalue.QuotePGIdent, t.Name, cols, t.ListColumns, group, p.data)
-		})
-	if rowErr != nil {
-		return fail(rowErr)
-	}
-	return parts
+	return newStreamWriter(t, open, header, "COMMIT;\n", sqlvalue.QuotePGIdent, p.data, literal), nil
 }
 
 // WriteConstraints implements ConstraintWriter: the foreign keys of every

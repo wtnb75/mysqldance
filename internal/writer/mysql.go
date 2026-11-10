@@ -41,13 +41,10 @@ func (m *MySQL) WriteSchema(w io.Writer, s Schema) error {
 	return schemafile.Write(w, s.DB, s.CreateDatabase, tables, ordered)
 }
 
-// DataParts implements Writer. The values are rendered as MySQL literals
-// first; the split and the INSERT boundaries are decided on the rendered text.
-// All rows of the table are held in memory (typed and rendered) until the parts
-// are written; streaming is B-044 (review ledger R-030, R-044).
-func (m *MySQL) DataParts(db string, t source.TableInfo, rows [][]sqlvalue.Value) []Part {
-	return splitParts(t, rows, m.data.RowsPerFile, sqlvalue.Literals,
-		func(w io.Writer, cols []string, group [][]string) error {
-			return datafile.Write(w, db, t.Name, cols, t.ListColumns, group, m.data)
-		})
+// NewRowWriter implements Writer. Each value is rendered as a MySQL literal
+// when its row arrives; the split and the INSERT boundaries are decided on the
+// rendered text of that row alone, so no row is held.
+func (m *MySQL) NewRowWriter(db string, t source.TableInfo, open OpenFile) (RowWriter, error) {
+	return newStreamWriter(t, open, datafile.Header(db), "", sqlvalue.QuoteIdent, m.data,
+		infallible(sqlvalue.Literals)), nil
 }
