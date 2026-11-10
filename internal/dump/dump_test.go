@@ -23,6 +23,7 @@ import (
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/naming"
 	"mysqldance/internal/source"
+	"mysqldance/internal/sqlvalue"
 )
 
 // Integration tests. They are skipped unless MYSQLDANCE_TEST_DSN is set,
@@ -94,11 +95,11 @@ func uniqueName(t *testing.T) string {
 func (e *env) createDB(t *testing.T, name string) {
 	t.Helper()
 	t.Cleanup(func() {
-		if _, err := e.admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+quote(name)); err != nil {
+		if _, err := e.admin.ExecContext(context.Background(), "DROP DATABASE IF EXISTS "+sqlvalue.QuoteIdent(name)); err != nil {
 			t.Errorf("drop database %s: %v", name, err)
 		}
 	})
-	e.exec(t, "CREATE DATABASE "+quote(name), "USE "+quote(name))
+	e.exec(t, "CREATE DATABASE "+sqlvalue.QuoteIdent(name), "USE "+sqlvalue.QuoteIdent(name))
 }
 
 func (e *env) exec(t *testing.T, stmts ...string) {
@@ -108,10 +109,6 @@ func (e *env) exec(t *testing.T, stmts ...string) {
 			t.Fatalf("%s: %v", s, err)
 		}
 	}
-}
-
-func quote(s string) string {
-	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
 }
 
 // dump runs Run with default data options and returns what it logged.
@@ -216,9 +213,9 @@ func (e *env) contents(t *testing.T, db string) map[string][]string {
 		cols := e.columnNames(t, db, o.name)
 		q := make([]string, len(cols))
 		for i, c := range cols {
-			q[i] = quote(c)
+			q[i] = sqlvalue.QuoteIdent(c)
 		}
-		data, err := e.admin.QueryContext(ctx, "SELECT "+strings.Join(q, ", ")+" FROM "+quote(db)+"."+quote(o.name))
+		data, err := e.admin.QueryContext(ctx, "SELECT "+strings.Join(q, ", ")+" FROM "+sqlvalue.QuoteIdent(db)+"."+sqlvalue.QuoteIdent(o.name))
 		if err != nil {
 			t.Fatalf("select %s: %v", o.name, err)
 		}
@@ -282,7 +279,7 @@ func (e *env) roundTrip(t *testing.T, dir string, dbs ...string) {
 	before := map[string]map[string][]string{}
 	for _, db := range dbs {
 		before[db] = e.contents(t, db)
-		e.exec(t, "DROP DATABASE "+quote(db))
+		e.exec(t, "DROP DATABASE "+sqlvalue.QuoteIdent(db))
 	}
 	e.restore(t, dir)
 	for _, db := range dbs {
@@ -569,7 +566,7 @@ func TestSplitLargeTable(t *testing.T) {
 
 	// Updating one row changes only that row, and no boundary moves.
 	// The round trip dropped and recreated the database, so select it again.
-	e.exec(t, "USE "+quote(db), "UPDATE big SET v = 'CHANGED' WHERE id = 1000")
+	e.exec(t, "USE "+sqlvalue.QuoteIdent(db), "UPDATE big SET v = 'CHANGED' WHERE id = 1000")
 	dir2 := t.TempDir()
 	e.dumpSplit(t, dir2, 100, db)
 	files2 := readFiles(t, dir2)
@@ -784,7 +781,7 @@ func TestFailureInLaterDatabaseKeepsEarlierOnes(t *testing.T) {
 	e.dump(t, dir, db1, db2)
 	before := readFiles(t, dir)
 
-	e.exec(t, "USE "+quote(db1), "INSERT INTO a VALUES (10)")
+	e.exec(t, "USE "+sqlvalue.QuoteIdent(db1), "INSERT INTO a VALUES (10)")
 	failOn(t, filepath.Join(dir, naming.DataFile(db2, "b")), nil)
 
 	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db1, db2}, OutDir: dir})
@@ -867,11 +864,11 @@ func TestOddNamesAndCaseCollision(t *testing.T) {
 		names := []string{"with space", "back`tick", "日本語", "dot.name", "Upper", "per%cent"}
 		for i, n := range names {
 			e.exec(t,
-				"CREATE TABLE "+quote(n)+" (id INT PRIMARY KEY, "+quote("col "+n)+" VARCHAR(20))",
-				fmt.Sprintf("INSERT INTO %s VALUES (%d, 'v%d')", quote(n), i, i),
+				"CREATE TABLE "+sqlvalue.QuoteIdent(n)+" (id INT PRIMARY KEY, "+sqlvalue.QuoteIdent("col "+n)+" VARCHAR(20))",
+				fmt.Sprintf("INSERT INTO %s VALUES (%d, 'v%d')", sqlvalue.QuoteIdent(n), i, i),
 			)
 		}
-		e.exec(t, "CREATE VIEW "+quote("view `"+names[2])+" AS SELECT * FROM "+quote(names[2]))
+		e.exec(t, "CREATE VIEW "+sqlvalue.QuoteIdent("view `"+names[2])+" AS SELECT * FROM "+sqlvalue.QuoteIdent(names[2]))
 		dir := t.TempDir()
 		e.dump(t, dir, db)
 		for _, n := range names {
@@ -911,7 +908,7 @@ func TestOddNamesAndCaseCollision(t *testing.T) {
 		db := uniqueName(t)
 		e.createDB(t, db)
 		long := strings.Repeat("あ", 30)
-		e.exec(t, "CREATE TABLE ok (id INT)", "CREATE TABLE "+quote(long)+" (id INT)")
+		e.exec(t, "CREATE TABLE ok (id INT)", "CREATE TABLE "+sqlvalue.QuoteIdent(long)+" (id INT)")
 		dir := t.TempDir()
 		err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir})
 		if err == nil || !strings.Contains(err.Error(), long) || !strings.Contains(err.Error(), "255") {
@@ -970,19 +967,19 @@ func TestColumnPrivilegesRefused(t *testing.T) {
 		"INSERT INTO cp (id, a, h, s) VALUES (1, 2, 3, 4)",
 		"CREATE TABLE ok (id INT PRIMARY KEY)",
 	)
-	showView := "SHOW VIEW ON " + quote(db) + ".*"
+	showView := "SHOW VIEW ON " + sqlvalue.QuoteIdent(db) + ".*"
 	for name, c := range map[string]struct {
 		grants  []string
 		missing string // column the error must name, if any
 	}{
 		// Every visible column but the INVISIBLE one: SELECT * would succeed.
-		"invisible missing":  {[]string{"SELECT (id, a, g, s) ON " + quote(db) + ".cp", showView}, "`h`"},
-		"visible missing":    {[]string{"SELECT (id, a, g) ON " + quote(db) + ".cp", showView}, "`s`"},
-		"column grants only": {[]string{"SELECT (id, a, g, s) ON " + quote(db) + ".cp"}, ""},
+		"invisible missing":  {[]string{"SELECT (id, a, g, s) ON " + sqlvalue.QuoteIdent(db) + ".cp", showView}, "`h`"},
+		"visible missing":    {[]string{"SELECT (id, a, g) ON " + sqlvalue.QuoteIdent(db) + ".cp", showView}, "`s`"},
+		"column grants only": {[]string{"SELECT (id, a, g, s) ON " + sqlvalue.QuoteIdent(db) + ".cp"}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			user := "md_" + uniqueName(t)[len("mysqldance_dump_"):]
-			account := quote(user) + "@'%'"
+			account := sqlvalue.QuoteIdent(user) + "@'%'"
 			if _, err := e.admin.ExecContext(context.Background(), "CREATE USER "+account+" IDENTIFIED BY 'pw'"); err != nil {
 				t.Skipf("cannot create a test user with this DSN: %v", err)
 			}
@@ -991,7 +988,7 @@ func TestColumnPrivilegesRefused(t *testing.T) {
 					t.Errorf("drop user %s: %v", account, err)
 				}
 			})
-			for _, g := range append(c.grants, "SELECT ON "+quote(db)+".ok") {
+			for _, g := range append(c.grants, "SELECT ON "+sqlvalue.QuoteIdent(db)+".ok") {
 				e.exec(t, "GRANT "+g+" TO "+account)
 			}
 			cfg := e.cfg
@@ -1049,7 +1046,7 @@ func TestMultipleDatabases(t *testing.T) {
 
 	// Re-dumping one database leaves the other's files untouched.
 	before := readFiles(t, dir)
-	e.exec(t, "USE "+quote(db1), "CREATE TABLE c (id INT PRIMARY KEY)")
+	e.exec(t, "USE "+sqlvalue.QuoteIdent(db1), "CREATE TABLE c (id INT PRIMARY KEY)")
 	e.dump(t, dir, db1)
 	after := readFiles(t, dir)
 	for name, content := range before {

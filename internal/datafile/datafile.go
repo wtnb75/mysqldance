@@ -7,6 +7,8 @@ import (
 	"hash/fnv"
 	"io"
 	"strings"
+
+	"mysqldance/internal/sqlvalue"
 )
 
 const (
@@ -23,10 +25,6 @@ type Options struct {
 	// RowsPerFile is the average number of rows per data file when a table is
 	// split into several files (see Split). 0 writes every table to one file.
 	RowsPerFile uint32
-}
-
-func quoteIdent(s string) string {
-	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
 }
 
 // Header returns the fixed preamble of every dump file for the given database:
@@ -48,7 +46,7 @@ func HeaderSettings() string {
 
 // HeaderUse returns the USE statement that ends the header.
 func HeaderUse(db string) string {
-	return "USE " + quoteIdent(db) + ";\n"
+	return "USE " + sqlvalue.QuoteIdent(db) + ";\n"
 }
 
 // Split divides the rows of one table, already in output order, into the
@@ -126,11 +124,11 @@ func Write(w io.Writer, db, table string, columns []string, listColumns bool, ro
 	}
 
 	var head strings.Builder
-	head.WriteString("INSERT INTO " + quoteIdent(table))
+	head.WriteString("INSERT INTO " + sqlvalue.QuoteIdent(table))
 	if listColumns {
 		quoted := make([]string, len(columns))
 		for i, c := range columns {
-			quoted[i] = quoteIdent(c)
+			quoted[i] = sqlvalue.QuoteIdent(c)
 		}
 		head.WriteString(" (" + strings.Join(quoted, ", ") + ")")
 	}

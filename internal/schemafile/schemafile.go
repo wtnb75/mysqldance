@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"mysqldance/internal/datafile"
+	"mysqldance/internal/sqlvalue"
 )
 
 var (
@@ -193,10 +194,6 @@ func OrderViews(views []string, deps map[string][]string) []string {
 	return out
 }
 
-func quoteIdent(s string) string {
-	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
-}
-
 // Write writes the schema file. createDatabase is the result of
 // SHOW CREATE DATABASE; IF NOT EXISTS is inserted into it. It goes between
 // the header's settings (so SET NAMES applies to the database name) and its
@@ -212,10 +209,10 @@ func Write(w io.Writer, db, createDatabase string, tables []Table, views []View)
 	sorted := append([]Table(nil), tables...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	for _, t := range sorted {
-		fmt.Fprintf(&b, "\nDROP TABLE IF EXISTS %s;\n%s;\n", quoteIdent(t.Name), t.Create)
+		fmt.Fprintf(&b, "\nDROP TABLE IF EXISTS %s;\n%s;\n", sqlvalue.QuoteIdent(t.Name), t.Create)
 	}
 	for _, v := range views {
-		fmt.Fprintf(&b, "\nDROP VIEW IF EXISTS %s;\n%s;\n", quoteIdent(v.Name), v.Create)
+		fmt.Fprintf(&b, "\nDROP VIEW IF EXISTS %s;\n%s;\n", sqlvalue.QuoteIdent(v.Name), v.Create)
 	}
 	_, err := io.WriteString(w, b.String())
 	return err

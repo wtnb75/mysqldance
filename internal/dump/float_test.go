@@ -6,6 +6,8 @@ import (
 	"math/rand/v2"
 	"strconv"
 	"testing"
+
+	"mysqldance/internal/sqlvalue"
 )
 
 // floatRow holds the exact bit patterns of one FLOAT / DOUBLE row.
@@ -100,9 +102,9 @@ func TestFloatDoubleRoundTrip(t *testing.T) {
 
 	dir := t.TempDir()
 	e.dump(t, dir, db)
-	e.exec(t, "DROP DATABASE "+quote(db))
+	e.exec(t, "DROP DATABASE "+sqlvalue.QuoteIdent(db))
 	e.restore(t, dir)
-	e.exec(t, "USE "+quote(db))
+	e.exec(t, "USE "+sqlvalue.QuoteIdent(db))
 
 	after := e.floatBits(t)
 	if len(after) != len(before) {

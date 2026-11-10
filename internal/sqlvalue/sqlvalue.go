@@ -15,6 +15,11 @@ type Column struct {
 
 const hexDigits = "0123456789ABCDEF"
 
+// QuoteIdent quotes a MySQL identifier, doubling embedded backticks.
+func QuoteIdent(s string) string {
+	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
+}
+
 // Literal formats raw (as returned by the MySQL text protocol) as a SQL literal.
 func Literal(typeName string, raw []byte, isNull bool) string {
 	if isNull {
