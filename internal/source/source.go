@@ -634,11 +634,11 @@ var stringKeyTypes = map[string]bool{
 	"tinytext": true, "text": true, "mediumtext": true, "longtext": true,
 }
 
-// Rows returns the rows of t formatted as SQL literals, one []string per row
-// in t.Columns order. With a key the server orders them; otherwise they are
-// sorted in memory by their comma-joined text in byte order. t must come from
-// Tables for the database currently selected by Use.
-func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]string, error) {
+// Rows returns the rows of t as typed values, one []sqlvalue.Value per row in
+// t.Columns order. With a key the server orders them; otherwise they are
+// sorted in memory by their MySQL literals joined with commas, in byte order.
+// t must come from Tables for the database currently selected by Use.
+func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]sqlvalue.Value, error) {
 	names := make([]string, len(t.Columns))
 	for i, c := range t.Columns {
 		names[i] = c.Name
@@ -661,14 +661,14 @@ func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]string, error) {
 	for i := range raw {
 		dest[i] = &raw[i]
 	}
-	var out [][]string
+	var out [][]sqlvalue.Value
 	for rows.Next() {
 		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}
-		row := make([]string, len(raw))
+		row := make([]sqlvalue.Value, len(raw))
 		for i, b := range raw {
-			row[i] = sqlvalue.Literal(t.Columns[i].TypeName, b, b == nil)
+			row[i] = sqlvalue.NewValue(t.Columns[i].TypeName, b, b == nil)
 		}
 		out = append(out, row)
 	}
@@ -676,16 +676,18 @@ func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]string, error) {
 		return nil, err
 	}
 	if len(t.OrderBy) == 0 {
+		// Rendering here and again in dump is accepted: B-045 replaces this
+		// in-memory sort (review ledger R-045).
 		keys := make([]string, len(out))
 		for i, row := range out {
-			keys[i] = strings.Join(row, ",")
+			keys[i] = strings.Join(sqlvalue.Literals(row), ",")
 		}
 		idx := make([]int, len(out))
 		for i := range idx {
 			idx[i] = i
 		}
 		sort.Slice(idx, func(a, b int) bool { return keys[idx[a]] < keys[idx[b]] })
-		sorted := make([][]string, len(out))
+		sorted := make([][]sqlvalue.Value, len(out))
 		for i, j := range idx {
 			sorted[i] = out[j]
 		}
