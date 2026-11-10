@@ -518,7 +518,7 @@ func TestSplitLargeTable(t *testing.T) {
 		vals = append(vals, fmt.Sprintf("(%d, 'row-%04d')", i, i))
 	}
 	var nokeyVals []string
-	for i := 0; i < 600; i++ {
+	for i := range 600 {
 		nokeyVals = append(nokeyVals, fmt.Sprintf("(%d, 'k%d')", i%450, i%450))
 	}
 	e.exec(t,

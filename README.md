@@ -4,7 +4,7 @@
 
 A CLI that connects directly to MySQL and writes databases to a flat directory of SQL files with **one record per line and fully deterministic output**. The same data always produces the same bytes, so you can keep dumps in Git and review diffs, or hand them straight to the official MySQL Docker image's `/docker-entrypoint-initdb.d` to restore.
 
-Targets MySQL 8.0 and later (including 8.4). MariaDB and 5.7 are not supported.
+Targets MySQL 8.0 and later (including 8.4) and MariaDB (tested on 10.11 and 11.4; see [MariaDB](#mariadb)). MySQL 5.7 is not supported.
 
 ## Build
 
@@ -132,6 +132,15 @@ The foreign keys are in the last file because the data files run in table-name o
 - **A value or name PostgreSQL cannot hold fails the run** with the table and column named: a NUL byte in text, a zero or partial date (`0000-00-00`, `2024-00-10`), a name over 63 bytes, a database name starting with `pg_`, a column type with no PostgreSQL counterpart.
 - **Not output, with a warning for each** (printed to standard error as `warning: database "db": ...`, the dump continues): views (their `SELECT` is MySQL syntax; converting them is a separate backlog item), generated columns (their values are not dumped either), `ON UPDATE CURRENT_TIMESTAMP`, default expressions other than `CURRENT_TIMESTAMP`, `FULLTEXT` and `SPATIAL` indexes, indexes with an expression key part or on a generated column, CHECK constraints, and foreign keys that PostgreSQL cannot take: into another database (the constraints file of one database runs before the schema file of a later one), onto columns that are not a primary or unique key (InnoDB accepts any index, PostgreSQL does not), or onto a generated column. A prefix index (`col(10)`) is created on the whole column, which is also reported. Triggers, routines and events are not dumped for any target.
 
+### MariaDB
+
+A server that reports itself as MariaDB is read as MariaDB. It is not rejected by version: 10.11 and 11.4 are the versions it was tested on, and other versions are untested.
+
+- **The output is MariaDB's own.** `CREATE TABLE` and `CREATE VIEW` are written as MariaDB's `SHOW CREATE` prints them (for example `current_timestamp()`, `int(11)`, `JSON` as `longtext` with a `CHECK`, and `CREATE DATABASE` with MariaDB's default collation). Restore the default `--target mysql` output of a MariaDB server into MariaDB. **It is not meant for MySQL**: for example, 11.4's default collation `utf8mb4_uca1400_ai_ci` does not exist in MySQL, and MySQL's `utf8mb4_0900_ai_ci` does not exist in MariaDB, so the statement fails on the other server. No conversion is made between the two.
+- **Views** are ordered by their dependencies, which are read from `information_schema.VIEWS` (MariaDB has no `VIEW_TABLE_USAGE`). The account needs the `SHOW VIEW` privilege (it already does, for `SHOW CREATE VIEW`).
+- **Sequences and system-versioned tables stop the run.** A `SEQUENCE` and a table `WITH SYSTEM VERSIONING` (`information_schema.TABLES.TABLE_TYPE` `SEQUENCE` / `SYSTEM VERSIONED`) are not output, and a plain `SELECT` would lose the history rows of the latter, so the run fails before any file is changed (see [Failure handling](#failure-handling)) and names the table. Drop it, or dump from a database without it.
+- **Defaults** are read as MariaDB reports them, so `--target sqlite` and `--target postgres` get the same `DEFAULT` clauses as from MySQL (`current_timestamp()` becomes `CURRENT_TIMESTAMP`; other expression defaults are left out with a warning).
+
 ### Splitting large tables
 
 With `--rows-per-file N`, the rows of a table (already in the order described under "Determinism and ordering") are cut into several data files, so that one huge file does not have to be reviewed or stored as a whole. By default (`0`) nothing is split.
@@ -206,7 +215,7 @@ A dump contains the table data itself, which may include personal information or
 
 ## Limitations (out of scope for the MVP)
 
-- Parallel fetching, source servers other than MySQL 8.0 and later (MariaDB, 5.7 and earlier), and output for DBMSs other than MySQL, SQLite and PostgreSQL.
+- Parallel fetching, source servers other than MySQL 8.0 and later and MariaDB (MySQL 5.7 and earlier), and output for DBMSs other than MySQL, SQLite and PostgreSQL.
 - Streaming for huge tables. `--rows-per-file` splits the output, but all rows of a table are still read into memory before being written (the intended scale is about 10 tables per database and up to about 100,000 rows).
 - Triggers, stored routines, events, and users and privileges.
 - Flags must be placed before the database names.
@@ -216,6 +225,7 @@ A dump contains the table data itself, which may include personal information or
 ```sh
 task test                                   # unit tests (no MySQL needed; integration tests are skipped)
 task test:integration                       # start MySQL 8.0 and 8.4 in Docker and run integration tests
+task test:integration:mariadb               # the same against MariaDB 10.11 and 11.4 (not part of the line above)
 task test:integration HOST=host.docker.internal TESTFLAGS=-v   # when the Docker daemon is on another host
 task lint                                   # golangci-lint
 ```

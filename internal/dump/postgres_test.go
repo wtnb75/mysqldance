@@ -209,7 +209,8 @@ func TestPostgresRoundTrip(t *testing.T) {
 		{"child",
 			"SELECT id, parent_id, qty, LPAD(BIN(flags+0), 64, '0'), LPAD(BIN(small+0), 5, '0'), HEX(data), f, d," +
 				" DATE_FORMAT(dt, '%Y-%m-%d %H:%i:%s.%f'), DATE_FORMAT(ts, '%Y-%m-%d %H:%i:%s')," +
-				" TIME_TO_SEC(tm) * 1000000 + MICROSECOND(tm), j, note, e, st, yr FROM " + qualified("child") + " ORDER BY id",
+				// Not TIME_TO_SEC: MariaDB keeps the fraction there, MySQL drops it.
+				" IF(tm < 0, -1, 1) * ((HOUR(tm) * 3600 + MINUTE(tm) * 60 + SECOND(tm)) * 1000000 + MICROSECOND(tm)), j, note, e, st, yr FROM " + qualified("child") + " ORDER BY id",
 			"SELECT id::text, parent_id::text, qty::text, flags::text, small::text, upper(encode(data, 'hex')), f::text, d::text," +
 				" to_char(dt, 'YYYY-MM-DD HH24:MI:SS.US'), to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')," +
 				" (EXTRACT(EPOCH FROM tm) * 1000000)::bigint::text, j::text, note::text, e::text, st::text, yr::text FROM child ORDER BY id"},

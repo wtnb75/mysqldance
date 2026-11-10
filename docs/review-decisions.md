@@ -445,3 +445,52 @@
 - 却下の理由: `DataParts` に定義を渡す方法として、引数を足す案と比べて選んだ設計。ライタが `WriteSchema` で見たものを覚える形（呼び出し順への依存、B-021 で外したもの）にせず、毎回の呼び出しの入力として明示している。引数を足すと `Writer` の全実装とテスト 8 か所の署名が変わるが、得るものは同じ。`NeedsDefs` が false のライタには `nil` で、挙動は変わらない。ヘルパー（`emit`、`outputColumns`）の置き場所の指摘は受け入れて `writer.go` に移した。
 - 初出: B-035
 - 再出: 0
+
+## R-062 `viewRefs` の部分文字列照合が偽の依存を作り、循環でエラーになりうる
+- 対象: internal/source/dialect.go の viewRefs
+- 指摘: 文字列リテラルの中の `` `db`.`b` `` などが偽の依存になり、2 つのビューが循環して並べ替えが失敗する。
+- 却下の理由: 循環はエラーにならない。`schemafile.OrderViews` は循環を見つけると、残りを名前順で末尾に足す（schemafile.go の OrderViews のコメントとコード）。偽の辺が増えても順序が変わりうるだけで、ダンプは失敗しない。リテラルに別のビューの修飾名を書くビューは現実には稀で、VIEW_TABLE_USAGE がない MariaDB では他に構文解析なしの手段がない。コメントに理由を書いた。大文字小文字の指摘（同じ関数）は受け入れて直した。
+- 初出: B-038
+- 再出: 0
+
+## R-063 MariaDB の `INVISIBLE` 列が EXTRA に出ず、黙って落ちる
+- 対象: internal/source/dialect.go の mariadb（`columns` を共有）
+- 指摘: MariaDB が EXTRA に `INVISIBLE` を出すか未確認で、出さないと `ListColumns` が偽になり列が落ちる。
+- 却下の理由: 設計書 11 節（B-037）で `INVISIBLE` は MySQL と同じと実機で確認済み。さらに `TestMariaDBRoundTrip`（`hid INT INVISIBLE`）が MariaDB 11.4 で、全列（`INVISIBLE` を含む）の値の一致まで通る。
+- 初出: B-038
+- 再出: 0
+
+## R-064 SEQUENCE / SYSTEM VERSIONED を含む MariaDB の DB が丸ごとダンプできない
+- 対象: internal/source/source.go の checkTableType
+- 指摘: 通常の MariaDB のオブジェクトなのに、1 つあるだけで DB 全体が失敗する。落とすか出力すべき。
+- 却下の理由: B-038 の確定した仕様（「エラーにする。出力はしない」）。SYSTEM VERSIONED は `SELECT` が履歴行を返さず、黙って落とすと「黙って落とさない」に反する。README の MariaDB 節に明記し、`TestUnsupportedTableTypes` / `TestUnsupportedTableTypeKeepsPreviousDump` で、名前つきのエラーと、既存ファイルが変わらないことを確認済み。対応するのは別項目。
+- 初出: B-038
+- 再出: 0
+
+## R-065 `'a' || 'b'` のような式の既定値が、引用符で始まり終わるため文字列として扱われる
+- 対象: internal/source/dialect.go の mariadbColumnDefault
+- 指摘: 先頭と末尾が `'` の値を文字列リテラルとして切り取るので、式を取り違える。
+- 却下の理由: MariaDB 11.4 の実機で、式の既定値は `('a' or 'b')`（括弧つき）や `concat('a','b')`（関数）で報告され、引用符で始まり終わる式は出なかった。リテラルでない既定値は構文上、括弧か関数になる。
+- 初出: B-038
+- 再出: 0
+
+## R-066 `viewDefinitions` が 1 つのビューの定義が空だと全体を失敗させる
+- 対象: internal/source/dialect.go の viewDefinitions
+- 指摘: SHOW VIEW 権限のないビューなどで、MySQL の経路は失敗しないのに MariaDB だけ失敗する。
+- 却下の理由: 空の定義を「依存なし」と読むとビューの順序が黙って狂う（不変条件に反する）ため、エラーが正しい。`Views` は先にビューごとに `SHOW CREATE VIEW` を実行するので、権限がなければ MySQL でもそこで失敗する。挙動は同じ。
+- 初出: B-038
+- 再出: 0
+
+## R-067 `SELECT VERSION()` をセッション設定より先に実行する順序のリスク
+- 対象: internal/source/source.go の start
+- 指摘: セッションを固定する前にクエリを実行する。順序の依存にテストがない。
+- 却下の理由: 失敗のシナリオがない（`VERSION()` の結果は sql_mode や文字コードに依存しない）。方言がセッション設定を決めるので、この順序が必要。`TestSessionSettingsPinned` が、敵対的な sql_mode から始めた接続で、設定の固定を両サーバーで確認する。
+- 初出: B-038
+- 再出: 0
+
+## R-068 MariaDB の `Type` の表示幅（`int(11)`）を使う書き出し側が未確認
+- 対象: internal/source/def.go の ColumnDef.Type、internal/writer の sqlite.go / postgres.go
+- 指摘: tinyint(1) と同じ種類の問題が、他の型に残る。
+- 却下の理由: 失敗のシナリオを示せない。`Type` の幅を読むのは、`tinyint(1)`（修正済み）、`bit(n)`、`decimal(p,s)`、`char/varchar(n)`、時刻型の精度だけで、整数型は `DataType` で決まる（postgres.go の pgColumnType、sqlite.go の sqliteType）。`pgPrecision` は時刻型にしか使わない。`TestSQLiteRoundTrip` は MariaDB で通る。PostgreSQL は `task test:integration:mariadb` で確認する。
+- 初出: B-038
+- 再出: 0

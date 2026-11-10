@@ -38,12 +38,18 @@ func TestCreateDatabase(t *testing.T) {
 
 func TestRowsPrimaryKeyOrder(t *testing.T) {
 	cfg, db, conn := testDB(t)
+	// A collation whose order differs from the binary one: as_cs orders a/A
+	// next to each other (binary order is A, B, a). MariaDB has no as_cs, so
+	// it uses a case-insensitive one (binary order is B, a, c) on other rows.
+	collation, strRows, wantStrs := "utf8mb4_0900_as_cs", "('a'),('B'),('A')", [][]string{{"'A'"}, {"'B'"}, {"'a'"}}
+	if isMariaDB(t, conn) {
+		collation, strRows, wantStrs = "utf8mb4_general_ci", "('a'),('B'),('c')", [][]string{{"'B'"}, {"'a'"}, {"'c'"}}
+	}
 	mustExec(t, conn,
 		"CREATE TABLE nums (id INT PRIMARY KEY, v VARCHAR(10))",
 		"INSERT INTO nums VALUES (3,'c'),(1,'a'),(10,'j'),(2,'b')",
-		// as_cs orders a/A next to each other; binary order is A, B, a.
-		"CREATE TABLE strs (k VARCHAR(10) COLLATE utf8mb4_0900_as_cs PRIMARY KEY)",
-		"INSERT INTO strs VALUES ('a'),('B'),('A')",
+		"CREATE TABLE strs (k VARCHAR(10) COLLATE "+collation+" PRIMARY KEY)",
+		"INSERT INTO strs VALUES "+strRows,
 	)
 	s := openSnapshot(t, cfg, db)
 
@@ -56,9 +62,8 @@ func TestRowsPrimaryKeyOrder(t *testing.T) {
 		t.Errorf("nums rows = %v, want %v", got, want)
 	}
 
-	want = [][]string{{"'A'"}, {"'B'"}, {"'a'"}}
-	if got := rowsOf(t, s, "strs"); !reflect.DeepEqual(got, want) {
-		t.Errorf("strs rows = %v, want %v", got, want)
+	if got := rowsOf(t, s, "strs"); !reflect.DeepEqual(got, wantStrs) {
+		t.Errorf("strs rows = %v, want %v", got, wantStrs)
 	}
 }
 
@@ -191,6 +196,11 @@ func TestValueLiterals(t *testing.T) {
 			"18446744073709551615", "'y'", "'2024-02-29'", "'-01:02:03'", "2024", "''", "''"},
 		{"2", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL",
 			"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL"},
+	}
+	if isMariaDB(t, conn) {
+		// MariaDB's JSON is LONGTEXT: the text is kept as written, where MySQL
+		// returns its normalized form (keys sorted).
+		want[0][8] = `'{\"b\": 1, \"a\": [1, \"x\"]}'`
 	}
 	got := rowsOf(t, s, "v")
 	if !reflect.DeepEqual(got, want) {

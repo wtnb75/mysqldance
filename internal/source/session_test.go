@@ -31,8 +31,12 @@ func TestSessionSettingsPinned(t *testing.T) {
 	mc.Params = map[string]string{
 		"sql_mode":              "'ANSI_QUOTES,PAD_CHAR_TO_FULL_LENGTH'",
 		"sql_quote_show_create": "0",
-		// Adds ROW_FORMAT=DYNAMIC (the default) to SHOW CREATE TABLE.
-		"show_create_table_verbosity": "1",
+	}
+	mariadb := isMariaDB(t, conn)
+	if !mariadb {
+		// Adds ROW_FORMAT=DYNAMIC (the default) to SHOW CREATE TABLE. MariaDB
+		// has no such variable.
+		mc.Params["show_create_table_verbosity"] = "1"
 	}
 	connector, err := mysql.NewConnector(mc)
 	if err != nil {
@@ -52,15 +56,22 @@ func TestSessionSettingsPinned(t *testing.T) {
 	})
 
 	var mode string
-	var quote, verbosity int
+	var quote int
 	if err := s.conn.QueryRowContext(ctx,
-		"SELECT @@session.sql_mode, @@session.sql_quote_show_create, @@session.show_create_table_verbosity").
-		Scan(&mode, &quote, &verbosity); err != nil {
+		"SELECT @@session.sql_mode, @@session.sql_quote_show_create").Scan(&mode, &quote); err != nil {
 		t.Fatal(err)
 	}
-	if mode != "" || quote != 1 || verbosity != 0 {
-		t.Errorf("snapshot session sql_mode = %q, sql_quote_show_create = %d, show_create_table_verbosity = %d; want '', 1, 0",
-			mode, quote, verbosity)
+	if mode != "" || quote != 1 {
+		t.Errorf("snapshot session sql_mode = %q, sql_quote_show_create = %d; want '', 1", mode, quote)
+	}
+	if !mariadb {
+		var verbosity int
+		if err := s.conn.QueryRowContext(ctx, "SELECT @@session.show_create_table_verbosity").Scan(&verbosity); err != nil {
+			t.Fatal(err)
+		}
+		if verbosity != 0 {
+			t.Errorf("snapshot session show_create_table_verbosity = %d, want 0", verbosity)
+		}
 	}
 
 	ti := tableByName(t, s, "t")

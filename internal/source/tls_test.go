@@ -218,6 +218,17 @@ func queryCipher(t *testing.T, s *Snapshot) string {
 
 func TestSSLCipherByMode(t *testing.T) {
 	cfg, db, _ := testDB(t)
+	// A server without TLS configured (the MariaDB image has none by default)
+	// cannot show what the modes do.
+	probe := cfg
+	probe.SSLMode = "required"
+	if s, err := Open(context.Background(), probe, db); err != nil {
+		if strings.Contains(err.Error(), "does not support TLS") {
+			t.Skip("the test server has no TLS")
+		}
+	} else {
+		_ = s.Close()
+	}
 	for _, tt := range []struct {
 		mode    string
 		wantTLS bool

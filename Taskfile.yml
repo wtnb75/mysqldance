@@ -86,11 +86,27 @@ tasks:
       - task: test:integration:one
         vars: { VERSION: "8.4" }
 
+  # MariaDB is not part of test:integration: run it when the dialect, the
+  # session settings or the catalog queries change. The whole suite runs; the
+  # tests written in MySQL's SHOW CREATE or JSON text skip themselves.
+  test:integration:mariadb:
+    desc: Run tests against MariaDB 10.11 and 11.4 (and PostgreSQL 17) started via Docker
+    cmds:
+      - task: test:integration:one
+        vars: { IMAGE: "mariadb:10.11", ROOT_ENV: MARIADB_ROOT_PASSWORD, ADMIN: mariadb-admin, VERSION: "10.11" }
+      - task: test:integration:one
+        vars: { IMAGE: "mariadb:11.4", ROOT_ENV: MARIADB_ROOT_PASSWORD, ADMIN: mariadb-admin, VERSION: "11.4" }
+
   test:integration:one:
     internal: true
     requires:
       vars: [VERSION]
     vars:
+      # The server image and the names of its root-password variable and its
+      # ping tool; MySQL by default. The MariaDB 11 image has no mysqladmin.
+      IMAGE: '{{.IMAGE | default (printf "mysql:%s" .VERSION)}}'
+      ROOT_ENV: '{{.ROOT_ENV | default "MYSQL_ROOT_PASSWORD"}}'
+      ADMIN: '{{.ADMIN | default "mysqladmin"}}'
       PORT: '{{.PORT | default "33061"}}'
       PG_PORT: '{{.PG_PORT | default "33062"}}'
       HOST: '{{.HOST | default .MYSQLDANCE_TEST_HOST | default "127.0.0.1"}}'
@@ -101,14 +117,14 @@ tasks:
       # fails or the run is interrupted.
       - defer: docker rm -fv {{.NAME}} {{.NAME}}-pg >/dev/null 2>&1 || true
       - docker rm -fv {{.NAME}} {{.NAME}}-pg >/dev/null 2>&1 || true
-      - docker run -d --name {{.NAME}} -e MYSQL_ROOT_PASSWORD=root -p 127.0.0.1:{{.PORT}}:3306 mysql:{{.VERSION}}
+      - docker run -d --name {{.NAME}} -e {{.ROOT_ENV}}=root -p 127.0.0.1:{{.PORT}}:3306 {{.IMAGE}}
       - docker run -d --name {{.NAME}}-pg -e POSTGRES_PASSWORD=pg -p 127.0.0.1:{{.PG_PORT}}:5432 postgres:17
       # The entrypoint's temporary init server has networking disabled, so a
       # TCP ping only succeeds once the real server is up.
       - |
         echo "waiting for MySQL {{.VERSION}}..."
         i=0
-        until docker exec {{.NAME}} mysqladmin ping -h 127.0.0.1 -uroot -proot --silent >/dev/null 2>&1; do
+        until docker exec {{.NAME}} {{.ADMIN}} ping -h 127.0.0.1 -uroot -proot --silent >/dev/null 2>&1; do
           i=$((i + 1))
           if [ "$i" -ge {{.TIMEOUT}} ]; then
             echo "MySQL {{.VERSION}} did not become ready within {{.TIMEOUT}}s" >&2
