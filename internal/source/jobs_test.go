@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"database/sql"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -42,6 +43,44 @@ func TestJobsReaderCount(t *testing.T) {
 		}
 		if s.Readers()[0] != s {
 			t.Errorf("Jobs=%d: the first reader is not the snapshot itself", jobs)
+		}
+	}
+}
+
+// TestJobsTablesAndWarningsSameAsSerial: the table list and its warnings are
+// read on the first connection and follow table name order, whatever Jobs is.
+func TestJobsTablesAndWarningsSameAsSerial(t *testing.T) {
+	cfg, db, conn := testDB(t)
+	mustExec(t, conn,
+		"CREATE TABLE c (n INT)",
+		"CREATE TABLE a (id INT PRIMARY KEY)",
+		"CREATE TABLE b (id INT PRIMARY KEY)",
+	)
+	// TABLE_ROWS of a new table is usually 0, so lower the threshold below it
+	// (as TestWarningsLargeTable does) to get a warning for every table.
+	orig := largeTableRows
+	largeTableRows = -1
+	t.Cleanup(func() { largeTableRows = orig })
+
+	tablesAndWarnings := func(jobs int) ([]TableInfo, []string) {
+		cfg.Jobs = jobs
+		tables, warnings, err := openSnapshot(t, cfg, db).Tables(context.Background())
+		if err != nil {
+			t.Fatalf("Tables(jobs=%d): %v", jobs, err)
+		}
+		return tables, warnings
+	}
+	wantTables, wantWarnings := tablesAndWarnings(1)
+	if len(wantWarnings) != 3 {
+		t.Fatalf("serial warnings = %q, want one per table", wantWarnings)
+	}
+	for _, jobs := range []int{2, 8} {
+		tables, warnings := tablesAndWarnings(jobs)
+		if !reflect.DeepEqual(tables, wantTables) {
+			t.Errorf("Jobs=%d: tables = %v, want %v", jobs, tables, wantTables)
+		}
+		if !reflect.DeepEqual(warnings, wantWarnings) {
+			t.Errorf("Jobs=%d: warnings = %q, want %q", jobs, warnings, wantWarnings)
 		}
 	}
 }
