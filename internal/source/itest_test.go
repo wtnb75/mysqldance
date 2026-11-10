@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
+
+	"mysqldance/internal/sqlvalue"
 )
 
 // Integration test helpers. Tests that need a server are skipped unless
@@ -133,5 +135,11 @@ func rowsOf(t *testing.T, s *Snapshot, name string) [][]string {
 	if err != nil {
 		t.Fatalf("Rows(%s): %v", name, err)
 	}
-	return rows
+	// Render the typed values as MySQL literals so the assertions compare the
+	// bytes that end up in the output.
+	out := make([][]string, len(rows))
+	for i, row := range rows {
+		out[i] = sqlvalue.Literals(row)
+	}
+	return out
 }

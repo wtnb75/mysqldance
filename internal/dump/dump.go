@@ -209,7 +209,13 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		for j, c := range t.Columns {
 			cols[j] = c.Name
 		}
-		groups := datafile.Split(rows, keyColumns(t), opt.Data.RowsPerFile)
+		// The MySQL writer renders the typed values as literals here; the
+		// split and the INSERT boundaries are decided on the rendered text.
+		literals := make([][]string, len(rows))
+		for i, row := range rows {
+			literals[i] = sqlvalue.Literals(row)
+		}
+		groups := datafile.Split(literals, keyColumns(t), opt.Data.RowsPerFile)
 		names := naming.DataFileParts(db, t.Name, len(groups))
 		if len(groups) > 1 {
 			// The part names are known only now. Claim them like the others,

@@ -13,6 +13,49 @@ type Column struct {
 	TypeName string
 }
 
+// Value is one cell read from the source: the column's type name, the bytes the
+// MySQL text protocol delivered, and whether the cell is NULL. It carries no
+// dialect; Literal renders it for MySQL, and writers for other DBMSs can render
+// it their own way. The fields are private so that only NewValue builds one
+// (review ledger R-047).
+type Value struct {
+	typeName string
+	raw      []byte
+	null     bool
+}
+
+// NewValue returns a Value holding a copy of raw, because database/sql reuses
+// the buffer behind sql.RawBytes on the next Scan. A non-NULL value keeps
+// raw != nil so an empty string stays distinct from NULL.
+func NewValue(typeName string, raw []byte, isNull bool) Value {
+	if isNull {
+		return Value{typeName: typeName, null: true}
+	}
+	return Value{typeName: typeName, raw: append([]byte{}, raw...)}
+}
+
+// Type returns database/sql's DatabaseTypeName of the column.
+func (v Value) Type() string { return v.typeName }
+
+// IsNull reports whether the cell is NULL.
+func (v Value) IsNull() bool { return v.null }
+
+// Bytes returns the cell as the server formatted it, or nil for NULL. The
+// caller must not modify it.
+func (v Value) Bytes() []byte { return v.raw }
+
+// Literal formats v as a MySQL SQL literal.
+func (v Value) Literal() string { return Literal(v.typeName, v.raw, v.null) }
+
+// Literals formats each value of row as a MySQL SQL literal.
+func Literals(row []Value) []string {
+	out := make([]string, len(row))
+	for i, v := range row {
+		out[i] = v.Literal()
+	}
+	return out
+}
+
 const hexDigits = "0123456789ABCDEF"
 
 // QuoteIdent quotes a MySQL identifier, doubling embedded backticks.

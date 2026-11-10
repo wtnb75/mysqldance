@@ -40,6 +40,55 @@ func TestLiteral(t *testing.T) {
 	}
 }
 
+func TestValueLiteral(t *testing.T) {
+	tests := []struct {
+		name string
+		v    Value
+		want string
+	}{
+		{"null", NewValue("VARCHAR", nil, true), "NULL"},
+		{"empty string is not null", NewValue("VARCHAR", []byte{}, false), "''"},
+		{"int", NewValue("INT", []byte("42"), false), "42"},
+		{"blob", NewValue("BLOB", []byte{0xDE, 0xAD}, false), "0xDEAD"},
+		{"bit", NewValue("BIT", []byte{0x05}, false), "b'101'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.v.Literal(); got != tt.want {
+				t.Errorf("Literal() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLiterals(t *testing.T) {
+	row := []Value{NewValue("INT", []byte("1"), false), NewValue("VARCHAR", nil, true), NewValue("VARCHAR", []byte("a"), false)}
+	got := Literals(row)
+	want := []string{"1", "NULL", "'a'"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Errorf("Literals() = %q, want %q", got, want)
+	}
+}
+
+func TestNewValueCopiesRaw(t *testing.T) {
+	buf := []byte("abc")
+	v := NewValue("VARCHAR", buf, false)
+	copy(buf, "xyz") // database/sql reuses its RawBytes buffer on the next Scan
+	if got := v.Literal(); got != "'abc'" {
+		t.Errorf("Literal() = %q after the source buffer changed, want %q", got, "'abc'")
+	}
+}
+
+func TestValueAccessors(t *testing.T) {
+	v := NewValue("UNSIGNED INT", []byte("7"), false)
+	if v.Type() != "UNSIGNED INT" || string(v.Bytes()) != "7" || v.IsNull() {
+		t.Errorf("got type %q bytes %q null %v", v.Type(), v.Bytes(), v.IsNull())
+	}
+	if n := NewValue("INT", nil, true); !n.IsNull() || n.Bytes() != nil {
+		t.Errorf("null value: IsNull %v Bytes %v", n.IsNull(), n.Bytes())
+	}
+}
+
 func TestQuoteIdent(t *testing.T) {
 	tests := map[string]string{
 		"t":     "`t`",
