@@ -173,12 +173,27 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		if defs, err = snap.Defs(ctx); err != nil {
 			return err
 		}
+		for i := range tables {
+			if d, ok := defs[tables[i].Name]; ok {
+				tables[i].Def = &d
+			}
+		}
+	}
+	schema := writer.Schema{
+		DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps, Defs: defs,
+		Warn: func(msg string) { _, _ = fmt.Fprintf(opt.Log, "warning: database %q: %s\n", db, msg) },
 	}
 
 	// Validate every file name before touching the directory.
 	schemaName := naming.SchemaFile(db)
 	if err := claim(seen, schemaName, fmt.Sprintf("the schema of database %q", db)); err != nil {
 		return err
+	}
+	cw, hasConstraints := opt.Writer.(writer.ConstraintWriter)
+	if hasConstraints {
+		if err := claim(seen, naming.ConstraintsFile(db), fmt.Sprintf("the constraints of database %q", db)); err != nil {
+			return err
+		}
 	}
 	dataNames := make([]string, len(tables))
 	for i, t := range tables {
@@ -194,10 +209,7 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	}
 
 	if err := st.create(filepath.Join(opt.OutDir, schemaName), func(w io.Writer) error {
-		return opt.Writer.WriteSchema(w, writer.Schema{
-			DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps, Defs: defs,
-			Warn: func(msg string) { _, _ = fmt.Fprintf(opt.Log, "warning: database %q: %s\n", db, msg) },
-		})
+		return opt.Writer.WriteSchema(w, schema)
 	}); err != nil {
 		return err
 	}
@@ -226,6 +238,11 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 				return err
 			}
 		}
+	}
+	if hasConstraints {
+		return st.create(filepath.Join(opt.OutDir, naming.ConstraintsFile(db)), func(w io.Writer) error {
+			return cw.WriteConstraints(w, schema)
+		})
 	}
 	return nil
 }

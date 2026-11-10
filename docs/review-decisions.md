@@ -417,3 +417,31 @@
 - 却下の理由: 食い違いは起きない。`SQLiteLiteral` は、値が int64 に収まれば素の整数、収まらなければ文字列で書く。列が `INTEGER`（幅 63 以下）なら値は必ず収まり、`TEXT`（幅 64）なら素の整数も文字列も値を変えずに入る。`TestSQLiteValuesRoundTrip` が BIT(64) の 0x7f..、0xff..、BIT(8) で確認している。型の規則を 1 つにまとめる変更は、挙動を変えずに構造だけ変える好みの問題。
 - 初出: B-036
 - 再出: 0
+
+## R-058 AUTO_INCREMENT・ENUM/SET の制約・照合順序が PostgreSQL 向けの出力で警告なしに落ちる
+- 対象: internal/writer/postgres.go の Postgres（pgColumnType）
+- 指摘: `AUTO_INCREMENT` が素の整数になり、`ENUM`/`SET` が制約なしの `text` になり、照合順序が落ちるのに `Warn` が出ない。「黙って落とさない」に反する。
+- 却下の理由: 設計書 10.5 節の【判断】（`AUTO_INCREMENT` はカウンタを復元しない）と確定した仕様どおりで、README の「PostgreSQL output」に明記している（`AUTO_INCREMENT` は素の整数、コメント・文字コード・照合順序は落とす、`ENUM`/`SET` は `text`）。値は一つも変わらず、全行が復元される。SQLite 向け（B-036）も同じ扱いで、警告は定義を表せないとき（生成列、CHECK など）に限る。毎回出る警告は雑音になる。
+- 初出: B-035
+- 再出: 0
+
+## R-059 `CURRENT_TIMESTAMP(n)` の既定値が精度を落として `CURRENT_TIMESTAMP` になる
+- 対象: internal/writer/postgres.go の postgresDefault
+- 指摘: `DEFAULT CURRENT_TIMESTAMP(6)` が精度なしの `CURRENT_TIMESTAMP` として書かれ、警告もない。
+- 却下の理由: PostgreSQL は既定値を列の精度（`timestamp(n)` / `timestamptz(n)`）に丸めて入れるので、`CURRENT_TIMESTAMP` と `CURRENT_TIMESTAMP(n)` は同じ値になる。列の精度は `pgPrecision` で MySQL の列から引き継いでいる。値の違いを示すシナリオはない。
+- 初出: B-035
+- 再出: 0
+
+## R-060 接頭辞インデックスを列全体のインデックスにすると、大きな値の復元が失敗する
+- 対象: internal/writer/postgres.go の writePostgresTable（`Prefix`）
+- 指摘: `KEY(body(100))` を列全体のインデックスにすると、約 2.7KB を超える値で PostgreSQL の btree の行サイズ上限に当たり、復元が失敗する。警告はダンプ時にしか出ない。
+- 却下の理由: 失敗は復元時にエラーとして必ず出て、握りつぶされない（不変条件は満たす）。ダンプ時にも警告を出している。PostgreSQL に接頭辞インデックスはなく、代わりに式インデックスを作ると意味が変わる。SQLite 向け（B-036）も同じ方針。
+- 初出: B-035
+- 再出: 0
+
+## R-061 `TableInfo.Def` が `dump` の設定する裏口のポインタである
+- 対象: internal/source/source.go の TableInfo.Def、internal/dump/dump.go の dumpDB
+- 指摘: `Writer` のインターフェースに定義を渡す場所がなく、`TableInfo.Def` を `dump` が埋める形は裏口になっている。
+- 却下の理由: `DataParts` に定義を渡す方法として、引数を足す案と比べて選んだ設計。ライタが `WriteSchema` で見たものを覚える形（呼び出し順への依存、B-021 で外したもの）にせず、毎回の呼び出しの入力として明示している。引数を足すと `Writer` の全実装とテスト 8 か所の署名が変わるが、得るものは同じ。`NeedsDefs` が false のライタには `nil` で、挙動は変わらない。ヘルパー（`emit`、`outputColumns`）の置き場所の指摘は受け入れて `writer.go` に移した。
+- 初出: B-035
+- 再出: 0

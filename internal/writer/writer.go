@@ -4,6 +4,7 @@
 package writer
 
 import (
+	"fmt"
 	"io"
 	"slices"
 
@@ -50,6 +51,54 @@ type Writer interface {
 	// parts is known before any of them is written, so that dump can name and
 	// check the files first. Each writer owns its split policy.
 	DataParts(db string, t source.TableInfo, rows [][]sqlvalue.Value) []Part
+}
+
+// emit passes each message to warn, if there is one.
+func emit(warn func(string), msgs []string) {
+	if warn == nil {
+		return
+	}
+	for _, m := range msgs {
+		warn(m)
+	}
+}
+
+// outputColumns returns the columns of def that are written (all but the
+// generated ones) and checks that they are the columns the data files carry.
+func outputColumns(t source.TableInfo, def source.TableDef, warn func(format string, a ...any)) ([]source.ColumnDef, error) {
+	var cols []source.ColumnDef
+	for _, c := range def.Columns {
+		if c.Generated {
+			if warn != nil {
+				warn("generated column %s is not output", sqlvalue.QuoteIdent(c.Name))
+			}
+			continue
+		}
+		cols = append(cols, c)
+	}
+	if len(cols) == 0 {
+		return nil, fmt.Errorf("no column can be output")
+	}
+	if len(cols) != len(t.Columns) {
+		return nil, fmt.Errorf("the definition has %d columns but the data has %d", len(cols), len(t.Columns))
+	}
+	for i, c := range cols {
+		if c.Name != t.Columns[i].Name {
+			return nil, fmt.Errorf("column %d is %s in the definition but %s in the data",
+				i+1, sqlvalue.QuoteIdent(c.Name), sqlvalue.QuoteIdent(t.Columns[i].Name))
+		}
+	}
+	return cols, nil
+}
+
+// ConstraintWriter is implemented by a writer whose target needs some
+// definitions after all rows are loaded (foreign keys, which the files of
+// different tables could otherwise violate in any order). dump writes the
+// result to the database's constraints file (naming.ConstraintsFile), which
+// sorts after every data file. A writer without it produces no such file.
+type ConstraintWriter interface {
+	// WriteConstraints writes the constraints file of one database.
+	WriteConstraints(w io.Writer, s Schema) error
 }
 
 // splitParts renders the rows of t with literal, divides them into the files

@@ -100,6 +100,19 @@ func TestParseArgsTargetSQLite(t *testing.T) {
 	}
 }
 
+func TestParseArgsTargetPostgres(t *testing.T) {
+	got, err := parseArgs([]string{"--target", "postgres", "--rows-per-insert", "7", "-o", "out", "d"}, noEnv)
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	if _, ok := got.Writer.(*writer.Postgres); !ok {
+		t.Fatalf("Writer = %T, want *writer.Postgres", got.Writer)
+	}
+	if got.Data != (datafile.Options{}) {
+		t.Errorf("Data = %+v, want it empty next to a Writer", got.Data)
+	}
+}
+
 func TestParseArgsFlags(t *testing.T) {
 	env := func(k string) string {
 		if k == "MYSQL_PWD" {

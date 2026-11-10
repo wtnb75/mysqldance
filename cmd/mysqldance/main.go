@@ -33,8 +33,9 @@ func main() {
 
 // The values of --target: the DBMS the output is written for.
 const (
-	targetMySQL  = "mysql"
-	targetSQLite = "sqlite"
+	targetMySQL    = "mysql"
+	targetSQLite   = "sqlite"
+	targetPostgres = "postgres"
 )
 
 // errUsage marks errors already reported by the flag package.
@@ -127,9 +128,10 @@ The password is read from --password-file, else from MYSQL_PWD.
       --ssl-ca FILE          PEM file of CA certificates to verify the server
                              (with required, verify-ca or verify-identity)
   -o, --output DIR           output directory (required)
-      --target DBMS          mysql or sqlite: the DBMS the files are written for
-                             (default mysql). sqlite writes tables, indexes and
-                             data, not views; see the README
+      --target DBMS          mysql, sqlite or postgres: the DBMS the files are
+                             written for (default mysql). sqlite and postgres
+                             write tables, indexes and data, not views; see the
+                             README
       --rows-per-insert N    average rows per INSERT statement (default 1000)
       --max-insert-bytes N   size cap of one INSERT statement (default 1048576)
       --rows-per-file N      split a table into files of N rows on average,
@@ -192,8 +194,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 	switch {
 	case output == "":
 		return usage("-o/--output is required")
-	case target != targetMySQL && target != targetSQLite:
-		return usage("--target must be %s or %s, not %q", targetMySQL, targetSQLite, target)
+	case target != targetMySQL && target != targetSQLite && target != targetPostgres:
+		return usage("--target must be %s, %s or %s, not %q", targetMySQL, targetSQLite, targetPostgres, target)
 	case fs.NArg() == 0:
 		return usage("at least one database name is required")
 	case rowsPerInsert == 0 || rowsPerInsert > math.MaxUint32:
@@ -227,9 +229,12 @@ The password is read from --password-file, else from MYSQL_PWD.
 	}
 	// dump builds the MySQL writer from Data; another writer takes the options
 	// itself, and dump refuses both.
-	if target == targetSQLite {
+	switch target {
+	case targetSQLite:
 		opt.Writer = writer.NewSQLite(data)
-	} else {
+	case targetPostgres:
+		opt.Writer = writer.NewPostgres(data)
+	default:
 		opt.Data = data
 	}
 	opt.Source.Host, opt.Source.Port, opt.Source.Socket, opt.Source.User = host, port, socket, user
