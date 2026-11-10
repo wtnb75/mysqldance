@@ -65,15 +65,6 @@
   - [ ] 出力は MySQL 向けと同様に決定的である
   - [ ] 出力先の DBMS を選ぶフラグを追加し、README に書く
 
-## B-036 [todo|P2] SQLite 向けの出力に対応する
-- 依存: B-034
-- 概要: SQLite 向けのライタを足す。型の変換や、制約の書き方などの方言差を扱う（設計書 12 節）。出力先を選ぶフラグは B-035 で追加するものを使う。B-035 と並行して進めるなら、先に入ったほうのフラグ定義に合わせる。
-- 前提（仕様確定）: フラグは `--target mysql|sqlite`（既定 `mysql`、不明な値はエラー）。B-035 は値 `postgres` を足す。テーブル定義は `information_schema` から構造（列の型・NULL 可否・既定値、主キー、UNIQUE、外部キー、通常のインデックス）で読み、SQLite の DDL を組み立てる（`SHOW CREATE TABLE` は解析しない）。ビューは MySQL の `SELECT` 文が SQLite でそのまま通らないため、警告を出して出力しない（変換は B-062）。SQLite に写せない定義（生成列など）は黙って落とさず、警告かエラーにする。実機の検証には純 Go の `modernc.org/sqlite` をテスト専用の依存として足す（`sqlite3` コマンドはこの環境にない）。
-- 受け入れ条件:
-  - [ ] `--target sqlite` で SQLite 向けに出力でき、実機の SQLite にリストアして行数と値が一致する
-  - [ ] 出力は決定的である（2 回の出力がバイト単位で一致する）
-  - [ ] `--target` のフラグを追加し、README に書く（ビューを出力しないことも書く）
-
 ## B-037 [todo|P2] MariaDB の MySQL との差異を実機で確かめる
 - 概要: 設計書 12 節に挙げた MariaDB の差異（`SHOW CREATE TABLE` の既定値の書式、照合順序、JSON が `LONGTEXT` + `CHECK`、シーケンス、`VIEW_TABLE_USAGE` がないことなど）は記憶ベースで未確認。実機で確かめ、対応の方針を決める。この項目はコードを変えず、調査結果を設計書に書く。
 - 受け入れ条件:
@@ -265,6 +256,16 @@
   - [ ] 参照先が主キーまたは UNIQUE の外部キーの出力は変わらない
 
 # Done
+
+## B-036 [done|P2] SQLite 向けの出力に対応する
+- 依存: B-034
+- 概要: SQLite 向けのライタを足す。型の変換や、制約の書き方などの方言差を扱う（設計書 12 節）。出力先を選ぶフラグは B-035 で追加するものを使う。B-035 と並行して進めるなら、先に入ったほうのフラグ定義に合わせる。
+- 前提（仕様確定）: フラグは `--target mysql|sqlite`（既定 `mysql`、不明な値はエラー）。B-035 は値 `postgres` を足す。テーブル定義は `information_schema` から構造（列の型・NULL 可否・既定値、主キー、UNIQUE、外部キー、通常のインデックス）で読み、SQLite の DDL を組み立てる（`SHOW CREATE TABLE` は解析しない）。ビューは MySQL の `SELECT` 文が SQLite でそのまま通らないため、警告を出して出力しない（変換は B-062）。SQLite に写せない定義（生成列など）は黙って落とさず、警告かエラーにする。実機の検証には純 Go の `modernc.org/sqlite` をテスト専用の依存として足す（`sqlite3` コマンドはこの環境にない）。
+- 結果: `--target mysql|sqlite` を足した。`source.Snapshot.Defs` が `information_schema` から列・インデックス・外部キー・CHECK の名前を構造で読み、`writer.SQLite` が SQLite の DDL と `INSERT` を書く。構造が要るライタだけが `Writer.NeedsDefs()` で `true` を返し、MySQL の出力と読み出しは変わらない。値は `sqlvalue.SQLiteLiteral` で書く（`DECIMAL`・`BIGINT UNSIGNED`・`BIT(64)` は `TEXT`、行の途中の改行は `char(10)` の連結、改行が 100 を超える値は 16 進の `CAST`）。警告は `Schema.Warn` 経由で `dump` のログに出る。実機の SQLite は純 Go の `modernc.org/sqlite`（テスト専用）で確認した。
+- 受け入れ条件:
+  - [x] `--target sqlite` で SQLite 向けに出力でき、実機の SQLite にリストアして行数と値が一致する
+  - [x] 出力は決定的である（2 回の出力がバイト単位で一致する）
+  - [x] `--target` のフラグを追加し、README に書く（ビューを出力しないことも書く）
 
 ## B-034 [done|P2] ライタをインターフェースにして差し替えられるようにする
 - 依存: B-033
