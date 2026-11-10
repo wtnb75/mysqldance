@@ -33,8 +33,8 @@ func TestUseReadsSameSnapshot(t *testing.T) {
 	}
 }
 
-// TestUseResetsPerDatabaseState checks that nothing cached for one database
-// leaks into the next, even when both have a table of the same name.
+// TestUseResetsPerDatabaseState checks that Use switches to the other
+// database, even when both have a table of the same name.
 func TestUseResetsPerDatabaseState(t *testing.T) {
 	cfg, a, connA := testDB(t)
 	_, b, connB := testDB(t)

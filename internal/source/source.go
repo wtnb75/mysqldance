@@ -53,6 +53,10 @@ type TableInfo struct {
 	// OrderBy is the primary key, else the first NOT NULL unique key by
 	// index name, else empty.
 	OrderBy []string
+	// OrderByTypes holds the information_schema DATA_TYPE of each OrderBy
+	// column, in the same order (same length as OrderBy). Rows uses it to
+	// pick the sort expression.
+	OrderByTypes []string
 	// ApproxRows is the TABLE_ROWS estimate.
 	ApproxRows int64
 }
@@ -68,9 +72,6 @@ type Snapshot struct {
 	// locked is true while the global read lock is held; noLock is the NoLock
 	// option. A non-InnoDB table read with neither is an error.
 	locked, noLock bool
-	warnings       []string
-	// columns caches the column catalog (table -> columns) read by Tables.
-	columns map[string][]columnRow
 }
 
 var systemDatabases = []string{"information_schema", "mysql", "performance_schema", "sys"}
@@ -208,8 +209,8 @@ func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool) (*Snapsh
 
 // Use makes db the database the other methods read, without leaving the
 // snapshot transaction, so every database read through one Snapshot comes
-// from the same point in time. State cached for the previous database is
-// dropped. On error the Snapshot still points at the previous database.
+// from the same point in time. On error the Snapshot still points at the
+// previous database.
 func (s *Snapshot) Use(ctx context.Context, db string) error {
 	if err := checkNotSystem(db); err != nil {
 		return err
@@ -231,7 +232,7 @@ func (s *Snapshot) Use(ctx context.Context, db string) error {
 	if _, err := s.conn.ExecContext(ctx, "USE "+sqlvalue.QuoteIdent(db)); err != nil {
 		return err
 	}
-	s.name, s.columns, s.warnings = db, nil, nil
+	s.name = db
 	return nil
 }
 
@@ -405,21 +406,21 @@ func chooseKey(keys map[string][]string, cols []columnRow) []string {
 	return nil
 }
 
-// Tables returns the base tables sorted by name. It also recomputes the
-// warnings reported by Warnings.
-func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, error) {
+// Tables returns the base tables sorted by name, and the warnings found while
+// reading them: tables not using InnoDB, and tables whose row estimate
+// exceeds largeTableRows. Warnings follow table name order.
+func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
 	list, err := s.listTables(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	columns, err := s.listColumns(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	s.columns = columns
 	keys, err := s.listUniqueKeys(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var out []TableInfo
@@ -439,19 +440,20 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, error) {
 			}
 		}
 		ti.OrderBy = chooseKey(keys[r.name], columns[r.name])
+		ti.OrderByTypes = keyTypes(ti.OrderBy, columns[r.name])
 		if ti.Create, err = s.showCreate(ctx, "TABLE", r.name); err != nil {
-			return nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(r.name), err)
+			return nil, nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(r.name), err)
 		}
 		if err := checkAllColumnsVisible(ti.Create, columns[r.name]); err != nil {
-			return nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(r.name), err)
+			return nil, nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(r.name), err)
 		}
 		if ti.Columns, err = s.columnTypes(ctx, r.name, names); err != nil {
-			return nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(r.name), err)
+			return nil, nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(r.name), err)
 		}
 		if !strings.EqualFold(ti.Engine, "InnoDB") && !s.locked {
 			if !s.noLock {
 				// Created after Open decided that no lock was needed.
-				return nil, fmt.Errorf("table %s uses the %s engine and appeared after the dump started "+
+				return nil, nil, fmt.Errorf("table %s uses the %s engine and appeared after the dump started "+
 					"without a global read lock; run again, or pass --no-lock to read without consistency",
 					sqlvalue.QuoteIdent(ti.Name), ti.Engine)
 			}
@@ -470,8 +472,23 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, error) {
 		}
 		out = append(out, ti)
 	}
-	s.warnings = warnings
-	return out, nil
+	return out, warnings, nil
+}
+
+// keyTypes returns the DATA_TYPE of each key column, in key order.
+func keyTypes(key []string, cols []columnRow) []string {
+	if len(key) == 0 {
+		return nil
+	}
+	typeOf := make(map[string]string, len(cols))
+	for _, c := range cols {
+		typeOf[c.name] = c.dataType
+	}
+	out := make([]string, len(key))
+	for i, k := range key {
+		out[i] = typeOf[k]
+	}
+	return out
 }
 
 // checkAllColumnsVisible fails unless the catalog lists every column that
@@ -619,27 +636,18 @@ var stringKeyTypes = map[string]bool{
 
 // Rows returns the rows of t formatted as SQL literals, one []string per row
 // in t.Columns order. With a key the server orders them; otherwise they are
-// sorted in memory by their comma-joined text in byte order.
+// sorted in memory by their comma-joined text in byte order. t must come from
+// Tables for the database currently selected by Use.
 func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]string, error) {
 	names := make([]string, len(t.Columns))
 	for i, c := range t.Columns {
 		names[i] = c.Name
 	}
-	query := "SELECT " + columnList(names) + " FROM " + s.qualified(t.Name)
-	if len(t.OrderBy) > 0 {
-		types, err := s.dataTypes(ctx, t.Name)
-		if err != nil {
-			return nil, err
-		}
-		terms := make([]string, len(t.OrderBy))
-		for i, c := range t.OrderBy {
-			terms[i] = sqlvalue.QuoteIdent(c)
-			if stringKeyTypes[types[c]] {
-				terms[i] = "CAST(" + terms[i] + " AS BINARY)"
-			}
-		}
-		query += " ORDER BY " + strings.Join(terms, ", ")
+	orderBy, err := orderByClause(t.OrderBy, t.OrderByTypes)
+	if err != nil {
+		return nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
 	}
+	query := "SELECT " + columnList(names) + " FROM " + s.qualified(t.Name) + orderBy
 
 	// No query arguments: the text protocol delivers values as the server
 	// formats them, and sql.RawBytes keeps them unconverted.
@@ -686,27 +694,28 @@ func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]string, error) {
 	return out, nil
 }
 
-// dataTypes returns COLUMN_NAME -> DATA_TYPE for one table, from the
-// catalog read by Tables (or read now if Tables has not seen the table).
-func (s *Snapshot) dataTypes(ctx context.Context, table string) (map[string]string, error) {
-	if s.columns == nil || s.columns[table] == nil {
-		all, err := s.listColumns(ctx)
-		if err != nil {
-			return nil, err
+// orderByClause returns the ORDER BY clause (with a leading space) for the
+// key columns whose DATA_TYPEs are types, or "" for no key. It fails when a
+// key column has no type: guessing would sort a string key by collation and
+// make the output order depend on it.
+func orderByClause(key, types []string) (string, error) {
+	if len(key) == 0 {
+		return "", nil
+	}
+	if len(types) != len(key) {
+		return "", fmt.Errorf("key has %d columns but %d types", len(key), len(types))
+	}
+	terms := make([]string, len(key))
+	for i, c := range key {
+		if types[i] == "" {
+			return "", fmt.Errorf("key column %s has no data type", sqlvalue.QuoteIdent(c))
 		}
-		s.columns = all
+		terms[i] = sqlvalue.QuoteIdent(c)
+		if stringKeyTypes[types[i]] {
+			terms[i] = "CAST(" + terms[i] + " AS BINARY)"
+		}
 	}
-	out := map[string]string{}
-	for _, c := range s.columns[table] {
-		out[c.name] = c.dataType
-	}
-	return out, nil
-}
-
-// Warnings returns the warnings found by the last call to Tables: tables
-// not using InnoDB, and tables whose row estimate exceeds largeTableRows.
-func (s *Snapshot) Warnings() []string {
-	return append([]string(nil), s.warnings...)
+	return " ORDER BY " + strings.Join(terms, ", "), nil
 }
 
 func (s *Snapshot) qualified(name string) string {

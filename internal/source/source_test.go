@@ -207,7 +207,7 @@ func TestViewsAndDeps(t *testing.T) {
 	)
 	s := openSnapshot(t, cfg, db)
 
-	tables, err := s.Tables(context.Background())
+	tables, _, err := s.Tables(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,6 +251,44 @@ func TestCheckAllColumnsVisible(t *testing.T) {
 	}
 }
 
+func TestOrderByClause(t *testing.T) {
+	got, err := orderByClause([]string{"a", "b", "c"}, []string{"varchar", "int", "text"})
+	want := " ORDER BY CAST(`a` AS BINARY), `b`, CAST(`c` AS BINARY)"
+	if err != nil || got != want {
+		t.Errorf("orderByClause = %q, %v, want %q", got, err, want)
+	}
+	if got, err := orderByClause(nil, nil); err != nil || got != "" {
+		t.Errorf("orderByClause(nil) = %q, %v, want empty", got, err)
+	}
+}
+
+// TestOrderByClauseRejectsMissingTypes covers a TableInfo whose key types are
+// absent: the key would otherwise be sorted by collation (or panic).
+func TestOrderByClauseRejectsMissingTypes(t *testing.T) {
+	for name, types := range map[string][]string{
+		"nil":      nil,
+		"short":    {"int"},
+		"empty":    {"int", ""},
+		"too long": {"int", "int", "int"},
+	} {
+		if got, err := orderByClause([]string{"a", "b"}, types); err == nil {
+			t.Errorf("%s: orderByClause = %q, want an error", name, got)
+		}
+	}
+}
+
+// TestOrderByTypesFromTables checks that Tables records the key column types
+// in TableInfo, which Rows uses instead of any state kept in the Snapshot.
+func TestOrderByTypesFromTables(t *testing.T) {
+	cfg, db, conn := testDB(t)
+	mustExec(t, conn, "CREATE TABLE k (name VARCHAR(10), n INT, PRIMARY KEY (name, n))")
+	s := openSnapshot(t, cfg, db)
+	ti := tableByName(t, s, "k")
+	if want := []string{"varchar", "int"}; !reflect.DeepEqual(ti.OrderByTypes, want) {
+		t.Errorf("OrderByTypes = %v, want %v", ti.OrderByTypes, want)
+	}
+}
+
 func TestWarningsLargeTable(t *testing.T) {
 	cfg, db, conn := testDB(t)
 	mustExec(t, conn,
@@ -263,10 +301,7 @@ func TestWarningsLargeTable(t *testing.T) {
 	largeTableRows = -1
 	t.Cleanup(func() { largeTableRows = orig })
 	s := openSnapshot(t, cfg, db)
-	if _, err := s.Tables(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	w := s.Warnings()
+	w := warningsOf(t, s)
 	if len(w) != 2 {
 		t.Fatalf("Warnings = %q, want one per table", w)
 	}
@@ -290,7 +325,7 @@ func TestWarningsNonInnoDB(t *testing.T) {
 	if ti := tableByName(t, s, "my"); ti.Engine != "MyISAM" {
 		t.Errorf("Engine = %q, want MyISAM", ti.Engine)
 	}
-	w := s.Warnings()
+	w := warningsOf(t, s)
 	if len(w) != 1 || !strings.Contains(w[0], "`my`") || !strings.Contains(w[0], "MyISAM") {
 		t.Errorf("Warnings = %v, want one warning about `my` (MyISAM)", w)
 	}
