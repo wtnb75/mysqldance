@@ -24,7 +24,7 @@ func (e *env) dumpSQLite(t *testing.T, dir string, data datafile.Options, dbs ..
 	t.Helper()
 	var log bytes.Buffer
 	err := Run(context.Background(), Options{
-		Source: e.cfg, DBs: dbs, OutDir: dir, Log: &log, Writer: writer.NewSQLite(data),
+		Source: e.cfg, DBs: dbs, OutDir: dir, Log: testLogger(&log), Writer: writer.NewSQLite(data),
 	})
 	if err != nil {
 		t.Fatalf("Run(%v): %v", dbs, err)

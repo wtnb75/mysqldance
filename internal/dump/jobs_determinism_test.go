@@ -71,7 +71,7 @@ func TestJobsOutputAndLogIndependentOfJobs(t *testing.T) {
 				cfg := e.cfg
 				cfg.Jobs = jobs
 				var log bytes.Buffer
-				opt := Options{Source: cfg, DBs: dbs, OutDir: dir, Writer: w.make(), Log: &log}
+				opt := Options{Source: cfg, DBs: dbs, OutDir: dir, Writer: w.make(), Log: testLogger(&log)}
 				if err := Run(context.Background(), opt); err != nil {
 					t.Fatalf("Run(jobs=%d): %v", jobs, err)
 				}
@@ -97,7 +97,7 @@ func TestJobsOutputAndLogIndependentOfJobs(t *testing.T) {
 				// warnings has something to compare.
 				for _, db := range dbs {
 					for _, v := range []string{"`v1`", "`v2`"} {
-						if !hasWarning(wantLog, fmt.Sprintf("database %q", db), v) {
+						if !hasWarning(wantLog, "database="+db, v) {
 							t.Fatalf("serial log has no warning for view %s of %q:\n%s", v, db, wantLog)
 						}
 					}

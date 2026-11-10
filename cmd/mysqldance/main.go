@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"os/signal"
@@ -60,8 +61,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		}
 		return 1
 	}
-	opt.Log = stderr
-
 	ctx, stop := notifyContext(context.Background())
 	defer stop()
 	if err := dump.Run(ctx, opt); err != nil {
@@ -83,6 +82,32 @@ func notifyContext(parent context.Context) (context.Context, context.CancelFunc)
 		stop()
 	}()
 	return ctx, stop
+}
+
+// newLogger returns a logger that writes to w (standard error), so that
+// standard output stays free of anything but --version.
+func newLogger(w io.Writer, level, format string) (*slog.Logger, error) {
+	var lv slog.Level
+	switch level {
+	case "debug":
+		lv = slog.LevelDebug
+	case "info":
+		lv = slog.LevelInfo
+	case "warn":
+		lv = slog.LevelWarn
+	case "error":
+		lv = slog.LevelError
+	default:
+		return nil, fmt.Errorf("--log-level must be debug, info, warn or error, not %q", level)
+	}
+	h := &slog.HandlerOptions{Level: lv}
+	switch format {
+	case "text":
+		return slog.New(slog.NewTextHandler(w, h)), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(w, h)), nil
+	}
+	return nil, fmt.Errorf("--log-format must be text or json, not %q", format)
 }
 
 // parseMode parses an octal permission such as "0640". An empty s means the
@@ -147,6 +172,9 @@ The password is read from --password-file, else from MYSQL_PWD.
                              show the same point in time (default 1). Above 1
                              the lock is always taken, so the RELOAD privilege
                              is needed, and --no-lock cannot be used
+      --log-level LEVEL      debug, info, warn or error (default info). Logs go
+                             to standard error
+      --log-format FORMAT    text or json (default text)
       --version              print the version and commit, then exit
 `)
 	}
@@ -154,6 +182,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	var (
 		host, user, socket, passwordFile, output string
 		sslMode, sslCA, target                   string
+		logLevel, logFormat                      string
 		noLock, showVersion                      bool
 		fileMode, dirMode                        string
 		port, jobs                               int
@@ -179,6 +208,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.BoolVar(&noLock, "no-lock", false, "")
 	fs.IntVar(&jobs, "j", 1, "")
 	fs.IntVar(&jobs, "jobs", 1, "")
+	fs.StringVar(&logLevel, "log-level", "info", "")
+	fs.StringVar(&logFormat, "log-format", "text", "")
 	fs.BoolVar(&showVersion, "version", false, "")
 	fs.StringVar(&fileMode, "file-mode", "", "")
 	fs.StringVar(&dirMode, "dir-mode", "", "")
@@ -223,6 +254,10 @@ The password is read from --password-file, else from MYSQL_PWD.
 		return usage("%v", err)
 	}
 
+	logger, err := newLogger(stderr, logLevel, logFormat)
+	if err != nil {
+		return usage("%v", err)
+	}
 	fm, err := parseMode(fileMode, 0o400)
 	if err != nil {
 		return usage("--file-mode: %v", err)
@@ -234,6 +269,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 
 	data := datafile.Options{RowsPerInsert: uint32(rowsPerInsert), MaxInsertBytes: maxInsertBytes, RowsPerFile: uint32(rowsPerFile)}
 	opt := dump.Options{
+		Log:      logger,
 		FileMode: fm,
 		DirMode:  dm,
 		DBs:      fs.Args(),

@@ -70,6 +70,11 @@ func TestParseArgsDefaults(t *testing.T) {
 		OutDir: "out",
 		Data:   datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 	}
+	// The logger is checked in logflags_test.go.
+	if got.Log == nil {
+		t.Error("Options.Log is nil")
+	}
+	got.Log = nil
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("parseArgs = %+v, want %+v", got, want)
 	}
@@ -218,6 +223,8 @@ func TestParseArgsFlags(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseArgs: %v", err)
 			}
+			// The logger is checked in logflags_test.go.
+			got.Log = nil
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("parseArgs = %+v, want %+v", got, tt.want)
 			}
