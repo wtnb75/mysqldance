@@ -57,19 +57,6 @@
   - [ ] 手動実行で PR が作られ、PR 上で CI が通る
   - [ ] 統合テストが必要な更新でも、B-026 の CI で検証される
 
-## B-040 [todo|P2] MySQL 5.7 に対応する
-- 依存: B-039
-- 概要: B-039 の調査結果（設計書 11 節）に基づき、5.7 向けの `dialect`（`mysql57`。`mysql8` を元にした差し替え）を足して `dialectFor` の「8.0 以上が必要」のエラーを 5.7 まで緩める。確認した版は 5.7.44 だけ。5.6 以前は対象外のまま拒否する。
-- 受け入れ条件:
-  - [ ] `viewDeps` を `viewDefinitions` にして、5.7 の実機（5.7.44）で `VIEW_TABLE_USAGE` なしにビューの依存順が取れる（2 段のビューで確認する）
-  - [ ] セッション設定から `show_create_table_verbosity` を外し、5.7.21 以前（`Unknown system variable`）でもスナップショットを開始できる（5.7.21 と 5.7.44 で確認する）
-  - [ ] `TIMESTAMP` / `DATETIME` の `DEFAULT CURRENT_TIMESTAMP[(n)]` を式として読む（5.7 は `EXTRA` に `DEFAULT_GENERATED` が付かない）。`--target sqlite` / `postgres` の出力が、8.4 と同じ `DEFAULT CURRENT_TIMESTAMP` になる。`varchar` の `DEFAULT 'CURRENT_TIMESTAMP'` は文字列のまま
-  - [ ] 外部キーの `ON UPDATE` を書かない場合の規則（5.7 は `RESTRICT`、8.x は `NO ACTION`）を、`--target sqlite` / `postgres` の出力で 5.7 と 8.x のどちらかに揃えるか、揃えずにそのまま出すかを決めて、テストと README に書く
-  - [ ] 5.7.44 の実機で統合テストが通る（`task test:integration:mysql57` のような専用タスクで実行する。イメージは amd64 のみなので `--platform linux/amd64` で起動する。`task test:integration` の既定には含めない）。MySQL 固有のテキストを前提にするテストは、テスト専用の判定で skip する（MariaDB と同じ）
-  - [ ] 5.7 の出力（`--target mysql`）を新しい 5.7 と 8.4 に復元して、行数と値が一致する往復テストがある
-  - [ ] `dialect` 以外のコードにバージョン固有の分岐を入れない
-  - [ ] README の対象バージョンと、5.7 の注意（`int(11)` や `latin1` など書式がそのまま出ること、確認した版が 5.7.44 だけであること）を更新する
-
 ## B-041 [todo|P2] 複数接続で同一スナップショットを揃える方式を実機で検証する
 - 概要: 並列取得では複数接続が同じ時点を見る必要がある。設計書 6 節の案（`FLUSH TABLES WITH READ LOCK` で位置を固定してから、各接続でスナップショットを開始する）が、必要な権限やロック時間を含めて実用になるかを実機で確かめる。この項目は方式の検証だけで、並列化はしない。
 - 受け入れ条件:
@@ -243,6 +230,14 @@
 - 受け入れ条件:
   - [ ] 別の DB を参照する外部キーが PostgreSQL にリストアされる
   - [ ] 1 つの DB だけをダンプしたときの出力は変わらない
+
+## B-066 [todo|P2] 5.7 のゼロ日付の既定値を 8.x へ復元できるようにする
+- 依存: B-040
+- 概要: 5.7 で `explicit_defaults_for_timestamp=OFF`（5.7 の既定）のとき、`TIMESTAMP NOT NULL` の列は `SHOW CREATE TABLE` に `DEFAULT '0000-00-00 00:00:00'` と出る。`--target mysql` はこれをそのまま出すので、`NO_ZERO_DATE` を含む既定の `sql_mode` の 8.x では、復元時に `Invalid default value` で失敗しうる（B-040 のコードレビューで指摘。実機では未確認）。まず実機で確かめ、失敗するなら、出力する方法（復元ファイルの `sql_mode` 設定など）を決める。
+- 受け入れ条件:
+  - [ ] 5.7.44 の `TIMESTAMP NOT NULL`（`explicit_defaults_for_timestamp=OFF`）の出力を、8.4 に復元した結果が分かる（失敗するか、しないか）
+  - [ ] 失敗する場合、復元できる出力になる。5.7 から 5.7 への復元は変わらない
+  - [ ] README の「MySQL 5.7」節を結果に合わせる
 
 # Done
 
@@ -449,3 +444,16 @@
 - 受け入れ条件:
   - [x] `v*` タグのプッシュで Releases にバイナリとチェックサムが出る
   - [x] テスト用のタグ（例: `v0.0.0-test`）で動作を確認してから、そのタグとリリースを削除する
+
+## B-040 [done|P2] MySQL 5.7 に対応する
+- 依存: B-039
+- 概要: B-039 の調査結果（設計書 11 節）に基づき、5.7 向けの `dialect`（`mysql57`。`mysql8` を元にした差し替え）を足して `dialectFor` の「8.0 以上が必要」のエラーを 5.7 まで緩める。確認した版は 5.7.44 だけ。5.6 以前は対象外のまま拒否する。
+- 受け入れ条件:
+  - [x] `viewDeps` を `viewDefinitions` にして、5.7 の実機（5.7.44）で `VIEW_TABLE_USAGE` なしにビューの依存順が取れる（2 段のビューで確認する）
+  - [x] セッション設定から `show_create_table_verbosity` を外し、5.7.21 以前（`Unknown system variable`）でもスナップショットを開始できる（5.7.21 と 5.7.44 で確認する）
+  - [x] `TIMESTAMP` / `DATETIME` の `DEFAULT CURRENT_TIMESTAMP[(n)]` を式として読む（5.7 は `EXTRA` に `DEFAULT_GENERATED` が付かない）。`--target sqlite` / `postgres` の出力が、8.4 と同じ `DEFAULT CURRENT_TIMESTAMP` になる。`varchar` の `DEFAULT 'CURRENT_TIMESTAMP'` は文字列のまま
+  - [x] 外部キーの `ON UPDATE` / `ON DELETE` を書かない場合の規則（5.7 は `RESTRICT`、8.x は `NO ACTION`）は、**揃えずにサーバーの報告をそのまま出す**（決定。どちらも SQLite と PostgreSQL でロードできる）。5.7 の `RESTRICT` が `--target sqlite` / `postgres` の出力にそのまま出るテストと、「同じスキーマでも版で出力が変わる」旨の README の記述を足す
+  - [x] 5.7.44 の実機で統合テストが通る（`task test:integration:mysql57` のような専用タスクで実行する。イメージは amd64 のみなので `--platform linux/amd64` で起動する。`task test:integration` の既定には含めない）。MySQL 固有のテキストを前提にするテストは、テスト専用の判定で skip する（MariaDB と同じ）
+  - [x] 5.7 の出力（`--target mysql`）を新しい 5.7 と 8.4 に復元して、行数と値が一致する往復テストがある
+  - [x] `dialect` 以外のコードにバージョン固有の分岐を入れない
+  - [x] README の対象バージョンと、5.7 の注意（`int(11)` や `latin1` など書式がそのまま出ること、確認した版が 5.7.44 だけであること）を更新する

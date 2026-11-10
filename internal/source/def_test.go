@@ -9,10 +9,11 @@ import (
 
 func TestDefs(t *testing.T) {
 	cfg, db, conn := testDB(t)
-	// MariaDB has no functional key parts.
+	// MariaDB and MySQL 5.7 have no functional key parts. 5.7 also drops DESC
+	// of a key part and parses a CHECK without keeping it.
 	functionalKey, wantFunctional := " KEY ((qty + 1)),", 1
-	mariadb := isMariaDB(t, conn)
-	if mariadb {
+	mariadb, mysql57 := isMariaDB(t, conn), isMySQL57(t, conn)
+	if mariadb || mysql57 {
 		functionalKey, wantFunctional = "", 0
 	}
 	mustExec(t, conn,
@@ -55,7 +56,7 @@ func TestDefs(t *testing.T) {
 	}
 	// MariaDB (and MySQL before 8.0.19) report the display width of integers.
 	wantType := "bigint unsigned"
-	if mariadb {
+	if mariadb || mysql57 {
 		wantType = "bigint(20) unsigned"
 	}
 	if c := byName["parent_id"]; c.Type != wantType || c.DataType != "bigint" || !c.Nullable || c.Default != nil {
@@ -88,7 +89,7 @@ func TestDefs(t *testing.T) {
 	}
 	ix := idx["idx_note"]
 	if ix.Unique || len(ix.Parts) != 2 || ix.Parts[0].Column != "note" || !ix.Parts[0].Prefix ||
-		ix.Parts[1].Column != "created" || !ix.Parts[1].Desc {
+		ix.Parts[1].Column != "created" || ix.Parts[1].Desc == mysql57 {
 		t.Errorf("idx_note = %+v", ix)
 	}
 	if ix := idx["ft_note"]; ix.Kind != "FULLTEXT" {
@@ -116,8 +117,12 @@ func TestDefs(t *testing.T) {
 		fk.OnDelete != "CASCADE" || fk.OnUpdate != "RESTRICT" {
 		t.Errorf("fk = %+v", fk)
 	}
-	if !reflect.DeepEqual(child.Checks, []string{"ck_qty"}) {
-		t.Errorf("checks = %v", child.Checks)
+	wantChecks := []string{"ck_qty"}
+	if mysql57 {
+		wantChecks = nil
+	}
+	if !reflect.DeepEqual(child.Checks, wantChecks) {
+		t.Errorf("checks = %v, want %v", child.Checks, wantChecks)
 	}
 	if got := defs["parent"].Indexes; len(got) != 3 {
 		t.Errorf("parent indexes = %+v", got)

@@ -494,3 +494,31 @@
 - 却下の理由: 失敗のシナリオを示せない。`Type` の幅を読むのは、`tinyint(1)`（修正済み）、`bit(n)`、`decimal(p,s)`、`char/varchar(n)`、時刻型の精度だけで、整数型は `DataType` で決まる（postgres.go の pgColumnType、sqlite.go の sqliteType）。`pgPrecision` は時刻型にしか使わない。`TestSQLiteRoundTrip` は MariaDB で通る。PostgreSQL は `task test:integration:mariadb` で確認する。
 - 初出: B-038
 - 再出: 0
+
+## R-069 MySQL 5.7 で `show_create_table_verbosity` を設定しないと、グローバル設定で出力が変わる
+- 対象: internal/source/dialect.go の mysql57（session）
+- 指摘: 5.7.22 以降でグローバルが `ON` のサーバーは `ROW_FORMAT=DYNAMIC` が出力に入り、同じスキーマでも出力が変わる。決定性に反する。
+- 却下の理由: 確定した仕様そのもの（B-040 の受け入れ条件「セッション設定から `show_create_table_verbosity` を外す」、設計書 11 節の方針「5.7 は版を見分けずに外す」）。5.7.21 以前は変数がなく、`SET` が `Unknown system variable` で失敗する。ユーザーの設定が出力に出るのは、グローバル設定が `ON` のサーバーに限る。未確認であることを README の「MySQL 5.7」節に明記している。
+- 初出: B-040
+- 再出: 0
+
+## R-070 復元用サーバーのホストポート（33063）が固定
+- 対象: Taskfile.yml の test:integration:one（RESTORE_PORT）
+- 指摘: 同時に 2 つの統合テストを動かすと `docker run` が失敗する。
+- 却下の理由: 既存の `PORT`（33061）と `PG_PORT`（33062）も固定の既定値で、`task test:integration PORT=...` と同じく変数で変えられる。同時実行を前提にした作りではない。
+- 初出: B-040
+- 再出: 0
+
+## R-071 mysql57 が mariadb と同じ差し替えの型で、`columnDefault` の `dataType` 引数が 1 つの方言でしか使われない
+- 対象: internal/source/dialect.go の mysql57 / columnDefault
+- 指摘: 差し替えの重複と、未使用の引数。
+- 却下の理由: 好みの問題で、`CLAUDE.md` の規約にない。セッション設定は `sessionNoVerbosity` で共有済み。B-039 の設計（設計書 11 節）が `columnDefault` に `DATA_TYPE` を渡す方式を決めている（`varchar` の `DEFAULT 'CURRENT_TIMESTAMP'` と区別するため）。
+- 初出: B-040
+- 再出: 0
+
+## R-072 `isMySQL57` がテストのパッケージごとに実装されている
+- 対象: internal/source/itest_test.go、internal/dump/mysql57_test.go
+- 指摘: 判定が 3 か所（`isMariaDB` を含む）に重複し、本番の `dialectFor` とずれうる。
+- 却下の理由: `isMariaDB` と同じ流儀の、パッケージごとのテスト用判定。テストが本番の判定を呼ぶと、本番が間違ったときにテストも一緒に間違う（「本番のコードは聞かない」という `isMariaDB` の方針）。
+- 初出: B-040
+- 再出: 0

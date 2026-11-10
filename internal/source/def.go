@@ -121,7 +121,7 @@ func (s *Snapshot) defColumns(ctx context.Context, defs map[string]*TableDef) er
 			continue
 		}
 		c.Nullable = nullable == "YES"
-		c.Default, c.DefaultExpr = s.dialect.columnDefault(def, extra)
+		c.Default, c.DefaultExpr = s.dialect.columnDefault(def, c.DataType, extra)
 		lower := strings.ToLower(extra)
 		c.OnUpdate = strings.Contains(lower, "on update")
 		c.AutoIncrement = strings.Contains(lower, "auto_increment")

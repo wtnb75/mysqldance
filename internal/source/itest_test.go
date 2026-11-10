@@ -31,7 +31,9 @@ func testConfig(t *testing.T) (Config, string) {
 	if err != nil {
 		t.Fatalf("parse MYSQLDANCE_TEST_DSN: %v", err)
 	}
-	cfg := Config{User: mc.User, Password: mc.Passwd}
+	// MYSQLDANCE_TEST_SSL_MODE=disabled for a server that offers no TLS 1.2
+	// (MySQL 5.7.21); the tests of TLS itself then fail, as they should.
+	cfg := Config{User: mc.User, Password: mc.Passwd, SSLMode: os.Getenv("MYSQLDANCE_TEST_SSL_MODE")}
 	if mc.Net == "unix" {
 		cfg.Socket = mc.Addr
 		return cfg, dsn
@@ -89,6 +91,18 @@ func isMariaDB(t *testing.T, conn *sql.Conn) bool {
 		t.Fatal(err)
 	}
 	return strings.Contains(strings.ToLower(v), "mariadb")
+}
+
+// isMySQL57 reports whether the test server is MySQL 5.7. Tests use it only to
+// skip checks of what 5.7 lacks (INVISIBLE columns, functional keys, CHECK,
+// show_create_table_verbosity, utf8mb4_0900 collations).
+func isMySQL57(t *testing.T, conn *sql.Conn) bool {
+	t.Helper()
+	var v string
+	if err := conn.QueryRowContext(context.Background(), "SELECT VERSION()").Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	return strings.HasPrefix(v, "5.7.")
 }
 
 func mustExec(t *testing.T, conn *sql.Conn, stmts ...string) {

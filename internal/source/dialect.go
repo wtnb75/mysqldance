@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
 	"mysqldance/internal/sqlvalue"
@@ -42,10 +41,10 @@ type dialect struct {
 	// defColumns: TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_TYPE,
 	// IS_NULLABLE, COLUMN_DEFAULT, EXTRA in ordinal order. Param: schema.
 	defColumns string
-	// columnDefault reads COLUMN_DEFAULT (with the EXTRA of the same column)
-	// as the default value, unquoted, or nil when the column has none; expr
-	// reports that the text is a default expression, not a value.
-	columnDefault func(raw sql.NullString, extra string) (def *string, expr bool)
+	// columnDefault reads COLUMN_DEFAULT (with the DATA_TYPE and EXTRA of the
+	// same column) as the default value, unquoted, or nil when the column has
+	// none; expr reports that the text is a default expression, not a value.
+	columnDefault func(raw sql.NullString, dataType, extra string) (def *string, expr bool)
 	// defIndexes: TABLE_NAME, INDEX_NAME, NON_UNIQUE, INDEX_TYPE, COLUMN_NAME
 	// (NULL for functional key parts), COLLATION ('D' for descending),
 	// SUB_PART (set for prefix keys) in SEQ_IN_INDEX order. Param: schema.
@@ -70,6 +69,8 @@ var (
 		"SET NAMES utf8mb4",
 		"SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ",
 	}
+	// The servers without show_create_table_verbosity (MariaDB, MySQL 5.7).
+	sessionNoVerbosity = slices.Concat(sessionPrelude, sessionPostlude)
 )
 
 var mysql8 = dialect{
@@ -110,25 +111,45 @@ var mysql8 = dialect{
 // document): a dump of MariaDB is for restoring into MariaDB.
 var mariadb = func() dialect {
 	d := mysql8
-	// MariaDB has no show_create_table_verbosity.
-	d.session = slices.Concat(sessionPrelude, sessionPostlude)
+	d.session = sessionNoVerbosity
 	d.viewDeps = viewDefinitions
 	d.columnDefault = mariadbColumnDefault
 	return d
 }()
 
+// mysql57 is MySQL 5.7 (checked on 5.7.44). The catalog queries of mysql8 work
+// unchanged; what differs is the lack of VIEW_TABLE_USAGE, of
+// show_create_table_verbosity before 5.7.22, and of DEFAULT_GENERATED in EXTRA.
+// SHOW CREATE output keeps its 5.7 form (int(11), latin1): a dump of 5.7 is
+// for restoring into 5.7 or 8.x as it is.
+var mysql57 = func() dialect {
+	d := mysql8
+	// 5.7.21 and earlier have no show_create_table_verbosity, and the version
+	// is not told apart: 5.7 never sets it (a decided spec, see R-069 in
+	// docs/review-decisions.md; the README says the output follows a global ON).
+	d.session = sessionNoVerbosity
+	d.viewDeps = viewDefinitions
+	d.columnDefault = mysql57ColumnDefault
+	return d
+}()
+
 // dialectFor picks the dialect for a server reporting SELECT VERSION().
-// MySQL 8.0 and later and MariaDB are supported; MariaDB is not rejected by
-// version (10.11 and 11.4 were checked).
+// MySQL 5.7 (5.7.44 was checked), MySQL 8.0 and later, and MariaDB are
+// supported; MariaDB is not rejected by version (10.11 and 11.4 were checked).
 func dialectFor(version string) (dialect, error) {
 	if strings.Contains(strings.ToLower(version), "mariadb") {
 		return mariadb, nil
 	}
-	major, _, _ := strings.Cut(version, ".")
-	if n, err := strconv.Atoi(major); err != nil || n < 8 {
-		return dialect{}, fmt.Errorf("unsupported server version %q: MySQL 8.0 or later (or MariaDB) is required", version)
+	// "8.0.46-0ubuntu0.22.04.1" and "5.7.44-log" read as 8 and 5.7.
+	var major, minor int
+	n, _ := fmt.Sscanf(version, "%d.%d", &major, &minor)
+	switch {
+	case n >= 1 && major >= 8:
+		return mysql8, nil
+	case n == 2 && major == 5 && minor == 7:
+		return mysql57, nil
 	}
-	return mysql8, nil
+	return dialect{}, fmt.Errorf("unsupported server version %q: MySQL 5.7 or later (or MariaDB) is required", version)
 }
 
 // viewTableUsage reads the references of views from VIEW_TABLE_USAGE (8.0.13+).
@@ -201,11 +222,26 @@ func viewRefs(defs map[string]string, schema string, views []string) []viewDep {
 
 // mysqlColumnDefault: COLUMN_DEFAULT is the value itself, unquoted, or NULL;
 // an expression default is flagged by DEFAULT_GENERATED in EXTRA.
-func mysqlColumnDefault(raw sql.NullString, extra string) (*string, bool) {
+func mysqlColumnDefault(raw sql.NullString, _, extra string) (*string, bool) {
 	if !raw.Valid {
 		return nil, false
 	}
 	return &raw.String, strings.Contains(strings.ToLower(extra), "default_generated")
+}
+
+// mysql57ColumnDefault: as mysqlColumnDefault, but EXTRA has no
+// DEFAULT_GENERATED. The only default expression 5.7 has is
+// CURRENT_TIMESTAMP[(n)] of a TIMESTAMP or DATETIME column; the same text in a
+// string column is a string.
+func mysql57ColumnDefault(raw sql.NullString, dataType, _ string) (*string, bool) {
+	if !raw.Valid {
+		return nil, false
+	}
+	switch strings.ToLower(dataType) {
+	case "timestamp", "datetime":
+		return &raw.String, strings.HasPrefix(strings.ToUpper(raw.String), "CURRENT_TIMESTAMP")
+	}
+	return &raw.String, false
 }
 
 var numericLiteral = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$`)
@@ -216,7 +252,7 @@ var numericLiteral = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$
 // number or a bit string b'...' is a value, and anything else is an
 // expression (current_timestamp(), uuid(), (`a` + 1)). EXTRA says nothing
 // about it.
-func mariadbColumnDefault(raw sql.NullString, _ string) (*string, bool) {
+func mariadbColumnDefault(raw sql.NullString, _, _ string) (*string, bool) {
 	if !raw.Valid || raw.String == "NULL" {
 		return nil, false
 	}
