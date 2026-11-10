@@ -19,17 +19,31 @@ import (
 	"mysqldance/internal/source"
 )
 
+// version and commit are set at build time by goreleaser through
+// -ldflags "-X main.version=... -X main.commit=...".
+var (
+	version = "dev"
+	commit  = "unknown"
+)
+
 func main() {
-	os.Exit(run(os.Args[1:], os.Getenv, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
 }
 
 // errUsage marks errors already reported by the flag package.
 var errUsage = errors.New("usage error")
 
+// errVersion reports that --version was given and nothing else must run.
+var errVersion = errors.New("version requested")
+
 // run executes the command and returns the process exit code.
-func run(args []string, getenv func(string) string, stderr io.Writer) int {
+func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	opt, err := parseArgsTo(args, getenv, stderr)
 	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	if errors.Is(err, errVersion) {
+		_, _ = fmt.Fprintf(stdout, "mysqldance %s (commit %s)\n", version, commit)
 		return 0
 	}
 	if err != nil {
@@ -117,13 +131,14 @@ The password is read from --password-file, else from MYSQL_PWD.
                              filtered by the umask; an existing one is kept)
       --no-lock              do not take FLUSH TABLES WITH READ LOCK when a
                              table is not InnoDB (warn instead)
+      --version              print the version and commit, then exit
 `)
 	}
 
 	var (
 		host, user, socket, passwordFile, output string
 		sslMode, sslCA                           string
-		noLock                                   bool
+		noLock, showVersion                      bool
 		fileMode, dirMode                        string
 		port                                     int
 		rowsPerInsert, rowsPerFile               uint64
@@ -145,6 +160,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.IntVar(&maxInsertBytes, "max-insert-bytes", 1048576, "")
 	fs.Uint64Var(&rowsPerFile, "rows-per-file", 0, "")
 	fs.BoolVar(&noLock, "no-lock", false, "")
+	fs.BoolVar(&showVersion, "version", false, "")
 	fs.StringVar(&fileMode, "file-mode", "", "")
 	fs.StringVar(&dirMode, "dir-mode", "", "")
 
@@ -153,6 +169,9 @@ The password is read from --password-file, else from MYSQL_PWD.
 			return dump.Options{}, err
 		}
 		return dump.Options{}, errUsage
+	}
+	if showVersion {
+		return dump.Options{}, errVersion
 	}
 	usage := func(format string, a ...any) (dump.Options, error) {
 		_, _ = fmt.Fprintf(stderr, "mysqldance: "+format+"\n", a...)

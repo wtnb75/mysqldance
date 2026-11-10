@@ -27,6 +27,11 @@ tasks:
       - task: lint
       - task: test
 
+  snapshot:
+    desc: Build binaries for all platforms into dist/ without releasing
+    cmds:
+      - goreleaser build --snapshot --clean
+
   update:
     desc: update dependencies
     cmds:

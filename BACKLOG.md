@@ -64,14 +64,6 @@
   - [ ] 手動実行で PR が作られ、PR 上で CI が通る
   - [ ] 統合テストが必要な更新でも、B-026 の CI で検証される
 
-## B-032 [todo|P2] goreleaser の設定ファイルを作る
-- 概要: `mcprt` の `.goreleaser.yaml` に倣って、リポジトリ直下に `.goreleaser.yaml`（version 2）を作る。`project_name: mysqldance`、`main: ./cmd/mysqldance`、`CGO_ENABLED=0`、linux・darwin・windows × amd64・arm64、`ldflags: -s -w`、アーカイブは tar.gz（windows は zip）、`checksums.txt`、スナップショットのバージョン名（`{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}`）、変更履歴（`feat:` は Features、`fix:` は Bug fixes、その他は Others。`docs:` `test:` `chore:` は除外）。`before` で `go mod tidy` を実行する。バージョンを表示するため、`main` に `version` / `commit` の変数と `--version` を追加し、`ldflags` の `-X main.version=...` で渡す（現状は無い）。コンテナイメージ（`dockers_v2`）は B-028 で決めるので、この項目には入れない。
-- 受け入れ条件:
-  - [ ] `goreleaser check` が通る
-  - [ ] `goreleaser build --snapshot --clean` で、全ての OS・アーキテクチャのバイナリが `dist/` にできる
-  - [ ] `mysqldance --version` で、ビルド時に渡したバージョンとコミットが表示される
-  - [ ] ローカルで試せるよう、`Taskfile.yml` に `task snapshot`（`goreleaser build --snapshot --clean`）を追加する
-
 ## B-033 [todo|P2] `source` が型付きのレコード値を返すようにする
 - 概要: MVP の `source.Rows` は値を SQL リテラル文字列にして返す（設計書 8 節の「型付きのレコード値」からの意図的な逸脱）。他 DBMS 出力の前提として、列の型情報つきの型付き値を返す形にする。MySQL 向けのリテラル化は `sqlvalue` に残し、出力のバイト列は変えない。
 - 受け入れ条件:
@@ -270,6 +262,12 @@
   - [ ] 6 桁以下で往復できる値と `DOUBLE` の出力は、できるだけ変えない（変わるなら README に書く）
   - [ ] 出力の表記が変わることを README に書く（決定性は保つ）
 
+## B-061 [todo|P3] `go install` でも `--version` が意味のある値を出すようにする
+- 概要: `--version` の `version` / `commit` は ldflags でしか入らず、`go install ...@vX.Y.Z` や `go build` で作ったバイナリは `dev (commit unknown)` と出る。ldflags が空のときに限り、`runtime/debug.ReadBuildInfo()` の `Main.Version` と `vcs.revision` に切り替える。B-032 のレビューで指摘された。
+- 受け入れ条件:
+  - [ ] ldflags を渡さずに `go build` したバイナリが、VCS の情報があればコミットを表示する
+  - [ ] ldflags を渡したビルドの表示は変わらない
+
 # Done
 
 ## B-021 [done|P2] `Snapshot` の隠れた状態をなくす
@@ -393,3 +391,12 @@
   - [x] 優先順位は `HOST` 引数 > `MYSQLDANCE_TEST_HOST` > `127.0.0.1` にする
   - [x] `MYSQLDANCE_TEST_HOST` だけを指定して `task test:integration` が通る（8.0 と 8.4）
   - [x] Taskfile のコメントに環境変数と優先順位を書く
+
+## B-032 [done|P2] goreleaser の設定ファイルを作る
+- 概要: `mcprt` の `.goreleaser.yaml` に倣って、リポジトリ直下に `.goreleaser.yaml`（version 2）を作る。`project_name: mysqldance`、`main: ./cmd/mysqldance`、`CGO_ENABLED=0`、linux・darwin・windows × amd64・arm64、`ldflags: -s -w`、アーカイブは tar.gz（windows は zip）、`checksums.txt`、スナップショットのバージョン名（`{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}`）、変更履歴（`feat:` は Features、`fix:` は Bug fixes、その他は Others。`docs:` `test:` `chore:` は除外）。`before` で `go mod tidy` を実行する。バージョンを表示するため、`main` に `version` / `commit` の変数と `--version` を追加し、`ldflags` の `-X main.version=...` で渡す（現状は無い）。コンテナイメージ（`dockers_v2`）は B-028 で決めるので、この項目には入れない。
+- 前提: `--version` は stdout に `mysqldance <version> (commit <commit>)` を 1 行出して終了コード 0 で終わる。ldflags を渡さないビルドの既定値は `dev` と `unknown`。
+- 受け入れ条件:
+  - [x] `goreleaser check` が通る
+  - [x] `goreleaser build --snapshot --clean` で、全ての OS・アーキテクチャのバイナリが `dist/` にできる
+  - [x] `mysqldance --version` で、ビルド時に渡したバージョンとコミットが表示される
+  - [x] ローカルで試せるよう、`Taskfile.yml` に `task snapshot`（`goreleaser build --snapshot --clean`）を追加する

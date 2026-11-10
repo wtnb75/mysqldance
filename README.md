@@ -12,6 +12,8 @@ Targets MySQL 8.0 and later (including 8.4). MariaDB and 5.7 are not supported.
 go build ./cmd/mysqldance
 ```
 
+To build release-style binaries for every supported OS and architecture (linux, darwin and windows on amd64 and arm64) into `dist/`, run `task snapshot` (requires [GoReleaser](https://goreleaser.com)).
+
 ## Usage
 
 ```sh
@@ -36,6 +38,7 @@ Put flags **before** the database names (Go's standard `flag` package stops pars
 | `--file-mode` | (umask) | Exact octal permission of the output files, e.g. `0640`. The owner must have read permission. By default files get `0666` filtered by the umask |
 | `--dir-mode` | (umask) | Exact octal permission of the output directory, e.g. `0750`, applied only when mysqldance creates it (parent directories it creates get `0755` filtered by the umask). The owner must have `rwx`. An existing directory is never changed. By default `0755` filtered by the umask |
 | `--no-lock` | off | Do not take the global read lock when a table is not InnoDB; warn instead (see "Non-InnoDB tables and the read lock" below) |
+| `--version` | off | Print the version and commit to standard output, then exit with 0. Builds made without the release ldflags print `dev` and `unknown` |
 | positional | (at least one required) | Names of the databases to dump |
 
 - The password is never accepted on the command line. If `--password-file` is given its contents are used; otherwise the `MYSQL_PWD` environment variable is used.
