@@ -13,7 +13,9 @@ description: Use when the user asks to implement, work on, start, or pick up an 
 
 ### 前半: 仕様の確定（ユーザーに聞くのはここだけ）
 
-1. **対象を決める**: ユーザー指定のID/タイトル。指定が無ければ `task backlog:next` を実行し、候補の先頭（最も優先度が高く ID が最小）を提案して、了承を得る。指定した項目が blocked 欄にあれば、着手せずに待っている依存先を伝え、先に依存先を実装することを提案する。`# Done` 節の項目は対象外。
+1. **対象を決める**: 先に `git fetch origin main` を実行する。ユーザー指定のID/タイトル。指定が無ければ `task backlog:next` を実行し、候補の先頭（最も優先度が高く ID が最小）を提案して、了承を得る。指定した項目が blocked 欄にあれば、着手せずに待っている依存先を伝え、先に依存先を実装することを提案する。`# Done` 節の項目は対象外。
+   - **依存先は `origin/main` で確かめる**: 手元の `BACKLOG.md` は、未マージのブランチ上だと依存先が完了に見える。対象の `依存:` の項目が、`git show origin/main:BACKLOG.md` の `# Done` 節にあるかを確かめる（候補の一覧も、`git show origin/main:BACKLOG.md > $TMPDIR/BACKLOG.origin-main.md` を作り、`task backlog:next FILE=$TMPDIR/BACKLOG.origin-main.md` で見る）。
+   - 依存先が手元のブランチにだけ完了とある（`origin/main` に無い）場合は、着手せず、そのブランチの PR が未マージであることを伝える。「マージを待つ」「そのブランチを起点に積む」「別の項目にする」の中から、ユーザーに選んでもらう。
 2. **読んで調べる**: 項目のブロック、設計書（`docs/superpowers/specs/`）の関連する節、関連コード、`docs/review-decisions.md` を読む。実機で確かめられる事実（MySQL の挙動、ツールの有無など）は、聞かずにここで確かめる。1つのPRに収まらない大きさなら、実装を始めず、`mgmt-backlog` の「項目の大きさ」に従って分割を提案する。
 3. **質問をまとめて1回で聞く**: 調べても残る不明点のうち、次のものだけを `AskUserQuestion` で1回にまとめて聞く（最大4問、推奨案を先頭に）。
    - 検証できない受け入れ条件
@@ -24,7 +26,7 @@ description: Use when the user asks to implement, work on, start, or pick up an 
 
 ### 後半: 自動実行（質問しない）
 
-5. **ブランチを用意する**: 下の「ブランチ名」に従う（先に `git fetch origin main`。起点は `origin/main`）。
+5. **ブランチを用意する**: 下の「ブランチ名」に従う（先に `git fetch origin main`。起点は `origin/main`）。用意した直後に `task fmt` を実行し、`git status` に差分が出たら、この項目と関係のない整形・fix の取り込み漏れ。実装を始める前に、別の commit（`chore: apply go fmt / go fix ...`）にする。
 6. **実装**: TDDで、受け入れ条件を1つずつテストに落として満たす。区切りごとに `task check` を実行する（下の「チェック」）。
 7. **整理**: `simplify` スキルで差分を整理する（再利用、単純化、効率）。コードが変わったら `task check` を通し直す。
 8. **レビューと判断**: 下の「レビューの判断」に従う。
@@ -46,6 +48,7 @@ description: Use when the user asks to implement, work on, start, or pick up an 
 ## チェック
 
 - **`task check`**: `go fmt`、`go fix`、`golangci-lint`、単体テストを順に実行する。`go fmt` と `go fix` はファイルを書き換えるので、実行後に `git diff` で意図しない変更がないか見る。失敗したら、直すまで次に進まない。
+  - この項目と関係のないファイルが書き換わっていたら、**戻さない**（戻しても次の `task check` でまた出る）。取り込み漏れとして、別の commit（`chore: apply go fmt / go fix ...`）にする。PR の本文の「概要」に 1 行書く。
 - **`task test:integration`**: Docker で MySQL 8.0 と 8.4 を起動して統合テストを実行する。`internal/source`・`internal/dump`・`internal/datafile`・`internal/schemafile`・`internal/sqlvalue` を変えたとき、または受け入れ条件が実機の MySQL での確認を求めているときは、検証（9.）で必ず実行する。
 - 統合テストは `MYSQLDANCE_TEST_DSN` が無いと skip される。`task test` の結果だけで統合テストが通ったとは言わない。
 
@@ -111,4 +114,5 @@ description: Use when the user asks to implement, work on, start, or pick up an 
 - 1回の依頼で扱う項目は1つ。複数指定されたら1つずつ順に完了させる。
 - 実装中に見つけた別件は実装せず、`mgmt-backlog` で新規項目として追加する。
 - `BACKLOG.md` の変更は、対象項目のブロックと、別項目化した新規項目だけ。
+- 前から残る `go fmt` / `go fix` の結果は、この項目の範囲外ではなく、別 commit で取り込む（上の「チェック」）。
 - 整理（`simplify`）とレビュー（`code-review`）を省いて、検証や PR に進まない。ただし、この項目で `BACKLOG.md` や文書しか変えていない場合は、コードのレビューは対象外とし、PR の本文にその旨を書く。
