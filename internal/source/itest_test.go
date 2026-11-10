@@ -100,10 +100,20 @@ func openSnapshot(t *testing.T, cfg Config, db string) *Snapshot {
 	return s
 }
 
+// warningsOf returns the warnings from Tables().
+func warningsOf(t *testing.T, s *Snapshot) []string {
+	t.Helper()
+	_, warnings, err := s.Tables(context.Background())
+	if err != nil {
+		t.Fatalf("Tables: %v", err)
+	}
+	return warnings
+}
+
 // tableByName returns the TableInfo named name from Tables().
 func tableByName(t *testing.T, s *Snapshot, name string) TableInfo {
 	t.Helper()
-	tables, err := s.Tables(context.Background())
+	tables, _, err := s.Tables(context.Background())
 	if err != nil {
 		t.Fatalf("Tables: %v", err)
 	}

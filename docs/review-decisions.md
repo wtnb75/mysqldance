@@ -284,3 +284,24 @@
 - 却下の理由: `quoteIdent` 自体のテストは `sqlvalue.TestQuoteIdent` に集めた（`rg quoteIdent` の結果は 0 件）。`datafile`・`schemafile`・`dump` に残るバッククォートのテストは、ヘッダや DDL の出力全体を確かめるもので、関数の単体テストではない。
 - 初出: B-020
 - 再出: 0
+
+## R-039 `Use` の後に前の DB の `TableInfo` で `Rows` を呼ぶと、古い列・型で読む
+- 対象: internal/source/source.go の Rows / Tables
+- 指摘: `Tables` と `Rows` が呼び出し順の約束に依存し、DB を切り替えると `TableInfo` が古くなる。
+- 却下の理由: `Rows` の列は B-021 より前から `TableInfo.Columns` を使っていて、新しく生じた危険ではない。呼び出し元は `dump.Run` だけで、DB ごとに `Tables` の直後に `Rows` を呼ぶ。B-021 は `Snapshot` の隠れた状態を除くことが目的で、値は戻り値と `TableInfo` で渡すようになった。`Rows` のコメントに「`t` は現在の DB の `Tables` の結果」と書いた。
+- 初出: B-021
+- 再出: 0
+
+## R-040 `TestUseResetsPerDatabaseState` が、キャッシュの漏れという目的を失った
+- 対象: internal/source/use_test.go の TestUseResetsPerDatabaseState
+- 指摘: キャッシュが無くなったので、テストは `Use` が DB を切り替えることしか確かめない。
+- 却下の理由: 好みの問題で、失敗のシナリオがない。同名のテーブルを持つ 2 つの DB を切り替えて、それぞれの内容が読めることを確かめる価値は残る。コメントは実態に合わせて直した。
+- 初出: B-021
+- 再出: 0
+
+## R-041 テストのヘルパーが `Tables` を何度も呼び、カタログの読み出しを繰り返す
+- 対象: internal/source/itest_test.go の tableByName / warningsOf
+- 指摘: ヘルパーごとに `Tables` が全テーブルの `SHOW CREATE` などを実行する。
+- 却下の理由: 増えるのはテストの実行時間だけで、本番のコードは DB ごとに `Tables` を 1 回しか呼ばない（dump.go）。ヘルパーを共通化する利点が小さい（好みの問題）。
+- 初出: B-021
+- 再出: 0

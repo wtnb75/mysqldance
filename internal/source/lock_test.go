@@ -58,7 +58,7 @@ func TestLockHeldForNonInnoDB(t *testing.T) {
 	if got, want := len(rowsOf(t, s, "m")), 1; got != want {
 		t.Errorf("MyISAM rows = %d, want %d", got, want)
 	}
-	if w := s.Warnings(); len(w) != 0 {
+	if w := warningsOf(t, s); len(w) != 0 {
 		t.Errorf("Warnings = %q, want none while the lock keeps the tables consistent", w)
 	}
 	if err := s.Close(); err != nil {
@@ -113,8 +113,7 @@ func TestNoLockOption(t *testing.T) {
 	if writeBlocked(t, conn, "m") {
 		t.Error("write was blocked although NoLock is set")
 	}
-	_ = tableByName(t, s, "m")
-	w := s.Warnings()
+	w := warningsOf(t, s)
 	if len(w) != 1 || !strings.Contains(w[0], "`m`") || !strings.Contains(w[0], "MyISAM") {
 		t.Errorf("Warnings = %q, want one warning about `m` (MyISAM)", w)
 	}
@@ -158,7 +157,7 @@ func TestNonInnoDBTableWithoutLock(t *testing.T) {
 	s := openSnapshot(t, cfg, db)
 	s.noLock = false
 
-	_, err := s.Tables(context.Background())
+	_, _, err := s.Tables(context.Background())
 	if err == nil {
 		t.Fatal("Tables succeeded with an unlocked non-InnoDB table")
 	}

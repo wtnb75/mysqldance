@@ -149,11 +149,11 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	if err != nil {
 		return err
 	}
-	tables, err := snap.Tables(ctx)
+	tables, warnings, err := snap.Tables(ctx)
 	if err != nil {
 		return err
 	}
-	for _, w := range snap.Warnings() {
+	for _, w := range warnings {
 		_, _ = fmt.Fprintf(opt.Log, "warning: database %q: %s\n", db, w)
 	}
 	views, deps, err := snap.Views(ctx)
