@@ -4,15 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 )
-
-// errLockWaitTimeout is MySQL error 1205, returned when a write waits for a
-// global read lock for longer than lock_wait_timeout.
-const errLockWaitTimeout = 1205
 
 // writeBlocked reports whether an INSERT into table on conn is held up by a
 // lock. conn must have lock_wait_timeout set low (see fastLockTimeout).
@@ -66,6 +65,123 @@ func TestLockHeldForNonInnoDB(t *testing.T) {
 	}
 	if writeBlocked(t, conn, "m") {
 		t.Error("write to the MyISAM table is still blocked after Close")
+	}
+}
+
+// TestLockTimeout runs a long statement on a non-InnoDB table and opens a
+// snapshot that needs the global read lock: FLUSH TABLES WITH READ LOCK has to
+// wait for the statement, so it must give up after Config.LockTimeout and must
+// not stay queued, where it would hold up every statement behind it.
+func TestLockTimeout(t *testing.T) {
+	for _, jobs := range []int{1, 2} {
+		t.Run(fmt.Sprintf("jobs=%d", jobs), func(t *testing.T) {
+			cfg, db, conn := testDB(t)
+			_, dsn := testConfig(t)
+			mustExec(t, conn,
+				"CREATE TABLE i (id INT PRIMARY KEY)",
+				"CREATE TABLE m (id INT PRIMARY KEY) ENGINE=MyISAM",
+				"INSERT INTO m VALUES (1)",
+			)
+
+			long := pinnedConn(t, dsn)
+			longDone := make(chan struct{})
+			go func() {
+				defer close(longDone)
+				if _, err := long.ExecContext(context.Background(), "SELECT COUNT(*), SLEEP(6) FROM `"+db+"`.m"); err != nil {
+					t.Errorf("long statement: %v", err)
+				}
+			}()
+			t.Cleanup(func() { <-longDone })
+			waitFor(t, conn, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE INFO LIKE 'SELECT COUNT(*), SLEEP(6)%'")
+
+			// An account of its own, so that its sessions can be told from the ones
+			// other tests open on the same server.
+			user := fmt.Sprintf("mdance_%s_%d", strings.TrimPrefix(db, "mysqldance_test_"), jobs)
+			mustExec(t, conn,
+				"CREATE USER '"+user+"'@'%' IDENTIFIED BY 'pw'",
+				"GRANT SELECT ON `"+db+"`.* TO '"+user+"'@'%'",
+				"GRANT RELOAD ON *.* TO '"+user+"'@'%'",
+			)
+			t.Cleanup(func() { mustExec(t, conn, "DROP USER '"+user+"'@'%'") })
+			cfg.User, cfg.Password = user, "pw"
+			cfg.Jobs = jobs
+			cfg.LockTimeout = time.Second
+			start := time.Now()
+			s, err := Open(context.Background(), cfg, db)
+			waited := time.Since(start)
+			if err == nil {
+				_ = s.Close()
+				t.Fatal("Open succeeded although the lock could not be taken within the timeout")
+			}
+			if waited > 4*time.Second {
+				t.Errorf("Open took %v, want about the 1 s timeout, not the 6 s statement", waited)
+			}
+			var me *mysql.MySQLError
+			if !errors.As(err, &me) || me.Number != errLockWaitTimeout {
+				t.Errorf("error %q does not wrap MySQL error %d", err, errLockWaitTimeout)
+			}
+			escape := map[int]string{1: "--no-lock", 2: "--jobs 1"}[jobs]
+			for _, want := range []string{"--lock-timeout", escape} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %s", err, want)
+				}
+			}
+			// The statement is still running, and the lock request must be gone: no
+			// session of this test's account is left on the server, queued or not. (A
+			// write probe would also see the global locks other tests take on the same
+			// server, so it cannot tell the two apart.)
+			var left int
+			q := "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE USER = ?"
+			if err := conn.QueryRowContext(context.Background(), q, user).Scan(&left); err != nil {
+				t.Fatal(err)
+			}
+			if left != 0 {
+				t.Errorf("%d session(s) of %s are left on the server after the failed Open", left, user)
+			}
+		})
+	}
+}
+
+// A zero LockTimeout leaves the server's lock_wait_timeout alone.
+func TestLockTimeoutZeroKeepsServerSetting(t *testing.T) {
+	cfg, db, conn := testDB(t)
+	mustExec(t, conn, "CREATE TABLE m (id INT PRIMARY KEY) ENGINE=MyISAM")
+	cfg.LockTimeout = 0
+	s := openSnapshot(t, cfg, db)
+	var got, want int
+	if err := s.conn.QueryRowContext(context.Background(), "SELECT @@session.lock_wait_timeout").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.QueryRowContext(context.Background(), "SELECT @@global.lock_wait_timeout").Scan(&want); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("session lock_wait_timeout = %d, want the server's %d", got, want)
+	}
+}
+
+func TestLockWaitSeconds(t *testing.T) {
+	for _, tt := range []struct {
+		in   time.Duration
+		want int64
+	}{
+		{time.Nanosecond, 1},
+		{time.Second, 1},
+		{1500 * time.Millisecond, 2},
+		{30 * time.Second, 30},
+		{time.Duration(math.MaxInt64), maxLockWaitSeconds}, // must not overflow into a tiny value
+		{366 * 24 * time.Hour, maxLockWaitSeconds},
+	} {
+		if got := lockWaitSeconds(tt.in); got != tt.want {
+			t.Errorf("lockWaitSeconds(%v) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestOpenRejectsNegativeLockTimeout(t *testing.T) {
+	_, err := Open(context.Background(), Config{LockTimeout: -time.Second}, "db")
+	if err == nil || !strings.Contains(err.Error(), "LockTimeout") {
+		t.Errorf("Open with a negative LockTimeout: err = %v, want an error naming LockTimeout", err)
 	}
 }
 

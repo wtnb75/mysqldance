@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/dump"
@@ -46,6 +47,8 @@ func TestRunUsageErrors(t *testing.T) {
 		{"negative jobs", []string{"-j", "-2", "-o", t.TempDir(), "db1"}},
 		{"too many jobs", []string{"--jobs", "65", "-o", t.TempDir(), "db1"}},
 		{"jobs with no-lock", []string{"--jobs", "2", "--no-lock", "-o", t.TempDir(), "db1"}},
+		{"negative lock timeout", []string{"--lock-timeout", "-1s", "-o", t.TempDir(), "db1"}},
+		{"lock timeout without unit", []string{"--lock-timeout", "30", "-o", t.TempDir(), "db1"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var stderr bytes.Buffer
@@ -65,7 +68,7 @@ func TestParseArgsDefaults(t *testing.T) {
 		t.Fatalf("parseArgs: %v", err)
 	}
 	want := dump.Options{
-		Source: source.Config{Host: "127.0.0.1", Port: 3306, SSLMode: "preferred", Jobs: 1},
+		Source: source.Config{Host: "127.0.0.1", Port: 3306, SSLMode: "preferred", Jobs: 1, LockTimeout: source.DefaultLockTimeout},
 		DBs:    []string{"db1", "db2"},
 		OutDir: "out",
 		Data:   datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
@@ -77,6 +80,26 @@ func TestParseArgsDefaults(t *testing.T) {
 	got.Log = nil
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("parseArgs = %+v, want %+v", got, want)
+	}
+}
+
+func TestParseArgsLockTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		args []string
+		want time.Duration
+	}{
+		{nil, 30 * time.Second},
+		{[]string{"--lock-timeout", "5s"}, 5 * time.Second},
+		{[]string{"--lock-timeout", "1m30s"}, 90 * time.Second},
+		{[]string{"--lock-timeout", "0"}, 0},
+	} {
+		got, err := parseArgs(append(tt.args, "-o", "out", "d"), noEnv)
+		if err != nil {
+			t.Fatalf("parseArgs(%q): %v", tt.args, err)
+		}
+		if got.Source.LockTimeout != tt.want {
+			t.Errorf("parseArgs(%q): LockTimeout = %v, want %v", tt.args, got.Source.LockTimeout, tt.want)
+		}
 	}
 }
 
@@ -138,7 +161,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"short flags",
 			[]string{"-h", "db.example", "-P", "3307", "-u", "alice", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "db.example", Port: 3307, User: "alice", Password: "envpw", SSLMode: "preferred", Jobs: 1},
+				Source: source.Config{Host: "db.example", Port: 3307, User: "alice", Password: "envpw", SSLMode: "preferred", Jobs: 1, LockTimeout: source.DefaultLockTimeout},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 			},
@@ -148,7 +171,7 @@ func TestParseArgsFlags(t *testing.T) {
 			[]string{"--host", "db.example", "--port", "3307", "--user", "alice", "--socket", "/tmp/s.sock",
 				"--output", "out", "--rows-per-insert", "5", "--max-insert-bytes", "4096", "d"},
 			dump.Options{
-				Source: source.Config{Host: "db.example", Port: 3307, Socket: "/tmp/s.sock", User: "alice", Password: "envpw", SSLMode: "preferred", Jobs: 1},
+				Source: source.Config{Host: "db.example", Port: 3307, Socket: "/tmp/s.sock", User: "alice", Password: "envpw", SSLMode: "preferred", Jobs: 1, LockTimeout: source.DefaultLockTimeout},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 5, MaxInsertBytes: 4096},
 			},
@@ -157,7 +180,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"ssl flags",
 			[]string{"--ssl-mode", "verify-ca", "--ssl-ca", "/etc/ca.pem", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "verify-ca", SSLCA: "/etc/ca.pem", Jobs: 1},
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "verify-ca", SSLCA: "/etc/ca.pem", Jobs: 1, LockTimeout: source.DefaultLockTimeout},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 			},
@@ -166,7 +189,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"rows-per-file flag",
 			[]string{"--rows-per-file", "50000", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 1},
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 1, LockTimeout: source.DefaultLockTimeout},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576, RowsPerFile: 50000},
 			},
@@ -175,7 +198,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"mode flags",
 			[]string{"--file-mode", "0640", "--dir-mode", "750", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 1},
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 1, LockTimeout: source.DefaultLockTimeout},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data:     datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 				FileMode: 0o640, DirMode: 0o750,
@@ -185,7 +208,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"no-lock flag",
 			[]string{"--no-lock", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 1, NoLock: true},
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 1, LockTimeout: source.DefaultLockTimeout, NoLock: true},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 			},
@@ -194,7 +217,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"jobs flag",
 			[]string{"--jobs", "4", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 4},
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 4, LockTimeout: source.DefaultLockTimeout},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 			},
@@ -203,7 +226,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"jobs short flag at the upper bound",
 			[]string{"-j", "64", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 64},
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 64, LockTimeout: source.DefaultLockTimeout},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 			},
@@ -212,7 +235,7 @@ func TestParseArgsFlags(t *testing.T) {
 			"one job with no-lock",
 			[]string{"-j", "1", "--no-lock", "-o", "out", "d"},
 			dump.Options{
-				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 1, NoLock: true},
+				Source: source.Config{Host: "127.0.0.1", Port: 3306, Password: "envpw", SSLMode: "preferred", Jobs: 1, LockTimeout: source.DefaultLockTimeout, NoLock: true},
 				DBs:    []string{"d"}, OutDir: "out",
 				Data: datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
 			},
