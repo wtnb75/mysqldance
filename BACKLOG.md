@@ -165,14 +165,6 @@
   - [ ] 別の DB を参照する外部キーが PostgreSQL にリストアされる
   - [ ] 1 つの DB だけをダンプしたときの出力は変わらない
 
-## B-066 [todo|P2] 5.7 のゼロ日付の既定値を 8.x へ復元できるようにする
-- 依存: B-040
-- 概要: 5.7 で `explicit_defaults_for_timestamp=OFF`（5.7 の既定）のとき、`TIMESTAMP NOT NULL` の列は `SHOW CREATE TABLE` に `DEFAULT '0000-00-00 00:00:00'` と出る。`--target mysql` はこれをそのまま出すので、`NO_ZERO_DATE` を含む既定の `sql_mode` の 8.x では、復元時に `Invalid default value` で失敗しうる（B-040 のコードレビューで指摘。実機では未確認）。まず実機で確かめ、失敗するなら、出力する方法（復元ファイルの `sql_mode` 設定など）を決める。
-- 受け入れ条件:
-  - [ ] 5.7.44 の `TIMESTAMP NOT NULL`（`explicit_defaults_for_timestamp=OFF`）の出力を、8.4 に復元した結果が分かる（失敗するか、しないか）
-  - [ ] 失敗する場合、復元できる出力になる。5.7 から 5.7 への復元は変わらない
-  - [ ] README の「MySQL 5.7」節を結果に合わせる
-
 ## B-067 [todo|P2] README に互換性の表（読み出し元 × 出力形式 × 復元先）を書く
 - 概要: 対応状況が README の冒頭、MariaDB 節、5.7 節、Limitations に散っていて、「どのサーバーのダンプをどの版に復元できるか」がどこにもまとまっていない。今ある知見だけで表を書く。コードは変えない。表は 2 つ: (1) 読み出し元（MySQL 5.7.44 / 8.0 / 8.4 / MariaDB 10.11 / 11.4。5.6 と 5.5 は未確認の行として入れ、B-079 と B-080 の結果で更新する）× `--target`（mysql / sqlite / postgres）、(2) 出力 × 復元先の版（MySQL 系の復元先、PostgreSQL 17、SQLite は `modernc.org/sqlite` 内蔵の版）。凡例は「テスト済み / 条件つき / 失敗を確認 / 未確認」の 4 段階にし、テストの裏が取れていないマスを「テスト済み」にしない。
 - 受け入れ条件:
@@ -374,6 +366,15 @@
   - [ ] 件数が実際の出力と一致することをテストで確認する
 
 # Done
+
+## B-066 [done|P2] 5.7 のゼロ日付の既定値を 8.x へ復元できるようにする
+- 依存: B-040
+- 概要: 5.7 で `explicit_defaults_for_timestamp=OFF`（5.7 の既定）のとき、`TIMESTAMP NOT NULL` の列は `SHOW CREATE TABLE` に `DEFAULT '0000-00-00 00:00:00'` と出る。`--target mysql` はこれをそのまま出すので、`NO_ZERO_DATE` を含む既定の `sql_mode` の 8.x では、復元時に `Invalid default value` で失敗しうる（B-040 のコードレビューで指摘。実機では未確認）。まず実機で確かめ、失敗するなら、出力する方法（復元ファイルの `sql_mode` 設定など）を決める。
+- 結果: 実機（5.7.44 → 8.4）で確かめた。**失敗しない**。8.4 自身の `sql_mode` では `CREATE TABLE ... DEFAULT '0000-00-00 00:00:00'` は拒否されるが、各ファイルのヘッダーの `SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO'` がセッションの mode を置き換え、`NO_ZERO_DATE` と strict が外れるため復元できる。出力は変えない。回帰テスト `TestMySQL57ZeroDateDefault`（`internal/dump`、`test:integration:mysql57`）を追加した。ヘッダーを省いた復元（`CREATE TABLE` だけを流す）は 8.x で失敗する。
+- 受け入れ条件:
+  - [x] 5.7.44 の `TIMESTAMP NOT NULL`（`explicit_defaults_for_timestamp=OFF`）の出力を、8.4 に復元した結果が分かる（失敗するか、しないか）
+  - [x] 失敗する場合、復元できる出力になる。5.7 から 5.7 への復元は変わらない（失敗しないため出力は変更なし。5.7 → 5.7 も同テストで確認）
+  - [x] README の「MySQL 5.7」節を結果に合わせる
 
 ## B-057 [done|P2] FLUSH TABLES WITH READ LOCK の待ち時間に上限を設ける
 - 概要: B-005 で非 InnoDB のテーブルがあるとき `FLUSH TABLES WITH READ LOCK` を取るようにしたが、実行中の長い文を待つ間、後続の文もすべて待たされ、待ちの上限がない（B-005 のレビューで指摘）。上限を設け、超えたらエラーで終了する。

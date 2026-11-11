@@ -100,6 +100,64 @@ func TestMySQL57RoundTrip(t *testing.T) {
 	}
 }
 
+// TestMySQL57ZeroDateDefault dumps a table whose TIMESTAMP NOT NULL column
+// reports DEFAULT '0000-00-00 00:00:00' (the second one, with
+// explicit_defaults_for_timestamp=OFF, the 5.7 default), restores it into 5.7
+// and, when a second server is configured, into MySQL 8.4 whose default
+// sql_mode has NO_ZERO_DATE, and compares every value.
+func TestMySQL57ZeroDateDefault(t *testing.T) {
+	e := newEnv(t)
+	e.requireMySQL57(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	// Session settings of the admin connection, so the fixture does not depend
+	// on the server's configuration; the dump reads with its own session.
+	e.exec(t,
+		"SET SESSION explicit_defaults_for_timestamp = OFF",
+		"SET SESSION sql_mode = ''",
+		"CREATE TABLE z (id INT NOT NULL PRIMARY KEY, a TIMESTAMP NOT NULL, b TIMESTAMP NOT NULL)",
+		"INSERT INTO z (id, a) VALUES (1, '2024-01-02 03:04:05'), (2, '2024-06-07 08:09:10')",
+	)
+
+	dir := t.TempDir()
+	e.dump(t, dir, db)
+	schema := readFiles(t, dir)[naming.SchemaFile(db)]
+	if !strings.Contains(schema, "DEFAULT '0000-00-00 00:00:00'") {
+		t.Fatalf("the fixture has no zero-date default; the test checks nothing:\n%s", schema)
+	}
+
+	before := e.contents(t, db)
+	// b was left out of the INSERT, so it holds the zero date; make sure the
+	// comparison below sees that value and not a NULL or an empty string.
+	for _, row := range before["BASE TABLE z"] {
+		if !strings.Contains(row, "0000-00-00 00:00:00") {
+			t.Fatalf("a row of z has no zero date in b: %q", row)
+		}
+	}
+	if len(before["BASE TABLE z"]) != 2 {
+		t.Fatalf("z rows = %q, want 2 rows", before["BASE TABLE z"])
+	}
+	e.roundTrip(t, dir, db)
+
+	if second := restoreServer(t); second != nil {
+		// Precondition: under the server's own sql_mode the default is refused, so
+		// it is the file header's SET SQL_MODE that lets the restore through.
+		second.createDB(t, db+"_probe")
+		// The probe database is a scratch one: the admin connection's USE moving to
+		// it is harmless, because contents and restore name the database.
+		_, err := second.admin.ExecContext(context.Background(),
+			"CREATE TABLE p (b TIMESTAMP NOT NULL DEFAULT '0000-00-00 00:00:00')")
+		if err == nil || !strings.Contains(err.Error(), "Invalid default value") {
+			t.Fatalf("want 'Invalid default value' from the second server under its own sql_mode, got %v; the test checks nothing", err)
+		}
+		second.createdByDump(t, db)
+		second.restore(t, dir)
+		if after := second.contents(t, db); !reflect.DeepEqual(after, before) {
+			t.Errorf("database %s differs after restoring into the second server\nbefore: %q\nafter:  %q", db, before, after)
+		}
+	}
+}
+
 // restoreServer returns the env of the second server, or nil when none is
 // configured (MYSQLDANCE_TEST_RESTORE_DSN is empty).
 func restoreServer(t *testing.T) *env {

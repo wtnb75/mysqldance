@@ -718,3 +718,17 @@
 - 却下の理由: 推測で、失敗のシナリオが無い。ロックの取り方は `lockGlobal` に集約済みで、呼び出し側が持つのは接続ごとに違う後始末（単独接続は閉じる、並列は defer でまとめて閉じる）と、`why` の文面（`--no-lock` と `--jobs 1` の違い）だけ。
 - 初出: B-057
 - 再出: 0
+
+## R-101 `TestMySQL57ZeroDateDefault` のプローブ用 DB の `USE` が、2 つ目のサーバーの管理接続の既定 DB を動かす
+- 対象: internal/dump/mysql57_test.go の TestMySQL57ZeroDateDefault（`second.createDB(t, db+"_probe")`）
+- 指摘: プローブ後、管理接続の既定 DB がプローブ用 DB になり、後で修飾名なしの文を足すと別の DB に当たる。余分な DB と DROP が増える。
+- 却下の理由: 失敗のシナリオが無い（今の `contents` は `db.table` と修飾し、`restore` は `DBName=""` の別接続）。好みの問題。テストに理由を 1 行のコメントで残した。
+- 初出: B-066
+- 再出: 0
+
+## R-102 `BACKLOG.md` の `# Done` で新しい項目を先頭に置くと、並びの規則が崩れる
+- 対象: BACKLOG.md の `# Done` 節（B-066 の位置）
+- 指摘: Done 節の並びが完了順か ID 順か不明で、先頭への追加が規則を壊しうる。
+- 却下の理由: Done 節は ID 順でも完了順でもなく（B-057 の後に B-056、B-041、B-039 …と続く）、直近の完了を先頭に足す運用になっている。`scripts/backlog.awk` は並びに依存しない。
+- 初出: B-066
+- 再出: 0
