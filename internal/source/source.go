@@ -45,10 +45,26 @@ type Config struct {
 	// privilege) to start all the snapshots at one point in time, so it cannot
 	// be combined with NoLock.
 	Jobs int
+	// LockTimeout bounds how long FLUSH TABLES WITH READ LOCK may wait: it first
+	// waits for running statements, and every statement that arrives behind it
+	// waits as well. When it is exceeded Open fails. It is rounded up to whole
+	// seconds. Zero leaves the server's lock_wait_timeout in force (no limit of
+	// the tool's own); a negative value is an error.
+	LockTimeout time.Duration
 }
 
 // MaxJobs is the largest Config.Jobs: each job is a server connection.
 const MaxJobs = 64
+
+// DefaultLockTimeout is the LockTimeout the command line uses unless told
+// otherwise.
+const DefaultLockTimeout = 30 * time.Second
+
+// maxLockWaitSeconds is the largest value of the lock_wait_timeout variable.
+const maxLockWaitSeconds = 31536000
+
+// errLockWaitTimeout is MySQL error 1205 (ER_LOCK_WAIT_TIMEOUT).
+const errLockWaitTimeout = 1205
 
 // TableInfo describes a base table.
 type TableInfo struct {
@@ -132,6 +148,9 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 		return nil, errors.New("option Jobs above 1 cannot be combined with option NoLock: " +
 			"the snapshots of the connections could not be aligned")
 	}
+	if cfg.LockTimeout < 0 {
+		return nil, fmt.Errorf("option LockTimeout must not be negative, not %v", cfg.LockTimeout)
+	}
 	if len(dbs) == 0 {
 		return nil, errors.New("no database to read")
 	}
@@ -173,7 +192,7 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 		return nil, err
 	}
 	sdb := sql.OpenDB(connector)
-	s, err := start(ctx, sdb, dbs, cfg.NoLock, cfg.Jobs)
+	s, err := start(ctx, sdb, dbs, cfg.NoLock, cfg.Jobs, cfg.LockTimeout)
 	if err != nil {
 		_ = sdb.Close()
 		return nil, err
@@ -208,9 +227,49 @@ func (s *Snapshot) detectDialect(ctx context.Context) error {
 	return err
 }
 
-func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int) (*Snapshot, error) {
+// lockGlobal runs FLUSH TABLES WITH READ LOCK on conn. It waits for running
+// statements, and everything that arrives behind it waits too, so with a
+// timeout above zero it gives up after that long (lock_wait_timeout, in whole
+// seconds, set for this one statement) and the request leaves the queue. A
+// timeout error says how to get past it; why is the caller's text.
+func lockGlobal(ctx context.Context, conn *sql.Conn, timeout time.Duration, why string) error {
+	var secs int64
+	if timeout > 0 {
+		secs = lockWaitSeconds(timeout)
+		if _, err := conn.ExecContext(ctx, "SET SESSION lock_wait_timeout = "+strconv.FormatInt(secs, 10)); err != nil {
+			return fmt.Errorf("SET SESSION lock_wait_timeout (%s): %w", why, err)
+		}
+		// Back to the server's value afterwards: the connection may go on to read.
+		// The session value is only ever set here, so DEFAULT is the previous one.
+		defer func() { _, _ = conn.ExecContext(ctx, "SET SESSION lock_wait_timeout = DEFAULT") }()
+	}
+	_, err := conn.ExecContext(ctx, "FLUSH TABLES WITH READ LOCK")
+	if err == nil {
+		return nil
+	}
+	var me *mysql.MySQLError
+	if timeout > 0 && errors.As(err, &me) && me.Number == errLockWaitTimeout {
+		return fmt.Errorf("FLUSH TABLES WITH READ LOCK did not get the lock within %d s (a running statement "+
+			"did not finish; wait for it to end, or raise --lock-timeout, 0 for the server's own limit) (%s): %w",
+			secs, why, err)
+	}
+	return fmt.Errorf("FLUSH TABLES WITH READ LOCK (%s): %w", why, err)
+}
+
+// lockWaitSeconds converts d (above zero) to whole seconds, rounding up and
+// capping at the largest lock_wait_timeout. It avoids d+1s, which overflows
+// for durations near the Duration limit.
+func lockWaitSeconds(d time.Duration) int64 {
+	secs := int64(d / time.Second)
+	if d%time.Second != 0 {
+		secs++
+	}
+	return min(secs, maxLockWaitSeconds)
+}
+
+func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int, lockTimeout time.Duration) (*Snapshot, error) {
 	if jobs > 1 {
-		return startParallel(ctx, sdb, dbs, jobs)
+		return startParallel(ctx, sdb, dbs, jobs, lockTimeout)
 	}
 	conn, err := sdb.Conn(ctx)
 	if err != nil {
@@ -243,10 +302,10 @@ func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int
 			return nil, err
 		}
 		if first != "" {
-			if _, err := conn.ExecContext(ctx, "FLUSH TABLES WITH READ LOCK"); err != nil {
+			if err := lockGlobal(ctx, conn, lockTimeout, fmt.Sprintf("needed because %s is not InnoDB; "+
+				"it requires the RELOAD privilege, or pass --no-lock to read without consistency", first)); err != nil {
 				_ = conn.Close()
-				return nil, fmt.Errorf("FLUSH TABLES WITH READ LOCK (needed because %s is not InnoDB; "+
-					"it requires the RELOAD privilege, or pass --no-lock to read without consistency): %w", first, err)
+				return nil, err
 			}
 			s.locked = true
 		}
@@ -272,7 +331,7 @@ func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int
 //
 // On failure every connection is returned to the pool, so the caller's
 // sdb.Close ends the sessions, the transactions and the lock.
-func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int) (_ *Snapshot, err error) {
+func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int, lockTimeout time.Duration) (_ *Snapshot, err error) {
 	var conns []*sql.Conn
 	defer func() {
 		if err != nil {
@@ -316,9 +375,9 @@ func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int) (_ 
 	if err := checkDatabases(ctx, first.conn, dbs); err != nil {
 		return nil, err
 	}
-	if _, err := lockConn.ExecContext(ctx, "FLUSH TABLES WITH READ LOCK"); err != nil {
-		return nil, fmt.Errorf("FLUSH TABLES WITH READ LOCK (needed to start the snapshots of %d connections "+
-			"at one point in time; it requires the RELOAD privilege, or run with --jobs 1): %w", jobs, err)
+	if err := lockGlobal(ctx, lockConn, lockTimeout, fmt.Sprintf("needed to start the snapshots of %d connections "+
+		"at one point in time; it requires the RELOAD privilege, or run with --jobs 1", jobs)); err != nil {
+		return nil, err
 	}
 	nonInnoDB, err := first.firstNonInnoDB(ctx, dbs)
 	if err != nil {

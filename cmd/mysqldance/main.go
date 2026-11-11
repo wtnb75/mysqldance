@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/dump"
@@ -168,6 +169,9 @@ The password is read from --password-file, else from MYSQL_PWD.
                              filtered by the umask; an existing one is kept)
       --no-lock              do not take FLUSH TABLES WITH READ LOCK when a
                              table is not InnoDB (warn instead)
+      --lock-timeout DUR     give up when FLUSH TABLES WITH READ LOCK has not
+                             got the lock after DUR, e.g. 30s or 2m (default
+                             30s; 0 = the server's own lock_wait_timeout)
   -j, --jobs N               read N tables in parallel on N connections that
                              show the same point in time (default 1). Above 1
                              the lock is always taken, so the RELOAD privilege
@@ -188,6 +192,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 		port, jobs                               int
 		rowsPerInsert, rowsPerFile               uint64
 		maxInsertBytes                           int
+		lockTimeout                              time.Duration
 	)
 	fs.StringVar(&host, "h", "127.0.0.1", "")
 	fs.StringVar(&host, "host", "127.0.0.1", "")
@@ -206,6 +211,9 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.IntVar(&maxInsertBytes, "max-insert-bytes", 1048576, "")
 	fs.Uint64Var(&rowsPerFile, "rows-per-file", 0, "")
 	fs.BoolVar(&noLock, "no-lock", false, "")
+	// A limit by default is intended (B-057): an unbounded wait for the lock
+	// stalls every statement queued behind it. It applies only when a lock is taken.
+	fs.DurationVar(&lockTimeout, "lock-timeout", source.DefaultLockTimeout, "")
 	fs.IntVar(&jobs, "j", 1, "")
 	fs.IntVar(&jobs, "jobs", 1, "")
 	fs.StringVar(&logLevel, "log-level", "info", "")
@@ -245,6 +253,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 		return usage("--port must be between 1 and 65535")
 	case jobs < 1 || jobs > source.MaxJobs:
 		return usage("--jobs must be between 1 and %d", source.MaxJobs)
+	case lockTimeout < 0:
+		return usage("--lock-timeout must not be negative")
 	case jobs > 1 && noLock:
 		// Without the lock the snapshots of the connections cannot be aligned.
 		return usage("--jobs above 1 cannot be combined with --no-lock: the lock is what makes " +
@@ -289,6 +299,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	opt.Source.SSLMode, opt.Source.SSLCA = sslMode, sslCA
 	opt.Source.NoLock = noLock
 	opt.Source.Jobs = jobs
+	opt.Source.LockTimeout = lockTimeout
 	opt.Source.Password = getenv("MYSQL_PWD")
 	if passwordFile != "" {
 		b, err := os.ReadFile(passwordFile)
