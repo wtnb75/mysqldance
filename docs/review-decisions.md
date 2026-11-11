@@ -726,6 +726,27 @@
 - 初出: B-066
 - 再出: 0
 
+## R-103 `EachRow` の FLOAT の変換で、範囲変数 `b` と関数全体の `err` を再代入している
+- 対象: internal/source/source.go の EachRow（`b, err = sqlvalue.ExactFloat(b)`）
+- 指摘: 外側の `err` を上書きし、シャドーイングと読み違えやすい。
+- 却下の理由: 失敗のシナリオが無い（推測）。`err` は直後に `return` で使うだけで、ループの後は `rows.Err()` を別に呼ぶ。好みの問題。
+- 初出: B-059
+- 再出: 0
+
+## R-104 `IsFloat` が `Literal` と型名の正規化を二重に持つ
+- 対象: internal/sqlvalue/float.go の IsFloat、sqlvalue.go の Literal
+- 指摘: 大文字化・trim・`UNSIGNED ` の除去が 2 か所にあり、型の綴りを足すとずれる。
+- 却下の理由: 今のずれは無い（推測）。`DatabaseTypeName` が返す綴りは `FLOAT` と `UNSIGNED FLOAT` だけで、どちらも両方が扱う（`TestIsFloat`、`TestLiteral`）。好みの問題。
+- 初出: B-059
+- 再出: 0
+
+## R-105 `FLOAT` の最大値に対する正確な `DOUBLE` 表記が、サーバーに受け入れられる確証がない
+- 対象: internal/sqlvalue/float.go の ExactFloat（範囲外のときの退避）
+- 指摘: 17 桁の表記をサーバーが拒否・丸めると、復元が失敗するか値が変わる。
+- 却下の理由: 実機で確かめ済み。`TestFloatDoubleRoundTrip` が `MaxFloat32` と `-MaxFloat32` を含む 300 行を、8.0 と 8.4 でビット単位の一致まで通る。`3.4028234663852886e38` は受け入れられ、`3.4028235e38` は拒否されることも 8.4 で確認した（設計書 11 節）。
+- 初出: B-059
+- 再出: 0
+
 ## R-102 `BACKLOG.md` の `# Done` で新しい項目を先頭に置くと、並びの規則が崩れる
 - 対象: BACKLOG.md の `# Done` 節（B-066 の位置）
 - 指摘: Done 節の並びが完了順か ID 順か不明で、先頭への追加が規則を壊しうる。

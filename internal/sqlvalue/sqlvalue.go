@@ -71,8 +71,15 @@ func Literal(typeName string, raw []byte, isNull bool) string {
 	t := strings.ToUpper(strings.TrimSpace(typeName))
 	t = strings.TrimPrefix(t, "UNSIGNED ")
 	switch t {
+	case "FLOAT", "DOUBLE":
+		// A bare "-0" is the integer 0 negated and "-0.0" a decimal, so both
+		// lose the sign; an exponent makes a float literal (B-059).
+		if isNegativeZero(raw) {
+			return "-0e0"
+		}
+		return string(raw)
 	case "TINYINT", "SMALLINT", "MEDIUMINT", "INT", "INTEGER", "BIGINT",
-		"DECIMAL", "NUMERIC", "FLOAT", "DOUBLE", "YEAR":
+		"DECIMAL", "NUMERIC", "YEAR":
 		return string(raw)
 	case "BIT":
 		return bitLiteral(raw)

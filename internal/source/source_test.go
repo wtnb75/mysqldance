@@ -323,6 +323,22 @@ func TestCheckAllColumnsVisible(t *testing.T) {
 	}
 }
 
+// TestSelectList checks that a FLOAT is read as an exact DOUBLE (B-059) and
+// every other column as itself.
+func TestSelectList(t *testing.T) {
+	cols := []sqlvalue.Column{
+		{Name: "id", TypeName: "INT"},
+		{Name: "f", TypeName: "FLOAT"},
+		{Name: "d", TypeName: "DOUBLE"},
+		{Name: "u`x", TypeName: "UNSIGNED FLOAT"},
+	}
+	got := selectList(cols)
+	want := "`id`, `f` * 1e0, `d`, `u``x` * 1e0"
+	if got != want {
+		t.Errorf("selectList = %q, want %q", got, want)
+	}
+}
+
 func TestOrderByClause(t *testing.T) {
 	got, err := orderByClause([]string{"a", "b", "c"}, []string{"varchar", "int", "text"})
 	want := " ORDER BY CAST(`a` AS BINARY), `b`, CAST(`c` AS BINARY)"
