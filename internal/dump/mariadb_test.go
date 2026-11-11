@@ -89,7 +89,7 @@ func TestUnsupportedTableTypeKeepsPreviousDump(t *testing.T) {
 
 			e.exec(t, tc.create, "INSERT INTO t VALUES (2)")
 			var log bytes.Buffer
-			err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, Log: &log})
+			err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, Log: testLogger(&log)})
 			if err == nil {
 				t.Fatalf("Run succeeded with a %s in the database", tc.typ)
 			}

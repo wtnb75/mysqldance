@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,8 +43,8 @@ type Options struct {
 	// creates it; 0 means 0755 filtered by the umask. An existing directory
 	// is never changed.
 	DirMode os.FileMode
-	// Log receives warnings; nil discards them.
-	Log io.Writer
+	// Log receives warnings (at the Warn level); nil discards them.
+	Log *slog.Logger
 }
 
 // Run dumps every database in opt.DBs into opt.OutDir, creating the
@@ -61,7 +62,7 @@ func Run(ctx context.Context, opt Options) (err error) {
 		return errors.New("no database to dump")
 	}
 	if opt.Log == nil {
-		opt.Log = io.Discard
+		opt.Log = slog.New(slog.DiscardHandler)
 	}
 	if opt.Writer == nil {
 		opt.Writer = writer.NewMySQL(opt.Data)
@@ -164,7 +165,7 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		return err
 	}
 	for _, w := range warnings {
-		_, _ = fmt.Fprintf(opt.Log, "warning: database %q: %s\n", db, w)
+		opt.Log.Warn(w, "database", db)
 	}
 	views, deps, err := snap.Views(ctx)
 	if err != nil {
@@ -179,8 +180,9 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	if !hasTriggers {
 		// Say so rather than leave them out silently.
 		for _, t := range triggers {
-			_, _ = fmt.Fprintf(opt.Log, "warning: database %q: trigger %s on table %s is not output\n",
-				db, sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(t.Table))
+			opt.Log.Warn(fmt.Sprintf("trigger %s on table %s is not output",
+				sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(t.Table)),
+				"database", db, "table", t.Table, "trigger", t.Name)
 		}
 		triggers = nil
 	}
@@ -197,7 +199,7 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	}
 	schema := writer.Schema{
 		DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps, Triggers: triggers, Defs: defs,
-		Warn: func(msg string) { _, _ = fmt.Fprintf(opt.Log, "warning: database %q: %s\n", db, msg) },
+		Warn: func(msg string) { opt.Log.Warn(msg, "database", db) },
 	}
 
 	// Validate every file name before touching the directory.

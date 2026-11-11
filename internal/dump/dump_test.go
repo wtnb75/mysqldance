@@ -144,7 +144,7 @@ func (e *env) exec(t *testing.T, stmts ...string) {
 func (e *env) dump(t *testing.T, dir string, dbs ...string) string {
 	t.Helper()
 	var log bytes.Buffer
-	if err := Run(context.Background(), Options{Source: e.cfg, DBs: dbs, OutDir: dir, Log: &log}); err != nil {
+	if err := Run(context.Background(), Options{Source: e.cfg, DBs: dbs, OutDir: dir, Log: testLogger(&log)}); err != nil {
 		t.Fatalf("Run(%v): %v", dbs, err)
 	}
 	return log.String()

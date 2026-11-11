@@ -103,14 +103,6 @@
   - [ ] 2 つのグローバル変数がなくなり、`Options` のフィールドで渡す
   - [ ] 該当するテストが `t.Parallel()` で動く
 
-## B-052 [todo|P2] ロガーを標準の `log/slog` にする
-- 概要: 今のログは `dump.Options.Log`（`io.Writer`）に `fmt.Fprintf` で書く警告だけで、レベルがない。`Options.Log` を `*slog.Logger` にし（nil なら出力を捨てる）、既存の警告（非 InnoDB、大きなテーブル）を `Warn` にして DB 名・テーブル名を属性で渡す。ログは標準エラー出力に出す（README の「エラーと警告は標準エラー出力」は維持する）。進捗ログは B-053 で足す。
-- 受け入れ条件:
-  - [ ] `--log-level`（debug / info / warn / error、既定は info）と `--log-format`（text / json、既定は text）を追加する
-  - [ ] 既存の警告が `Warn` で出て、標準出力には何も出ない
-  - [ ] 既存の警告のテストを新しい形式に合わせて更新する
-  - [ ] README の使い方にフラグを追記する
-
 ## B-053 [todo|P3] 進捗を `slog` で出力する
 - 依存: B-052
 - 概要: DB の開始と終了、テーブルごとの行数・バイト数・所要時間を `Info` で出す。パスワード、接続文字列、行の値はログに出さない。
@@ -637,3 +629,12 @@
   - [x] ファイル名が辞書順でデータの後ろになり、`naming` の所有判定（`IsOwnedBy`）に含まれる
   - [x] 出力は決定的で、`DEFINER` の扱いを README に書く
 - 結果: `naming.TriggersFile`（`<db>.20-triggers.sql`）、`source.Snapshot.Triggers`、`schemafile.WriteTriggers`、任意のインターフェース `writer.TriggerWriter`（MySQL ライタだけが実装）を足し、`dump` が書き出す。`DEFINER` はビューと同じく除く。README と設計書に節を足した。実機の確認は MySQL の統合テスト（復元して `information_schema.TRIGGERS` の定義・実行順・`sql_mode` が一致し、ロード中にトリガーが動かないこと）で行った。
+
+## B-052 [done|P2] ロガーを標準の `log/slog` にする
+- 概要: 今のログは `dump.Options.Log`（`io.Writer`）に `fmt.Fprintf` で書く警告だけで、レベルがない。`Options.Log` を `*slog.Logger` にし（nil なら出力を捨てる）、既存の警告（非 InnoDB、大きなテーブル）を `Warn` にして DB 名・テーブル名を属性で渡す。ログは標準エラー出力に出す（README の「エラーと警告は標準エラー出力」は維持する）。進捗ログは B-053 で足す。
+- 前提: 警告の本文は変えず、`database` を属性で渡す（トリガーの警告は `table`・`trigger` も）。テーブル名は元の警告の本文に含まれる。`--log-level` / `--log-format` の不正な値は使い方のエラー。
+- 受け入れ条件:
+  - [x] `--log-level`（debug / info / warn / error、既定は info）と `--log-format`（text / json、既定は text）を追加する
+  - [x] 既存の警告が `Warn` で出て、標準出力には何も出ない
+  - [x] 既存の警告のテストを新しい形式に合わせて更新する
+  - [x] README の使い方にフラグを追記する

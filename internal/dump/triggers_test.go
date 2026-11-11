@@ -156,14 +156,18 @@ func TestTriggersWarnedForOtherTargets(t *testing.T) {
 	dir := t.TempDir()
 	var log bytes.Buffer
 	err := Run(context.Background(), Options{
-		Source: e.cfg, DBs: []string{db}, OutDir: dir, Log: &log, Writer: writer.NewSQLite(datafile.Options{}),
+		Source: e.cfg, DBs: []string{db}, OutDir: dir, Log: testLogger(&log), Writer: writer.NewSQLite(datafile.Options{}),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("warning: database %q: trigger `t_a` on table `a` is not output", db)
-	if !strings.Contains(log.String(), want) {
-		t.Errorf("log lacks %q:\n%s", want, log.String())
+	// One WARN record that carries the names as attributes.
+	for _, want := range []string{
+		"level=WARN", "trigger `t_a` on table `a` is not output", "database=" + db, "table=a", "trigger=t_a",
+	} {
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("log lacks %q:\n%s", want, log.String())
+		}
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
