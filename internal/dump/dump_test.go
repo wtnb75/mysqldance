@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -877,6 +880,90 @@ func TestFailureInLaterDatabaseKeepsEarlierOnes(t *testing.T) {
 	}
 	if after := readFiles(t, dir); !reflect.DeepEqual(after, before) {
 		t.Errorf("dump of the earlier database changed:\nbefore %q\nafter  %q", before, after)
+	}
+}
+
+// A bad database name anywhere in the list is found before the output
+// directory is touched: nothing is created, written or deleted, not even the
+// leftover temporary files that a normal run sweeps.
+func TestBadDatabaseTouchesNothing(t *testing.T) {
+	e := newEnv(t)
+	db1 := e.threeTables(t)
+	db2 := e.threeTables(t)
+	dir := t.TempDir()
+	e.dump(t, dir, db1, db2)
+	leftover := filepath.Join(dir, ".mysqldance-0001.tmp")
+	if err := os.WriteFile(leftover, []byte("leftover\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.exec(t, "USE "+sqlvalue.QuoteIdent(db1), "INSERT INTO a VALUES (10)")
+	before := readFiles(t, dir)
+
+	for _, tc := range []struct {
+		name string
+		dbs  []string
+		want string
+	}{
+		{"missing last", []string{db1, db2, "mysqldance_no_such_db"}, "not found"},
+		{"missing middle", []string{db1, "mysqldance_no_such_db", db2}, "not found"},
+		{"system database last", []string{db1, "mysql"}, "system database"},
+		{"missing first", []string{"mysqldance_no_such_db", db1}, "not found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Run(context.Background(), Options{Source: e.cfg, DBs: tc.dbs, OutDir: dir})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Run = %v, want an error containing %q", err, tc.want)
+			}
+			if after := readFiles(t, dir); !reflect.DeepEqual(after, before) {
+				t.Errorf("output directory changed:\nbefore %q\nafter  %q", before, after)
+			}
+		})
+	}
+
+	// The parallel start has its own check, before its global read lock.
+	t.Run("missing last with --jobs 2", func(t *testing.T) {
+		cfg := e.cfg
+		cfg.Jobs = 2
+		err := Run(context.Background(), Options{Source: cfg, DBs: []string{db1, db2, "mysqldance_no_such_db"}, OutDir: dir})
+		if err == nil || !strings.Contains(err.Error(), "not found") {
+			t.Fatalf("Run = %v, want a not found error", err)
+		}
+		if after := readFiles(t, dir); !reflect.DeepEqual(after, before) {
+			t.Errorf("output directory changed:\nbefore %q\nafter  %q", before, after)
+		}
+	})
+
+	t.Run("output directory is not created", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "new", "out")
+		err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db1, "mysqldance_no_such_db"}, OutDir: missing})
+		if err == nil || !strings.Contains(err.Error(), "not found") {
+			t.Fatalf("Run = %v, want a not found error", err)
+		}
+		if exists(t, filepath.Dir(missing)) {
+			t.Errorf("%s was created by a failed run", filepath.Dir(missing))
+		}
+	})
+}
+
+// The same list of databases dumped twice gives the same bytes in every file,
+// checked by a checksum over the whole directory.
+func TestSameDatabasesTwiceSameChecksum(t *testing.T) {
+	e := newEnv(t)
+	db1 := e.threeTables(t)
+	db2 := e.threeTables(t)
+	sum := func() [sha256.Size]byte {
+		dir := t.TempDir()
+		e.dump(t, dir, db1, db2)
+		files := readFiles(t, dir)
+		names := slices.Sorted(maps.Keys(files))
+		h := sha256.New()
+		for _, n := range names {
+			_, _ = fmt.Fprintf(h, "%s\x00%d\x00%s\x00", n, len(files[n]), files[n])
+		}
+		return [sha256.Size]byte(h.Sum(nil))
+	}
+	if a, b := sum(), sum(); a != b {
+		t.Errorf("checksums differ: %x vs %x", a, b)
 	}
 }
 

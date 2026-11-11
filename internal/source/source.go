@@ -157,9 +157,9 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 		}
 		mc.Net, mc.Addr = "tcp", net.JoinHostPort(host, strconv.Itoa(port))
 	}
-	// A bad ssl setting must fail here, as the first thing Run does after
-	// creating the output directory, so it aborts before any output file is
-	// deleted or written.
+	// A bad ssl setting must fail here, as the first thing Run does, so it
+	// aborts before the output directory is created or any file is deleted
+	// or written.
 	var err error
 	if mc.TLS, mc.AllowFallbackToPlaintext, err = tlsConfig(cfg, host); err != nil {
 		return nil, err
@@ -222,6 +222,11 @@ func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int
 		return nil, err
 	}
 	if err := s.pinSession(ctx); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	// Before the lock, so a bad name never makes other sessions wait.
+	if err := checkDatabases(ctx, conn, dbs); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
@@ -307,6 +312,10 @@ func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int) (_ 
 		}
 	}
 
+	// Before the lock, so a bad name never makes other sessions wait.
+	if err := checkDatabases(ctx, first.conn, dbs); err != nil {
+		return nil, err
+	}
 	if _, err := lockConn.ExecContext(ctx, "FLUSH TABLES WITH READ LOCK"); err != nil {
 		return nil, fmt.Errorf("FLUSH TABLES WITH READ LOCK (needed to start the snapshots of %d connections "+
 			"at one point in time; it requires the RELOAD privilege, or run with --jobs 1): %w", jobs, err)
@@ -353,21 +362,39 @@ func (s *Snapshot) Use(ctx context.Context, db string) error {
 	return nil
 }
 
-// use is Use for this connection alone.
-func (s *Snapshot) use(ctx context.Context, db string) error {
+// checkDatabase fails unless db is not a system database and exists on the
+// server, with exactly this spelling (the lookup itself may be case-insensitive,
+// depending on the server's collation).
+func checkDatabase(ctx context.Context, conn *sql.Conn, db string) error {
 	if err := checkNotSystem(db); err != nil {
 		return err
 	}
 	var found string
-	err := s.conn.QueryRowContext(ctx,
+	err := conn.QueryRowContext(ctx,
 		"SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?", db).Scan(&found)
 	if err == nil && found != db {
 		err = sql.ErrNoRows
 	}
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("database %q not found", db)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("database %q not found", db)
+	}
+	return err
+}
+
+// checkDatabases runs checkDatabase for every one of dbs, so a bad name is
+// reported before any lock is taken or any data is read.
+func checkDatabases(ctx context.Context, conn *sql.Conn, dbs []string) error {
+	for _, db := range dbs {
+		if err := checkDatabase(ctx, conn, db); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// use is Use for this connection alone.
+func (s *Snapshot) use(ctx context.Context, db string) error {
+	if err := checkDatabase(ctx, s.conn, db); err != nil {
 		return err
 	}
 	// With db as the default database, SHOW CREATE VIEW leaves names in that
