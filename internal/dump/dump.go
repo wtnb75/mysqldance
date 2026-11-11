@@ -69,6 +69,19 @@ func Run(ctx context.Context, opt Options) (err error) {
 	} else if opt.Data != (datafile.Options{}) {
 		return errors.New("Options.Data configures the default writer and cannot be combined with Options.Writer")
 	}
+	// One connection and one transaction for all databases, so they all
+	// come from the same point in time. Open comes before anything touches the
+	// output directory: it checks the settings and every database (existence,
+	// not a system database), so a bad one leaves the directory as it was,
+	// not even created or swept.
+	snap, err := source.Open(ctx, opt.Source, opt.DBs...)
+	if err != nil {
+		// Open covers every database (system-database check, existence,
+		// lock decision), so the error is not attributed to the first one;
+		// a "not found" error names its database itself (R-008).
+		return err
+	}
+	defer func() { err = errors.Join(err, snap.Close()) }()
 	if err := prepareOutDir(opt.OutDir, opt.DirMode); err != nil {
 		return err
 	}
@@ -80,15 +93,6 @@ func Run(ctx context.Context, opt Options) (err error) {
 	// Lower-cased output file name -> what it was generated for, across the
 	// whole run, so names that differ only in case are rejected.
 	seen := map[string]string{}
-	// One connection and one transaction for all databases, so they all
-	// come from the same point in time.
-	snap, err := source.Open(ctx, opt.Source, opt.DBs...)
-	if err != nil {
-		// Open covers every database (system-database check, lock decision),
-		// so the error is not attributed to the first one.
-		return err
-	}
-	defer func() { err = errors.Join(err, snap.Close()) }()
 	for i, db := range opt.DBs {
 		if i > 0 {
 			if err := snap.Use(ctx, db); err != nil {
