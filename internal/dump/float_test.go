@@ -4,7 +4,6 @@ import (
 	"context"
 	"math"
 	"math/rand/v2"
-	"strconv"
 	"testing"
 
 	"mysqldance/internal/sqlvalue"
@@ -112,14 +111,9 @@ func TestFloatDoubleRoundTrip(t *testing.T) {
 	}
 
 	t.Run("DOUBLE", func(t *testing.T) {
-		bad, known := 0, 0
+		bad := 0
 		for i := range before {
 			if before[i].d == after[i].d {
-				continue
-			}
-			// Known: -0 comes back as +0 (B-059).
-			if before[i].d == 1<<63 && after[i].d == 0 {
-				known++
 				continue
 			}
 			bad++
@@ -132,9 +126,6 @@ func TestFloatDoubleRoundTrip(t *testing.T) {
 		if bad > 0 {
 			t.Errorf("%d of %d rows changed", bad, len(before))
 		}
-		if known > 0 {
-			t.Skipf("known DOUBLE mismatch (B-059): -0 became 0 in %d row(s); the other %d rows are exact", known, len(before)-known)
-		}
 	})
 
 	t.Run("FLOAT", func(t *testing.T) {
@@ -143,34 +134,15 @@ func TestFloatDoubleRoundTrip(t *testing.T) {
 			if before[i].f == after[i].f {
 				continue
 			}
-			// Only the known precision loss is tolerated: the restored value
-			// must be the original rounded to 6 significant digits.
-			orig := math.Float32frombits(before[i].f)
-			if before[i].f == 1<<31 && after[i].f == 0 { // -0 became +0
-				bad++
-				continue
-			}
-			want, err := strconv.ParseFloat(strconv.FormatFloat(float64(orig), 'g', 6, 32), 32)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if math.Float32bits(float32(want)) != after[i].f {
-				t.Errorf("row %d: %#08x (%v) -> %#08x (%v), not the 6-digit rounding %v", before[i].id,
-					before[i].f, orig, after[i].f, math.Float32frombits(after[i].f), float32(want))
-				continue
-			}
 			bad++
-			if bad <= 5 {
-				t.Logf("row %d: %#08x (%v) -> %#08x (%v)", before[i].id,
+			if bad <= 20 {
+				t.Errorf("row %d: %#08x (%v) -> %#08x (%v)", before[i].id,
 					before[i].f, math.Float32frombits(before[i].f),
 					after[i].f, math.Float32frombits(after[i].f))
 			}
 		}
 		if bad > 0 {
-			// Known: the server's text protocol prints FLOAT with 6
-			// significant digits, which loses bits (B-059). The test starts
-			// passing, instead of skipping, once the output is exact.
-			t.Skipf("known FLOAT mismatch (B-059): %d of %d rows changed", bad, len(before))
+			t.Errorf("%d of %d rows changed", bad, len(before))
 		}
 	})
 }

@@ -29,6 +29,17 @@ func TestLiteral(t *testing.T) {
 		{"invalid utf8", "VARCHAR", []byte{0xFF, 0xFE}, false, "'\xff\xfe'"},
 		{"empty string", "VARCHAR", []byte{}, false, "''"},
 		{"datetime", "DATETIME", []byte("2024-01-02 03:04:05"), false, "'2024-01-02 03:04:05'"},
+		// "-0" alone is the integer 0 negated; only a float literal keeps the sign (B-059).
+		{"double negative zero", "DOUBLE", []byte("-0"), false, "-0e0"},
+		{"float negative zero", "FLOAT", []byte("-0"), false, "-0e0"},
+		{"unsigned float negative zero", "UNSIGNED FLOAT", []byte("-0"), false, "-0e0"},
+		// Any spelling of negative zero, such as a DOUBLE(M,D) display format.
+		{"double negative zero decimals", "DOUBLE", []byte("-0.0"), false, "-0e0"},
+		{"double negative zero exponent", "DOUBLE", []byte("-0e0"), false, "-0e0"},
+		{"double zero decimals", "DOUBLE", []byte("0.0"), false, "0.0"},
+		{"double zero", "DOUBLE", []byte("0"), false, "0"},
+		{"double negative", "DOUBLE", []byte("-0.5"), false, "-0.5"},
+		{"decimal negative zero text", "DECIMAL", []byte("-0"), false, "-0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

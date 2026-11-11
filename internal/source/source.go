@@ -907,15 +907,11 @@ func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]sqlvalue.Value, e
 // connection, a canceled context) is an error too, never a short table.
 // t must come from Tables for the database currently selected by Use.
 func (s *Snapshot) EachRow(ctx context.Context, t TableInfo, fn func(row []sqlvalue.Value) error) error {
-	names := make([]string, len(t.Columns))
-	for i, c := range t.Columns {
-		names[i] = c.Name
-	}
 	orderBy, err := orderByClause(t.OrderBy, t.OrderByTypes)
 	if err != nil {
 		return fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
 	}
-	query := "SELECT " + columnList(names) + " FROM " + s.qualified(t.Name) + orderBy
+	query := "SELECT " + selectList(t.Columns) + " FROM " + s.qualified(t.Name) + orderBy
 
 	// No query arguments: the text protocol delivers values as the server
 	// formats them, and sql.RawBytes keeps them unconverted.
@@ -929,8 +925,10 @@ func (s *Snapshot) EachRow(ctx context.Context, t TableInfo, fn func(row []sqlva
 	defer func() { _ = rows.Close() }()
 	raw := make([]sql.RawBytes, len(t.Columns))
 	dest := make([]any, len(raw))
+	isFloat := make([]bool, len(raw))
 	for i := range raw {
 		dest[i] = &raw[i]
+		isFloat[i] = sqlvalue.IsFloat(t.Columns[i].TypeName)
 	}
 
 	emit := fn
@@ -949,6 +947,12 @@ func (s *Snapshot) EachRow(ctx context.Context, t TableInfo, fn func(row []sqlva
 		}
 		row := make([]sqlvalue.Value, len(raw))
 		for i, b := range raw {
+			if b != nil && isFloat[i] {
+				if b, err = sqlvalue.ExactFloat(b); err != nil {
+					return fmt.Errorf("table %s, column %s: %w", sqlvalue.QuoteIdent(t.Name),
+						sqlvalue.QuoteIdent(t.Columns[i].Name), err)
+				}
+			}
 			row[i] = sqlvalue.NewValue(t.Columns[i].TypeName, b, b == nil)
 		}
 		if err := emit(row); err != nil {
@@ -1004,6 +1008,22 @@ func orderByClause(key, types []string) (string, error) {
 
 func (s *Snapshot) qualified(name string) string {
 	return sqlvalue.QuoteIdent(s.name) + "." + sqlvalue.QuoteIdent(name)
+}
+
+// selectList returns the select list that reads cols. The text protocol prints
+// a FLOAT with 6 significant digits, which loses bits, so a FLOAT is read as
+// `col * 1e0`: its exact value as a DOUBLE, which keeps -0 too (B-059). It does
+// not use CAST(... AS DOUBLE), which MySQL 5.7 and 8.0 before 8.0.17 lack.
+// EachRow turns that text back into the FLOAT's own notation.
+func selectList(cols []sqlvalue.Column) string {
+	q := make([]string, len(cols))
+	for i, c := range cols {
+		q[i] = sqlvalue.QuoteIdent(c.Name)
+		if sqlvalue.IsFloat(c.TypeName) {
+			q[i] += " * 1e0"
+		}
+	}
+	return strings.Join(q, ", ")
 }
 
 func columnList(names []string) string {
