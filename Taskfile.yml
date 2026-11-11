@@ -72,8 +72,10 @@ tasks:
   #   TIMEOUT   seconds to wait for the server to accept TCP (default 180)
   # The files are fed through `docker exec -i`, so the Docker daemon may run
   # on another host.
-  sample:up:
-    desc: Start MySQL (VERSION=8.4 by default) in Docker and load scripts/sample/*.sql
+  # Starts the container and waits until MySQL answers; shared by sample:up and
+  # sample:big. Not meant to be called on its own.
+  sample:start:
+    internal: true
     vars:
       VERSION: '{{.VERSION | default "8.4"}}'
       PORT: '{{.PORT | default "33071"}}'
@@ -95,12 +97,63 @@ tasks:
           fi
           sleep 1
         done
+
+  sample:up:
+    desc: Start MySQL (VERSION=8.4 by default) in Docker and load scripts/sample/*.sql
+    vars:
+      VERSION: '{{.VERSION | default "8.4"}}'
+      PORT: '{{.PORT | default "33071"}}'
+      NAME: '{{.NAME | default "mysqldance-sample"}}'
+      TIMEOUT: '{{.TIMEOUT | default "180"}}'
+    cmds:
+      - task: sample:start
+        vars: {VERSION: '{{.VERSION}}', PORT: '{{.PORT}}', NAME: '{{.NAME}}', TIMEOUT: '{{.TIMEOUT}}'}
       - |
         for f in scripts/sample/*.sql; do
           echo "loading $f"
           docker exec -i {{.NAME}} mysql -uroot -proot --default-character-set=utf8mb4 < "$f" || { docker rm -fv {{.NAME}} >/dev/null 2>&1 || true; exit 1; }
         done
       - 'echo "sample data ready: MYSQL_PWD=root go run ./cmd/mysqldance -h 127.0.0.1 -P {{.PORT}} -u root -o ./dump sample_main sample_second サンプル"'
+
+  # Big tables for measuring performance: scripts/sample-big/big.sql generates
+  # them on the server from the row number alone, so the same variables always
+  # give the same data. Variables:
+  #   ROWS        rows per table (default 100000)
+  #   ROWSIZE     short (small rows), large (rows with a BLOB) or both (default both)
+  #   BLOB_BYTES  size of the BLOB column of the large tables (default 1024)
+  #   VERSION, PORT, NAME, TIMEOUT as in sample:up, but the defaults are
+  #   PORT=33072 and NAME=mysqldance-sample-big
+  # Remove the container with `task sample:down NAME=mysqldance-sample-big`.
+  sample:big:
+    desc: Start MySQL in Docker and generate big tables (ROWS=100000, ROWSIZE=short|large|both)
+    vars:
+      VERSION: '{{.VERSION | default "8.4"}}'
+      PORT: '{{.PORT | default "33072"}}'
+      NAME: '{{.NAME | default "mysqldance-sample-big"}}'
+      TIMEOUT: '{{.TIMEOUT | default "180"}}'
+      ROWS: '{{.ROWS | default "100000"}}'
+      ROWSIZE: '{{.ROWSIZE | default "both"}}'
+      BLOB_BYTES: '{{.BLOB_BYTES | default "1024"}}'
+    preconditions:
+      - sh: 'case "{{.ROWS}}" in ""|*[!0-9]*|0*) exit 1;; esac'
+        msg: "ROWS must be a positive integer, got {{.ROWS}}"
+      - sh: 'case "{{.BLOB_BYTES}}" in ""|*[!0-9]*|0*) exit 1;; esac'
+        msg: "BLOB_BYTES must be a positive integer, got {{.BLOB_BYTES}}"
+      - sh: 'case "{{.ROWSIZE}}" in short|large|both) ;; *) exit 1;; esac'
+        msg: "ROWSIZE must be short, large or both, got {{.ROWSIZE}}"
+    cmds:
+      - task: sample:start
+        vars: {VERSION: '{{.VERSION}}', PORT: '{{.PORT}}', NAME: '{{.NAME}}', TIMEOUT: '{{.TIMEOUT}}'}
+      - |
+        short=0; large=0
+        case "{{.ROWSIZE}}" in short) short=1;; large) large=1;; both) short=1; large=1;; esac
+        echo "generating {{.ROWS}} rows per table ({{.ROWSIZE}})..."
+        start=$(date +%s)
+        { echo "SET @rows={{.ROWS}}, @blob_bytes={{.BLOB_BYTES}}, @short=$short, @large=$large;"; cat scripts/sample-big/big.sql; } \
+          | docker exec -i {{.NAME}} mysql -uroot -proot --default-character-set=utf8mb4 \
+          || { docker rm -fv {{.NAME}} >/dev/null 2>&1 || true; exit 1; }
+        echo "generated in $(( $(date +%s) - start )) s"
+      - 'echo "big sample ready: MYSQL_PWD=root go run ./cmd/mysqldance -h 127.0.0.1 -P {{.PORT}} -u root -o ./dump sample_big"'
 
   sample:down:
     desc: Remove the container started by sample:up

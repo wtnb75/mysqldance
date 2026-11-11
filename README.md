@@ -299,3 +299,29 @@ task sample:verify              # create the sample twice, dump both, and fail u
 ```
 
 The sample is plain SQL (`scripts/sample/`), with fixed values only (no `NOW()` or `RAND()`), so it is the same every time. It has three databases: `sample_main`, `sample_second` and `サンプル` (a non-ASCII name). `sample_main` holds strings with newlines, quotes, backslashes, NUL, Japanese and emoji; `BLOB`, `VARBINARY`, `BINARY` and `BIT`; a table without a key (with duplicate rows); a generated column and an `INVISIBLE` column; foreign keys, including a cycle; assorted date, decimal, `ENUM`, `SET` and `JSON` values; and two levels of views.
+
+#### Big tables for measuring performance
+
+```sh
+task sample:big ROWS=1000000                   # MySQL 8.4 on port 33072, database sample_big
+MYSQL_PWD=root go run ./cmd/mysqldance -h 127.0.0.1 -P 33072 -u root -o ./dump sample_big
+task sample:down NAME=mysqldance-sample-big    # remove the container
+```
+
+The rows are generated on the server from the row number alone (no `NOW()` or `RAND()`), so the same variables always give the same data. `sample_big` has six tables, one per key type and row size: `int_*` (`BIGINT` primary key), `str_*` (`CHAR(32)` primary key, the MD5 of the row number, so not in insertion order) and `nokey_*` (no key), each as `*_short` (three small columns) and `*_large` (a short note and a `MEDIUMBLOB`). Variables:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ROWS` | `100000` | Rows per table |
+| `ROWSIZE` | `both` | `short`, `large` or `both` |
+| `BLOB_BYTES` | `1024` | Size of the `BLOB` column of the `*_large` tables |
+| `VERSION`, `PORT`, `NAME` | `8.4`, `33072`, `mysqldance-sample-big` | MySQL image tag, host port and container name |
+
+Rough figures for `ROWS=1000000` on MySQL 8.4 in Docker (one machine; yours will differ):
+
+| `ROWSIZE` | Time to create | Size in MySQL |
+| --- | --- | --- |
+| `short` | about 20 seconds | about 0.2 GB (3 tables) |
+| `both` (`BLOB_BYTES=1024`) | about 4.5 minutes | about 4.2 GB (6 tables) |
+
+A dump of the `both` case is larger than the data in MySQL, because `BLOB` values are written as hex (twice their size); expect roughly 6 GB (an estimate, not measured). Keep about 12 GB free for `ROWS=1000000` with both row sizes, or use `ROWSIZE=short`.
