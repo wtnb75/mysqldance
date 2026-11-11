@@ -282,3 +282,16 @@ task lint                                   # golangci-lint
 
 Integration tests run only when the `MYSQLDANCE_TEST_DSN` environment variable is set (for example `root:root@tcp(127.0.0.1:33061)/`).
 CI (`.github/workflows/integration.yml`) runs them against MySQL 8.0 and 8.4 on every push and fails the job if they are skipped.
+
+### Sample data
+
+To try `mysqldance` or look at diffs of its output, load a small sample database into a MySQL container:
+
+```sh
+task sample:up                  # start MySQL 8.4 on port 33071 and load scripts/sample/*.sql (VERSION=8.0 for 8.0; PORT=, NAME= also work)
+MYSQL_PWD=root go run ./cmd/mysqldance -h 127.0.0.1 -P 33071 -u root -o ./dump sample_main sample_second サンプル
+task sample:down                # remove the container
+task sample:verify              # create the sample twice, dump both, and fail unless every file is byte for byte the same
+```
+
+The sample is plain SQL (`scripts/sample/`), with fixed values only (no `NOW()` or `RAND()`), so it is the same every time. It has three databases: `sample_main`, `sample_second` and `サンプル` (a non-ASCII name). `sample_main` holds strings with newlines, quotes, backslashes, NUL, Japanese and emoji; `BLOB`, `VARBINARY`, `BINARY` and `BIT`; a table without a key (with duplicate rows); a generated column and an `INVISIBLE` column; foreign keys, including a cycle; assorted date, decimal, `ENUM`, `SET` and `JSON` values; and two levels of views.

@@ -64,6 +64,70 @@ tasks:
       - echo "== blocked (unmet dependencies) =="
       - awk -v mode=blocked -f scripts/backlog.awk {{.FILE}} | sort
 
+  # Sample data for trying mysqldance by hand: scripts/sample/*.sql is loaded
+  # into a MySQL container, in file name order. Overridable variables:
+  #   VERSION   MySQL image tag (default 8.4; 8.0 also works)
+  #   PORT      host port published for MySQL (default 33071)
+  #   NAME      container name (default mysqldance-sample)
+  #   TIMEOUT   seconds to wait for the server to accept TCP (default 180)
+  # The files are fed through `docker exec -i`, so the Docker daemon may run
+  # on another host.
+  sample:up:
+    desc: Start MySQL (VERSION=8.4 by default) in Docker and load scripts/sample/*.sql
+    vars:
+      VERSION: '{{.VERSION | default "8.4"}}'
+      PORT: '{{.PORT | default "33071"}}'
+      NAME: '{{.NAME | default "mysqldance-sample"}}'
+      TIMEOUT: '{{.TIMEOUT | default "180"}}'
+    cmds:
+      - docker rm -fv {{.NAME}} >/dev/null 2>&1 || true
+      - docker run -d --name {{.NAME}} -e MYSQL_ROOT_PASSWORD=root -p 127.0.0.1:{{.PORT}}:3306 mysql:{{.VERSION}} --character-set-server=utf8mb4
+      - |
+        echo "waiting for MySQL {{.VERSION}}..."
+        i=0
+        until docker exec {{.NAME}} mysqladmin ping -h 127.0.0.1 -uroot -proot --silent >/dev/null 2>&1; do
+          i=$((i + 1))
+          if [ "$i" -ge {{.TIMEOUT}} ]; then
+            echo "MySQL {{.VERSION}} did not become ready within {{.TIMEOUT}}s" >&2
+            docker logs --tail 20 {{.NAME}} >&2
+            docker rm -fv {{.NAME}} >/dev/null 2>&1 || true
+            exit 1
+          fi
+          sleep 1
+        done
+      - |
+        for f in scripts/sample/*.sql; do
+          echo "loading $f"
+          docker exec -i {{.NAME}} mysql -uroot -proot --default-character-set=utf8mb4 < "$f" || { docker rm -fv {{.NAME}} >/dev/null 2>&1 || true; exit 1; }
+        done
+      - 'echo "sample data ready: MYSQL_PWD=root go run ./cmd/mysqldance -h 127.0.0.1 -P {{.PORT}} -u root -o ./dump sample_main sample_second サンプル"'
+
+  sample:down:
+    desc: Remove the container started by sample:up
+    vars:
+      NAME: '{{.NAME | default "mysqldance-sample"}}'
+    cmds:
+      - docker rm -fv {{.NAME}} >/dev/null 2>&1 || true
+
+  # Creates the sample twice from scratch, dumps each, and fails unless every
+  # file is byte for byte the same.
+  sample:verify:
+    desc: Create the sample twice, dump both and check that the dumps are identical
+    vars:
+      PORT: '{{.PORT | default "33071"}}'
+      NAME: '{{.NAME | default "mysqldance-sample"}}'
+      HOST: '{{.HOST | default .MYSQLDANCE_TEST_HOST | default "127.0.0.1"}}'
+    cmds:
+      - defer: task sample:down NAME={{.NAME}}
+      - task: sample:up
+      - |
+        out="$(mktemp -d)"
+        MYSQL_PWD=root go run ./cmd/mysqldance -h {{.HOST}} -P {{.PORT}} -u root -o "$out/1" sample_main sample_second サンプル
+        task sample:up
+        MYSQL_PWD=root go run ./cmd/mysqldance -h {{.HOST}} -P {{.PORT}} -u root -o "$out/2" sample_main sample_second サンプル
+        diff -r "$out/1" "$out/2"
+        echo "the two dumps are identical ($(ls "$out/1" | wc -l) files, in $out)"
+
   # Overridable variables (pass on the command line, e.g.
   # `task test:integration PORT=33999 HOST=host.docker.internal`):
   #   PORT      host port published for MySQL (default 33061)
