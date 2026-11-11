@@ -357,6 +357,13 @@
   - [ ] 一致しない値があれば、一致する出力にする
   - [ ] 結果を設計書 11 節に書き、出力の表記が変わるなら README に書く
 
+## B-094 [todo|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
+- 概要: B-069 の PR（#43）の CI で、MySQL 8.0 の `TestLockTimeout/jobs=2`（`internal/source/lock_test.go`）が `lock_test.go:114: Open succeeded although the lock could not be taken within the timeout` で失敗した。同じコードの 1 回目の run は 8.0 / 8.4 とも通り、2 回目は 8.4 が通って 8.0 だけが失敗した。6 秒の `SLEEP` の文と 1 秒の `--lock-timeout` を、時間で競わせる作りが原因と推測している（未確認）。原因を調べ、再現させてから、安定させる。
+- 受け入れ条件:
+  - [ ] 失敗の原因を、再現するか、ログと `lock_test.go` の読みで特定する（テストの作りか、`FLUSH TABLES WITH READ LOCK` の取得の実装か）
+  - [ ] 原因がテストの作りなら、時間への依存を減らして直す。実装なら、失敗するテストを先に書いて直す
+  - [ ] `TestLockTimeout` を `-count=20` で、8.0 と 8.4 の両方で繰り返して全て通る
+
 # Done
 
 ## B-069 [done|P2] SQLite の復元を `sqlite3` コマンドで確かめる
