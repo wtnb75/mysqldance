@@ -785,6 +785,6 @@
 ## R-107 設計書の【確認済み】と、`BACKLOG.md` の CI の受け入れ条件が食い違う
 - 対象: docs/superpowers/specs/2026-11-09-mysqldance-design.md 11 節（B-069）、BACKLOG.md の B-069
 - 指摘: CI の結果が無いのに【確認済み】と書いてあり、項目が `todo` のまま。
-- 却下の理由: 設計書は「CI の `sqlite3` では未実行」と明記し、確認済みは手元の版と Docker の版に限っている。項目は CI の条件が未達なので `todo` のまま残し、PR を draft にするのが `impl-backlog` の規則。
+- 却下の理由: 指摘の時点で、設計書は「CI の `sqlite3` では未実行」と明記し、確認済みは手元の版と Docker の版に限っていた。CI の条件が未達の間は `todo` のまま残し、PR を draft にするのが `impl-backlog` の規則。その後 PR の CI（`sqlite3` 3.46.1）が通ったので、設計書と項目を更新して `done` にした。
 - 初出: B-069
 - 再出: 0
