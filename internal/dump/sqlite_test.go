@@ -161,27 +161,7 @@ func TestSQLiteRoundTrip(t *testing.T) {
 	}
 
 	lite := restoreSQLite(t, dir)
-	my := adminQuery{e}
-	qualified := func(table string) string { return "`" + db + "`.`" + table + "`" }
-	for _, c := range []struct{ name, mysql, sqlite string }{
-		{"parent", "SELECT id, code FROM " + qualified("parent") + " ORDER BY id", "SELECT id, code FROM parent ORDER BY id"},
-		{"child",
-			"SELECT id, parent_id, qty, flags+0, small+0, data, f, d, dt, j, note FROM " + qualified("child") + " ORDER BY id",
-			"SELECT id, parent_id, qty, flags, small, data, f, d, dt, j, note FROM child ORDER BY id"},
-		{"nokey", "SELECT a, b FROM " + qualified("nokey") + " ORDER BY a, b", "SELECT a, b FROM nokey ORDER BY a, b"},
-		// The generated column y is not output; the stored column x is.
-		{"gen", "SELECT id, x FROM " + qualified("gen") + " ORDER BY id", "SELECT id, x FROM gen ORDER BY id"},
-		{"empty_t", "SELECT id FROM " + qualified("empty_t"), "SELECT id FROM empty_t"},
-	} {
-		want := cells(t, my, c.mysql)
-		got := cells(t, lite, c.sqlite)
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("table %s differs\nMySQL:  %q\nSQLite: %q", c.name, want, got)
-		}
-		if len(got) == 0 && c.name != "empty_t" {
-			t.Errorf("table %s restored no rows", c.name)
-		}
-	}
+	compareSQLiteRows(t, e, db, lite)
 
 	// Constraints and indexes came along.
 	if got := cells(t, lite, "SELECT `table`, `from`, `to`, on_delete FROM pragma_foreign_key_list('child')"); !reflect.DeepEqual(got,
@@ -202,6 +182,35 @@ func TestSQLiteRoundTrip(t *testing.T) {
 	}
 	if got := cells(t, lite, "SELECT name FROM sqlite_master WHERE type = 'view'"); len(got) != 0 {
 		t.Errorf("views = %q, want none", got)
+	}
+}
+
+// compareSQLiteRows checks that every table of the sqliteFixture database db
+// holds the same rows in lite, a restored SQLite database, as in MySQL.
+func compareSQLiteRows(t *testing.T, e *env, db string, lite interface {
+	Query(string, ...any) (*sql.Rows, error)
+}) {
+	t.Helper()
+	my := adminQuery{e}
+	qualified := func(table string) string { return "`" + db + "`.`" + table + "`" }
+	for _, c := range []struct{ name, mysql, sqlite string }{
+		{"parent", "SELECT id, code FROM " + qualified("parent") + " ORDER BY id", "SELECT id, code FROM parent ORDER BY id"},
+		{"child",
+			"SELECT id, parent_id, qty, flags+0, small+0, data, f, d, dt, j, note FROM " + qualified("child") + " ORDER BY id",
+			"SELECT id, parent_id, qty, flags, small, data, f, d, dt, j, note FROM child ORDER BY id"},
+		{"nokey", "SELECT a, b FROM " + qualified("nokey") + " ORDER BY a, b", "SELECT a, b FROM nokey ORDER BY a, b"},
+		// The generated column y is not output; the stored column x is.
+		{"gen", "SELECT id, x FROM " + qualified("gen") + " ORDER BY id", "SELECT id, x FROM gen ORDER BY id"},
+		{"empty_t", "SELECT id FROM " + qualified("empty_t"), "SELECT id FROM empty_t"},
+	} {
+		want := cells(t, my, c.mysql)
+		got := cells(t, lite, c.sqlite)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("table %s differs\nMySQL:  %q\nSQLite: %q", c.name, want, got)
+		}
+		if len(got) == 0 && c.name != "empty_t" {
+			t.Errorf("table %s restored no rows", c.name)
+		}
 	}
 }
 
@@ -236,8 +245,10 @@ func TestSQLiteDeterministicAndMinimalDiff(t *testing.T) {
 	}
 }
 
-func TestSQLiteSplitsLargeTable(t *testing.T) {
-	e := newEnv(t)
+// dumpSplitBigTable dumps a 300-row table as SQLite files split over several
+// files and INSERT statements, and returns the output directory.
+func dumpSplitBigTable(t *testing.T, e *env) string {
+	t.Helper()
 	db := uniqueName(t)
 	e.createDB(t, db)
 	e.exec(t, "CREATE TABLE big (id INT PRIMARY KEY, s VARCHAR(20))")
@@ -251,7 +262,11 @@ func TestSQLiteSplitsLargeTable(t *testing.T) {
 	if n := len(sqlFiles(t, dir)); n < 3 {
 		t.Fatalf("got %d files, want the table split into several", n)
 	}
-	lite := restoreSQLite(t, dir)
+	return dir
+}
+
+func TestSQLiteSplitsLargeTable(t *testing.T) {
+	lite := restoreSQLite(t, dumpSplitBigTable(t, newEnv(t)))
 	if got := cells(t, lite, "SELECT count(*), sum(id) FROM big"); !reflect.DeepEqual(got, []string{`"300","45150"`}) {
 		t.Errorf("restored %q", got)
 	}

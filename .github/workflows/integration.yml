@@ -47,5 +47,9 @@ jobs:
           echo "::error::integration tests were skipped (MYSQLDANCE_TEST_DSN is not set)"
           exit 1
         fi
+        if grep -q 'sqlite3 is not installed' integration.log; then
+          echo "::error::the sqlite3 restore tests were skipped (sqlite3 is not installed)"
+          exit 1
+        fi
         echo "MySQL ${{ matrix.mysql }}: $(grep -c '^--- PASS' integration.log) top-level tests passed," \
           "$(grep -c -- '--- SKIP' integration.log) skipped"
