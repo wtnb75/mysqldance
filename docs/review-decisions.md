@@ -753,3 +753,38 @@
 - 却下の理由: Done 節は ID 順でも完了順でもなく（B-057 の後に B-056、B-041、B-039 …と続く）、直近の完了を先頭に足す運用になっている。`scripts/backlog.awk` は並びに依存しない。
 - 初出: B-066
 - 再出: 0
+
+## R-103 `sqlite3` コマンドのテストが、`sqlite3` の有無を確かめる前に MySQL のダンプを作る
+- 対象: internal/dump/sqlite_cli_test.go の restoreSQLiteCLI（`exec.LookPath`）
+- 指摘: `sqlite3` が無い環境では、DB の作成とダンプをしてから skip するので、skip が遅い。
+- 却下の理由: 効率だけの指摘で、失敗のシナリオはない。統合テストは MySQL が有るときだけ動き、無駄になるのは数十ミリ秒。`sqlite3` が無い環境は skip して、CI では失敗にする（B-069 で確定）。
+- 初出: B-069
+- 再出: 0
+
+## R-104 `compareSQLiteRows` の引数が、名前のない interface になっている
+- 対象: internal/dump/sqlite_test.go の compareSQLiteRows
+- 指摘: `*sql.DB` か、`cells` と共通の名前付き interface にすべき。
+- 却下の理由: 好みの問題。`cells` が同じ形の interface を受けており、それに揃えた。`CLAUDE.md` や linter の規約にない。
+- 初出: B-069
+- 再出: 0
+
+## R-105 CI の skip 検査の文言が、テストの定数と別に書かれている
+- 対象: .github/workflows/integration.yml の Fail if the integration tests were skipped、internal/dump/sqlite_cli_test.go の sqliteCLISkip
+- 指摘: 文言を変える、または `-v` を外すと、grep が合わなくなり、skip しても CI が通る。`sqlite3` が無い runner では、入れる手順がない。
+- 却下の理由: `MYSQLDANCE_TEST_DSN` の検査（同じ job の既存の仕組み）と同じ方式で、`-v` は同じ job が既に使っている。定数のコメントに CI が grep することを書いた。`ubuntu-latest` に `sqlite3` が無ければ、job が失敗するのが意図した動作。
+- 初出: B-069
+- 再出: 0
+
+## R-106 `sqlite3` の標準エラー出力が空でないだけで、テストが失敗になる
+- 対象: internal/dump/sqlite_cli_test.go の restoreSQLiteCLI（`stderr.Len() > 0`）
+- 指摘: 配布元の違う `sqlite3` が正常でも標準エラーに出力すると、テストが誤って失敗する。
+- 却下の理由: 推測で、出力する版を示せない。`sqlite3` は失敗した文の後も続けて終了コードが 0 になりうるので、標準エラーを見ないと復元の失敗を握りつぶす（「黙って落とさない」）。実機で 3.46.1 と 3.8.2 は、成功時に何も出さない。
+- 初出: B-069
+- 再出: 0
+
+## R-107 設計書の【確認済み】と、`BACKLOG.md` の CI の受け入れ条件が食い違う
+- 対象: docs/superpowers/specs/2026-11-09-mysqldance-design.md 11 節（B-069）、BACKLOG.md の B-069
+- 指摘: CI の結果が無いのに【確認済み】と書いてあり、項目が `todo` のまま。
+- 却下の理由: 指摘の時点で、設計書は「CI の `sqlite3` では未実行」と明記し、確認済みは手元の版と Docker の版に限っていた。CI の条件が未達の間は `todo` のまま残し、PR を draft にするのが `impl-backlog` の規則。その後 PR の CI（`sqlite3` 3.46.1）が通ったので、設計書と項目を更新して `done` にした。
+- 初出: B-069
+- 再出: 0
