@@ -18,3 +18,10 @@ jobs:
 
   integration:
     uses: ./.github/workflows/integration.yml
+
+  # Builds the image and runs it, but does not push.
+  image:
+    uses: ./.github/workflows/image.yml
+    permissions:
+      contents: read
+      packages: write

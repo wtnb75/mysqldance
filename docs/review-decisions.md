@@ -1146,3 +1146,38 @@
 - 却下の理由: 開いた直後のファイルの `Stat` が失敗するのは実際には起きず、失敗してもパスワードの読み込み（本体）は続き、データは落ちない（「黙って落とさない」は出力データの話）。読み取りビットだけを見るのは B-024 で確定した仕様（受け入れ条件は「読める」）。存在しないファイルは `TestParseArgsInvalid` の "missing password file" で、ディレクトリは `ReadAll` のエラーで失敗する。`/dev/fd/N` の誤警告は再現するシナリオを示せない（パイプはオーナーのみ 0600）。
 - 初出: B-024
 - 再出: 0
+
+## R-159 `:main` の push で arm64 を実行せず、`:main-<arch>` の途中のタグが残る
+- 対象: .github/workflows/image.yml の Smoke test と Push :main
+- 指摘: arm64 のイメージは実行して確かめないまま push される。`:main-amd64` / `:main-arm64` が ghcr に残る。
+- 却下の理由: arm64 の実行には QEMU が要り、イメージはビルド済みの静的バイナリを COPY するだけ（アーキテクチャごとに goreleaser が `GOARCH` を指定して作る）。壊れる具体的なシナリオを示せない。途中のタグが残るのは、OSS 版の goreleaser に `--nightly` が無いための設計（B-028 の確定した仕様に記載）。
+- 初出: B-028
+- 再出: 0
+
+## R-160 branch.yml の `image` ジョブに `packages: write` を渡している
+- 対象: .github/workflows/branch.yml の image ジョブ
+- 指摘: push しないジョブに書き込み権限を渡すのは最小権限に反する。
+- 却下の理由: 再利用 workflow のジョブが `packages: write` を宣言するので、呼び出し側も同じ権限を渡す必要がある（`permissions` に式は使えない）。push の step は `inputs.push` で守られ、ブランチでは動かない。このリポジトリの push イベントは fork から来ず、PR では動かない。
+- 初出: B-028
+- 再出: 0
+
+## R-161 tag.yml のイメージに smoke test が無い
+- 対象: .github/workflows/tag.yml
+- 指摘: タグのリリースで push するイメージを、実行して確かめていない。
+- 却下の理由: 同じ Dockerfile と設定のイメージを、ブランチと `main` で毎回ビルドして `--version` を実行している（image.yml）。タグ専用の確認を足す具体的な失敗シナリオを示せない。
+- 初出: B-028
+- 再出: 0
+
+## R-162 Dockerfile に `WORKDIR` / `VOLUME` が無く、相対パスの出力先が書けない
+- 対象: Dockerfile
+- 指摘: nonroot（uid 65532）で動くので、マウントの権限や相対パスの `-o` で失敗する。
+- 却下の理由: distroless では書き込み可能なディレクトリを用意するのに追加の手間（`COPY --chown`）が要り、マウントの権限は利用者の環境による。README に「uid 65532 が書けるディレクトリを渡す」と明記し、例は絶対パスにしている。
+- 初出: B-028
+- 再出: 0
+
+## R-163 BACKLOG の `:main-<arch>` の設計が goreleaser の設定と食い違う
+- 対象: BACKLOG.md の B-028、.goreleaser.yaml
+- 指摘: 設定にアーキテクチャ別のタグが無い。
+- 却下の理由: `goreleaser release --snapshot` は `dockers_v2` の設定からアーキテクチャ別のイメージ（`<tag>-amd64` / `<tag>-arm64`）をローカルに作る。実機で確かめた（`docker run` で `--version` も確認）。
+- 初出: B-028
+- 再出: 0

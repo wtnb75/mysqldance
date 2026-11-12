@@ -3,9 +3,16 @@
 ## B-028 [todo|P3] コンテナイメージを GitHub Container Registry に公開する
 - 依存: B-027
 - 概要: `mcprt` は `Dockerfile` と goreleaser の `dockers_v2`（linux/amd64、linux/arm64、`ghcr.io`）で公開している。mysqldance も同じ形にするか、そもそもイメージが必要かを決める。必要なら、ブランチと `main` では `branch.yml` / `main.yml` のように `goreleaser build --snapshot` の成果物からイメージを作って push し、タグではリリースと同時に push する。
+- 確定した仕様:
+  - 結論: イメージは公開する（`docker run` で CLI を使え、`docker-entrypoint-initdb.d` 向けの出力を作る用途に合う）。
+  - 名前は `ghcr.io/wtnb75/mysqldance`。ベースは `gcr.io/distroless/static:nonroot`（CA 証明書入り・シェルなし。静的バイナリなので足りる）。goreleaser の `dockers_v2` で linux/amd64・linux/arm64 を作る。
+  - push は `main` とタグのみ。`main` は `:main`、タグは `:<version>` と `:latest`（プレリリースには `:latest` を付けない）。ブランチでは push せず、イメージのビルドだけ確認する。
+  - 認証は `GITHUB_TOKEN`（`packages: write`）。`main` の公開は、OSS 版の goreleaser に `--nightly` が無いため、`goreleaser release --snapshot` が作るアーキテクチャ別のイメージに `:main-<arch>` を付けて push し、`docker buildx imagetools create` で `:main` にまとめる（`image.yml`、`branch.yml` と `main.yml` から呼ぶ再利用 workflow）。
 - 受け入れ条件:
-  - [ ] イメージが必要かどうかを決めて、この項目に結論を書く（不要なら削除する）
+  - [x] イメージが必要かどうかを決めて、この項目に結論を書く（不要なら削除する）
   - [ ] 必要な場合、マルチアーキテクチャのイメージが `ghcr.io` に出る
+  - [ ] ブランチへのプッシュで、イメージのビルドが確認される（push はしない）
+  - [ ] README にイメージの使い方を書く
 
 ## B-029 [todo|P3] カバレッジを GitHub Pages で公開する
 - 依存: B-025
