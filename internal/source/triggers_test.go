@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -31,8 +32,16 @@ func TestTriggers(t *testing.T) {
 	if want := "a.m_del b.z_first b.a_second"; strings.Join(names, " ") != want {
 		t.Fatalf("triggers = %q, want %q", strings.Join(names, " "), want)
 	}
+	old := isMySQL57(t, conn)
 	for _, tr := range got {
-		if !strings.HasPrefix(tr.Create, "CREATE ") || !strings.Contains(tr.Create, "TRIGGER `"+tr.Name+"`") {
+		// MySQL 5.7 returns the statement as it was written, so the name is not
+		// quoted there; 8.x quotes it.
+		quote := "`"
+		if old {
+			quote = "`?"
+		}
+		named := regexp.MustCompile("TRIGGER " + quote + regexp.QuoteMeta(tr.Name) + quote + `\s`)
+		if !strings.HasPrefix(tr.Create, "CREATE ") || !named.MatchString(tr.Create) {
 			t.Errorf("trigger %s Create = %q", tr.Name, tr.Create)
 		}
 		// Names in the dumped database stay unqualified so the dump can be
