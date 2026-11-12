@@ -6,11 +6,12 @@ import (
 	"testing"
 
 	"mysqldance/internal/datafile"
+	"mysqldance/internal/naming"
 	"mysqldance/internal/writer"
 )
 
 func TestDataFileNamesRejectsNoFile(t *testing.T) {
-	_, err := dataFileNames("d", "t", 0)
+	_, err := dataFileNames(naming.NewPlan("d", []string{"t"}), "t", 0)
 	if err == nil || !strings.Contains(err.Error(), `"t"`) {
 		t.Fatalf("dataFileNames = %v, want an error naming table t", err)
 	}

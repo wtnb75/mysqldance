@@ -1080,18 +1080,60 @@ func TestOddNamesAndCaseCollision(t *testing.T) {
 		}
 	})
 
-	t.Run("file name too long", func(t *testing.T) {
+	t.Run("file name too long is shortened", func(t *testing.T) {
 		db := uniqueName(t)
 		e.createDB(t, db)
 		long := strings.Repeat("あ", 30)
-		e.exec(t, "CREATE TABLE ok (id INT)", "CREATE TABLE "+sqlvalue.QuoteIdent(long)+" (id INT)")
+		e.exec(t, "CREATE TABLE ok (id INT)", "CREATE TABLE "+sqlvalue.QuoteIdent(long)+" (id INT)",
+			"INSERT INTO "+sqlvalue.QuoteIdent(long)+" VALUES (1)")
 		dir := t.TempDir()
-		err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir})
-		if err == nil || !strings.Contains(err.Error(), long) || !strings.Contains(err.Error(), "255") {
-			t.Fatalf("Run = %v, want a 255-byte file name error naming the table", err)
+		log := e.dump(t, dir, db)
+		files := sqlFiles(t, dir)
+		if len(files) != 3 { // schema, ok, long
+			t.Fatalf("files = %q, want 3", files)
 		}
-		if got := readFiles(t, dir); len(got) != 0 {
-			t.Errorf("files written despite the error: %q", got)
+		want := naming.DataFile(db, long)
+		if _, ok := readFiles(t, dir)[want]; !ok || len(want) > 255 {
+			t.Errorf("shortened data file %q (%d bytes) not written; files = %q", want, len(want), files)
+		}
+		if !strings.Contains(log, naming.EscapeName(long)) || !strings.Contains(log, want[len(naming.EscapeName(db)+".10-data."):len(want)-len(".sql")]) {
+			t.Errorf("the warning does not name the original and the shortened name:\n%s", log)
+		}
+		// The name does not change between runs.
+		dir2 := t.TempDir()
+		e.dump(t, dir2, db)
+		if got := sqlFiles(t, dir2); strings.Join(got, "\n") != strings.Join(files, "\n") {
+			t.Errorf("file names differ between runs: %q vs %q", got, files)
+		}
+		e.roundTrip(t, dir, db)
+	})
+
+	t.Run("long database name keeps schema first", func(t *testing.T) {
+		db := strings.Repeat("い", 40) // 360 escaped bytes; MySQL itself caps the length at about 50 of these
+		e.createDB(t, db)
+		tbl := strings.Repeat("う", 30)
+		e.exec(t, "CREATE TABLE a (id INT PRIMARY KEY)", "INSERT INTO a VALUES (1)",
+			"CREATE TABLE "+sqlvalue.QuoteIdent(tbl)+" (id INT PRIMARY KEY, a_id INT, FOREIGN KEY (a_id) REFERENCES a (id))",
+			"INSERT INTO "+sqlvalue.QuoteIdent(tbl)+" VALUES (1, 1)")
+		dir := t.TempDir()
+		e.dump(t, dir, db)
+		files := sqlFiles(t, dir)
+		if len(files) < 3 {
+			t.Fatalf("files = %q", files)
+		}
+		for _, f := range files {
+			if len(f) > 255 {
+				t.Errorf("%d bytes: %s", len(f), f)
+			}
+		}
+		if files[0] != naming.SchemaFile(db) {
+			t.Errorf("the schema file is not first in %q", files)
+		}
+		e.roundTrip(t, dir, db)
+		// A second run replaces the files and leaves no stale one behind.
+		e.dump(t, dir, db)
+		if got := sqlFiles(t, dir); strings.Join(got, "\n") != strings.Join(files, "\n") {
+			t.Errorf("files after a second run = %q, want %q", got, files)
 		}
 	})
 }

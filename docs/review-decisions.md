@@ -936,3 +936,24 @@
 - 却下の理由: 確認済み。`pgCells` は先頭で `SET search_path` を設定する（postgres_test.go の pgCells）。統合テストは MySQL 8.0 と 8.4 の両方で、PostgreSQL 17 に対して通った（`task test:integration`）。
 - 初出: B-097
 - 再出: 0
+
+## R-129 `naming.DataFile` などの単独関数は、表の一覧を知らないので実行時と違う名前を返しうる
+- 対象: internal/naming/naming.go の SchemaFile / TriggersFile / ConstraintsFile / DataFile / DataFileParts
+- 指摘: 別の表が長いと実行では DB 部分が短縮されるが、1 表だけの `Plan` を作るこれらの関数は短縮していない名前を返す。
+- 却下の理由: 本番のコードはこれらを呼ばない（`internal/dump` は一覧から作った `Plan` だけを使う）。使うのはテストで、上限以内の短い名前だけを渡している。上限を超える名前は `Plan` を直接使う（`plan_test.go`）。失敗するシナリオが本番に無い。
+- 初出: B-101
+- 再出: 0
+
+## R-130 短縮前の仮の名前（1 ファイルの名前）も `seen` に登録されるので、分割された表で大文字小文字の衝突を誤検出しうる
+- 対象: internal/dump/dump.go の dumpDB（`claim(seen, dataNames[i], ...)`）
+- 指摘: 分割された表では書かれない 1 ファイルの名前を `claim` するので、別 DB の同じ小文字の名前と衝突して誤ってエラーになる。
+- 却下の理由: B-101 より前からの設計（仮の名前を先に登録し、パート名は後から登録する）で、この項目の変更ではない。短縮した名前は 16 桁のハッシュを含むので、実際に別の名前と小文字まで一致することは現実には起きない。誤検出は安全側（余計なエラー）で、データは壊れない。
+- 初出: B-101
+- 再出: 0
+
+## R-131 `TableComponent` が呼ぶたびにエスケープと SHA-256 をやり直す
+- 対象: internal/naming/plan.go の TableComponent
+- 指摘: 同じ表に対して `TableShortened`・`DataFile`・警告で何度も計算するので、`NewPlan` で 1 回にまとめるべき。
+- 却下の理由: 好みの問題。1 表あたり数回、短い文字列の SHA-256 で、実行時間は DB の読み出しに比べて無視できる。キャッシュを足すと `Plan` が状態を持ち、並列の `writeTable`（複数の goroutine が同じ `Plan` を読む）で排他が要る。
+- 初出: B-101
+- 再出: 0

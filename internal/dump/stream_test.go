@@ -77,7 +77,7 @@ func TestWriteTableReadFailureLeavesNothing(t *testing.T) {
 			dir := t.TempDir()
 			opt := Options{OutDir: dir, Writer: writer.NewMySQL(datafile.Options{RowsPerFile: rowsPerFile})}
 			st := &stage{dir: dir}
-			_, err := writeTable(context.Background(), opt, fakeRows{n: 500, failAt: 300, err: boom}, "d", streamTable, st)
+			_, err := writeTable(context.Background(), opt, fakeRows{n: 500, failAt: 300, err: boom}, naming.NewPlan("d", []string{"t"}), "d", streamTable, st)
 			if !errors.Is(err, boom) || !strings.Contains(err.Error(), `table "t"`) {
 				t.Fatalf("err = %v, want the read error worded with the table", err)
 			}
@@ -102,7 +102,7 @@ func TestWriteTableNamesFilesAfterTheirCount(t *testing.T) {
 		dir := t.TempDir()
 		opt := Options{OutDir: dir, Writer: writer.NewMySQL(datafile.Options{RowsPerFile: c.rowsPerFile})}
 		st := &stage{dir: dir}
-		names, err := writeTable(context.Background(), opt, fakeRows{n: 1000}, "d", streamTable, st)
+		names, err := writeTable(context.Background(), opt, fakeRows{n: 1000}, naming.NewPlan("d", []string{"t"}), "d", streamTable, st)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -158,7 +158,7 @@ func TestWriteTableMemoryDoesNotGrowWithRows(t *testing.T) {
 		}
 		peak = max(peak, m.HeapAlloc)
 	}
-	if _, err := writeTable(context.Background(), opt, fakeRows{n: rows, each: sample}, "d", streamTable, st); err != nil {
+	if _, err := writeTable(context.Background(), opt, fakeRows{n: rows, each: sample}, naming.NewPlan("d", []string{"t"}), "d", streamTable, st); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.discard(); err != nil {
