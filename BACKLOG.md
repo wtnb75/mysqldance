@@ -1,12 +1,5 @@
 # Backlog
 
-## B-028 [todo|P3] コンテナイメージを GitHub Container Registry に公開する
-- 依存: B-027
-- 概要: `mcprt` は `Dockerfile` と goreleaser の `dockers_v2`（linux/amd64、linux/arm64、`ghcr.io`）で公開している。mysqldance も同じ形にするか、そもそもイメージが必要かを決める。必要なら、ブランチと `main` では `branch.yml` / `main.yml` のように `goreleaser build --snapshot` の成果物からイメージを作って push し、タグではリリースと同時に push する。
-- 受け入れ条件:
-  - [ ] イメージが必要かどうかを決めて、この項目に結論を書く（不要なら削除する）
-  - [ ] 必要な場合、マルチアーキテクチャのイメージが `ghcr.io` に出る
-
 ## B-029 [todo|P3] カバレッジを GitHub Pages で公開する
 - 依存: B-025
 - 概要: `mcprt` の `main.yml` のように、`gotest` の `html-output-dir` に出した HTML を `wtnb75/actions/merge-pages@v1` でまとめ、`actions/deploy-pages` で `main` へのプッシュのたびに公開する。Pages の有効化はリポジトリの設定で行う。
@@ -331,6 +324,21 @@
   - [ ] `--connect-timeout` と README の記述が、全ての接続に効くことに合っている
 
 # Done
+
+## B-028 [done|P3] コンテナイメージを GitHub Container Registry に公開する
+- 依存: B-027
+- 概要: `mcprt` は `Dockerfile` と goreleaser の `dockers_v2`（linux/amd64、linux/arm64、`ghcr.io`）で公開している。mysqldance も同じ形にするか、そもそもイメージが必要かを決める。必要なら、ブランチと `main` では `branch.yml` / `main.yml` のように `goreleaser build --snapshot` の成果物からイメージを作って push し、タグではリリースと同時に push する。
+- 確定した仕様:
+  - 結論: イメージは公開する（`docker run` で CLI を使え、`docker-entrypoint-initdb.d` 向けの出力を作る用途に合う）。
+  - 名前は `ghcr.io/wtnb75/mysqldance`。ベースは `gcr.io/distroless/static:nonroot`（CA 証明書入り・シェルなし。静的バイナリなので足りる）。goreleaser の `dockers_v2` で linux/amd64・linux/arm64 を作る。
+  - push は `main` とタグのみ。`main` は `:main`、タグは `:<version>` と `:latest`（プレリリースには `:latest` を付けない）。ブランチでは push せず、イメージのビルドだけ確認する。
+  - 認証は `GITHUB_TOKEN`（`packages: write`）。`main` の公開は、OSS 版の goreleaser に `--nightly` が無いため、`goreleaser release --snapshot` が作るアーキテクチャ別のイメージに `:main-<arch>` を付けて push し、`docker buildx imagetools create` で `:main` にまとめる（`image.yml`、`branch.yml` と `main.yml` から呼ぶ再利用 workflow）。
+- 受け入れ条件:
+  - [x] イメージが必要かどうかを決めて、この項目に結論を書く（不要なら削除する）
+  - [x] 必要な場合、マルチアーキテクチャのイメージが `ghcr.io` に出る
+  - [x] ブランチへのプッシュで、イメージのビルドが確認される（push はしない）
+  - [x] README にイメージの使い方を書く
+- 結果: `Dockerfile`（distroless/static:nonroot）、`.goreleaser.yaml` の `dockers_v2`、再利用 workflow `image.yml` を追加した。このブランチから一時的に `:b028-test` を push し、マニフェストに linux/amd64 と linux/arm64 が入ること、pull して `--version` が動くことを確かめた（`main` 用の経路）。**実際の `:main` と、タグ（`:<version>` / `:latest`）の push は、マージ時点では GitHub 上で動かしていない**。最初の `main` への push と最初のタグで確かめる。
 
 ## B-024 [done|P3] パスワードファイルのパーミッションを検査する
 - 概要: `--password-file` はパーミッションを見ずに読む。他のユーザーが読めるファイルなら警告を出す。環境変数 `MYSQL_PWD` は、同じホストの他のプロセスから見える場合があることを README に書く。

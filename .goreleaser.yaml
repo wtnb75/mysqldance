@@ -37,6 +37,23 @@ archives:
 checksum:
   name_template: checksums.txt
 
+dockers_v2:
+  - id: default
+    ids:
+      - mysqldance
+    dockerfile: Dockerfile
+    images:
+      - ghcr.io/wtnb75/mysqldance
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    tags:
+      # Only tag releases are published by GoReleaser. :main is pushed by
+      # main.yml from a snapshot build. Empty tags are skipped, so a
+      # prerelease gets no :latest.
+      - '{{ .Version }}'
+      - '{{ if not .Prerelease }}latest{{ end }}'
+
 snapshot:
   version_template: "{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}"
 

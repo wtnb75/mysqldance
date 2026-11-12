@@ -1,0 +1,56 @@
+name: image
+
+# Builds the container image from a GoReleaser snapshot (see dockers_v2 in
+# .goreleaser.yaml) and checks that it runs. With `push: true` it also publishes
+# the image to ghcr.io as :main. Tag releases are published by tag.yml instead.
+on:
+  workflow_call:
+    inputs:
+      push:
+        description: Push the image to ghcr.io as :main
+        type: boolean
+        default: false
+
+# No `permissions` here: the job inherits the caller's token. branch.yml grants
+# contents: read only (so it cannot push); main.yml adds packages: write.
+env:
+  # Must match dockers_v2.images in .goreleaser.yaml.
+  IMAGE: ghcr.io/wtnb75/mysqldance
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: go.mod
+        cache: true
+    - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+      with:
+        distribution: goreleaser
+        version: '2.17.0'
+        # A snapshot builds one image per architecture locally and pushes nothing.
+        args: release --snapshot --clean
+    - name: Find the snapshot image tags
+      # The version tag always exists; :latest is absent when HEAD is on a prerelease tag.
+      run: echo "VERSION=$(jq -r .version dist/metadata.json)" >> "$GITHUB_ENV"
+    - name: Smoke test
+      run: docker run --rm "$IMAGE:$VERSION-amd64" --version
+    - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+      if: inputs.push && github.ref == 'refs/heads/main'
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Push :main
+      if: inputs.push && github.ref == 'refs/heads/main'
+      run: |
+        for arch in amd64 arm64; do
+          docker tag "$IMAGE:$VERSION-$arch" "$IMAGE:main-$arch"
+          docker push "$IMAGE:main-$arch"
+        done
+        docker buildx imagetools create -t "$IMAGE:main" "$IMAGE:main-amd64" "$IMAGE:main-arm64"

@@ -75,7 +75,24 @@ go build ./cmd/mysqldance
 
 To build release-style binaries for every supported OS and architecture (linux, darwin and windows on amd64 and arm64) into `dist/`, run `task snapshot` (requires [GoReleaser](https://goreleaser.com)).
 
-Pushing a tag that starts with `v` (for example `v1.0.0`) runs the `tag` workflow, which publishes a GitHub Release with the archives, `checksums.txt` and a changelog.
+Pushing a tag that starts with `v` (for example `v1.0.0`) runs the `tag` workflow, which publishes a GitHub Release with the archives, `checksums.txt` and a changelog, and pushes the container image (below).
+
+### Container image
+
+A multi-architecture image (linux/amd64 and linux/arm64) is published to `ghcr.io/wtnb75/mysqldance`. It is built on `gcr.io/distroless/static:nonroot`, so it has no shell and runs as a non-root user; the entrypoint is `mysqldance`.
+
+| Tag | Content |
+| --- | --- |
+| `<version>` (for example `1.0.0`) | The release with that tag |
+| `latest` | The newest release that is not a prerelease |
+| `main` | The latest commit on `main` (unreleased) |
+
+```sh
+docker run --rm --add-host=host.docker.internal:host-gateway -e MYSQL_PWD -v ./dump:/dump ghcr.io/wtnb75/mysqldance:latest \
+  -h host.docker.internal -u root -o /dump mydb
+```
+
+The container runs as a non-root user (uid 65532), so the output directory you mount must be writable by it. Use `--network host` or any address the container can resolve to reach the server. Pushes to other branches build the image and run `--version` in CI but do not publish it.
 
 ## Usage
 
