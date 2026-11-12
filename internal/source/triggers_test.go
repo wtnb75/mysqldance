@@ -8,6 +8,7 @@ import (
 
 func TestTriggers(t *testing.T) {
 	cfg, db, conn := testDB(t)
+	skipOnMySQL56(t, conn, "several triggers for one event, which this fixture has")
 	mustExec(t, conn,
 		"CREATE TABLE a (id INT PRIMARY KEY, x INT)",
 		"CREATE TABLE b (id INT PRIMARY KEY, x INT)",

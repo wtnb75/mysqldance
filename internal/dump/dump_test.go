@@ -419,12 +419,14 @@ func TestRoundTrip(t *testing.T) {
 		"CREATE VIEW a_top AS SELECT id FROM z_base WHERE id > 0",
 	)
 	// Generated and INVISIBLE columns need an explicit column list. MySQL 5.7
-	// has no INVISIBLE columns.
-	if e.isMySQL57(t) {
+	// has no INVISIBLE columns, and MySQL 5.6 has no generated ones either.
+	switch {
+	case e.isMySQL56(t):
+	case e.isMySQL57(t):
 		e.exec(t,
 			"CREATE TABLE gen (id INT PRIMARY KEY, x INT, y INT AS (x * 2) STORED)",
 			"INSERT INTO gen (id, x) VALUES (1, 2), (2, NULL)")
-	} else {
+	default:
 		e.exec(t,
 			"CREATE TABLE gen (id INT PRIMARY KEY, x INT, y INT AS (x * 2) STORED, z INT INVISIBLE)",
 			"INSERT INTO gen (id, x, z) VALUES (1, 2, 3), (2, NULL, NULL)")
@@ -1145,10 +1147,15 @@ func TestColumnPrivilegesRefused(t *testing.T) {
 		"visible missing":    {[]string{"SELECT (id, a, g) ON " + sqlvalue.QuoteIdent(db) + ".cp", showView}, "`s`"},
 		"column grants only": {[]string{"SELECT (id, a, g, s) ON " + sqlvalue.QuoteIdent(db) + ".cp"}, ""},
 	}
-	if e.isMySQL57(t) {
-		// MySQL 5.7 has no INVISIBLE columns.
+	if e.isMySQL5(t) {
+		// MySQL 5.7 and 5.6 have no INVISIBLE columns, and 5.6 has no generated
+		// ones (g is a plain column there: the grants name it all the same).
+		g := "INT AS (a * 2) VIRTUAL"
+		if e.isMySQL56(t) {
+			g = "INT"
+		}
 		e.exec(t,
-			"CREATE TABLE cp (id INT PRIMARY KEY, a INT, g INT AS (a * 2) VIRTUAL, s INT)",
+			"CREATE TABLE cp (id INT PRIMARY KEY, a INT, g "+g+", s INT)",
 			"INSERT INTO cp (id, a, s) VALUES (1, 2, 4)",
 		)
 	} else {
@@ -1168,7 +1175,8 @@ func TestColumnPrivilegesRefused(t *testing.T) {
 				t.Skipf("cannot create a test user with this DSN: %v", err)
 			}
 			t.Cleanup(func() {
-				if _, err := e.admin.ExecContext(context.Background(), "DROP USER IF EXISTS "+account); err != nil {
+				// No IF EXISTS: MySQL 5.6 has none, and the account was created above.
+				if _, err := e.admin.ExecContext(context.Background(), "DROP USER "+account); err != nil {
 					t.Errorf("drop user %s: %v", account, err)
 				}
 			})

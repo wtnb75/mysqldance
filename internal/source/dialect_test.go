@@ -39,9 +39,42 @@ func TestDialectFor(t *testing.T) {
 			}
 		}
 	}
-	for _, v := range []string{"5.6.51", "5.5.62", "5", "5.8.0", "7.9.0", "garbage", ""} {
-		if _, err := dialectFor(v); err == nil {
+	for _, v := range []string{"5.5.62", "5.1.73", "5.0.96", "5", "5.8.0", "7.9.0", "garbage", ""} {
+		_, err := dialectFor(v)
+		if err == nil {
 			t.Errorf("dialectFor(%q) succeeded, want an error", v)
+			continue
+		}
+		if !strings.Contains(err.Error(), "MySQL 5.6 or later") {
+			t.Errorf("dialectFor(%q) error = %q, want it to say \"MySQL 5.6 or later\"", v, err)
+		}
+	}
+}
+
+// TestDialectForMySQL56 covers MySQL 5.6 (5.6.51 was checked): it reads as 5.7
+// does, with the same dialect and no branch of its own.
+func TestDialectForMySQL56(t *testing.T) {
+	want, err := dialectFor("5.7.44")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"5.6.51", "5.6.51-log", "5.6.40-0ubuntu0.14.04.1", "5.6"} {
+		d, err := dialectFor(v)
+		if err != nil {
+			t.Errorf("dialectFor(%q): %v", v, err)
+			continue
+		}
+		// Funcs cannot be compared with DeepEqual; the session settings (which
+		// must leave out show_create_table_verbosity, unknown to 5.6) and the
+		// view and default readers stand for the whole dialect.
+		if !slices.Equal(d.session, want.session) {
+			t.Errorf("dialectFor(%q).session = %q, want the 5.7 one %q", v, d.session, want.session)
+		}
+		if reflect.ValueOf(d.viewDeps).Pointer() != reflect.ValueOf(viewDefinitions).Pointer() {
+			t.Errorf("dialectFor(%q).viewDeps is not viewDefinitions (5.6 has no VIEW_TABLE_USAGE)", v)
+		}
+		if reflect.ValueOf(d.columnDefault).Pointer() != reflect.ValueOf(want.columnDefault).Pointer() {
+			t.Errorf("dialectFor(%q).columnDefault is not the 5.7 reader", v)
 		}
 	}
 }

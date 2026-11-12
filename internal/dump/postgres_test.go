@@ -142,6 +142,7 @@ func (e *env) dumpPostgres(t *testing.T, dir string, data datafile.Options, dbs 
 
 func postgresFixture(t *testing.T, e *env) string {
 	t.Helper()
+	e.skipOnMySQL56(t, "JSON type or generated columns, which this fixture has")
 	db := uniqueName(t)
 	e.createDB(t, db)
 	e.exec(t,

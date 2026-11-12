@@ -48,6 +48,7 @@ func (e *env) triggerDefs(t *testing.T, db string) []string {
 // those rows if they ran while the data is loaded.
 func (e *env) createTriggerFixture(t *testing.T, db string) {
 	t.Helper()
+	e.skipOnMySQL56(t, "several triggers for one event, which this fixture has")
 	e.createDB(t, db)
 	e.exec(t,
 		"CREATE TABLE items (id INT PRIMARY KEY, qty INT, note VARCHAR(40))",

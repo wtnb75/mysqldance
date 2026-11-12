@@ -111,6 +111,7 @@ func (a adminQuery) Query(q string, args ...any) (*sql.Rows, error) {
 
 func sqliteFixture(t *testing.T, e *env) string {
 	t.Helper()
+	e.skipOnMySQL56(t, "JSON type or generated columns, which this fixture has")
 	db := uniqueName(t)
 	e.createDB(t, db)
 	e.exec(t,

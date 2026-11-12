@@ -13,8 +13,8 @@ import (
 
 // dialect collects everything that depends on the kind and version of the
 // server: the catalog queries, the session settings, and how some of their
-// results are read. Support for another server (MariaDB) or version (5.7, which
-// lacks VIEW_TABLE_USAGE and INVISIBLE columns) is added here, in one place;
+// results are read. Support for another server (MariaDB) or version (5.7 and 5.6, which
+// lack VIEW_TABLE_USAGE and INVISIBLE columns) is added here, in one place;
 // no other code branches on the server.
 //
 // Each query takes the target schema name as its parameter(s) and returns
@@ -69,7 +69,7 @@ var (
 		"SET NAMES utf8mb4",
 		"SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ",
 	}
-	// The servers without show_create_table_verbosity (MariaDB, MySQL 5.7).
+	// The servers without show_create_table_verbosity (MariaDB, MySQL 5.7 and 5.6).
 	sessionNoVerbosity = slices.Concat(sessionPrelude, sessionPostlude)
 )
 
@@ -117,8 +117,9 @@ var mariadb = func() dialect {
 	return d
 }()
 
-// mysql57 is MySQL 5.7 (checked on 5.7.44). The catalog queries of mysql8 work
-// unchanged; what differs is the lack of VIEW_TABLE_USAGE, of
+// mysql57 is MySQL 5.7 (checked on 5.7.44) and MySQL 5.6 (checked on 5.6.51;
+// the queries and their results are the same). The catalog queries of mysql8
+// work unchanged; what differs is the lack of VIEW_TABLE_USAGE, of
 // show_create_table_verbosity before 5.7.22, and of DEFAULT_GENERATED in EXTRA.
 // SHOW CREATE output keeps its 5.7 form (int(11), latin1): a dump of 5.7 is
 // for restoring into 5.7 or 8.x as it is.
@@ -134,8 +135,9 @@ var mysql57 = func() dialect {
 }()
 
 // dialectFor picks the dialect for a server reporting SELECT VERSION().
-// MySQL 5.7 (5.7.44 was checked), MySQL 8.0 and later, and MariaDB are
-// supported; MariaDB is not rejected by version (10.11 and 11.4 were checked).
+// MySQL 5.6 (5.6.51 was checked), MySQL 5.7 (5.7.44 was checked), MySQL 8.0 and
+// later, and MariaDB are supported; MariaDB is not rejected by version (10.11
+// and 11.4 were checked).
 func dialectFor(version string) (dialect, error) {
 	if strings.Contains(strings.ToLower(version), "mariadb") {
 		return mariadb, nil
@@ -146,10 +148,11 @@ func dialectFor(version string) (dialect, error) {
 	switch {
 	case n >= 1 && major >= 8:
 		return mysql8, nil
-	case n == 2 && major == 5 && minor == 7:
+	// 5.6 reads as 5.7 does (the design document, section 11, B-079).
+	case n == 2 && major == 5 && (minor == 6 || minor == 7):
 		return mysql57, nil
 	}
-	return dialect{}, fmt.Errorf("unsupported server version %q: MySQL 5.7 or later (or MariaDB) is required", version)
+	return dialect{}, fmt.Errorf("unsupported server version %q: MySQL 5.6 or later (or MariaDB) is required", version)
 }
 
 // viewTableUsage reads the references of views from VIEW_TABLE_USAGE (8.0.13+).

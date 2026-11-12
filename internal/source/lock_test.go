@@ -120,7 +120,7 @@ func TestLockTimeout(t *testing.T) {
 
 			// An account of its own, so that its sessions can be told from the ones
 			// other tests open on the same server.
-			user := fmt.Sprintf("mdance_%s_%d", strings.TrimPrefix(db, "mysqldance_test_"), jobs)
+			user := testUser(fmt.Sprintf("mdance%d_", jobs), db)
 			mustExec(t, conn,
 				"CREATE USER '"+user+"'@'%' IDENTIFIED BY 'pw'",
 				"GRANT SELECT ON `"+db+"`.* TO '"+user+"'@'%'",
@@ -269,7 +269,7 @@ func TestNoLockOption(t *testing.T) {
 func TestLockNeedsReloadPrivilege(t *testing.T) {
 	cfg, db, conn := testDB(t)
 	mustExec(t, conn, "CREATE TABLE m (id INT PRIMARY KEY) ENGINE=MyISAM")
-	user := "mdance_" + strings.TrimPrefix(db, "mysqldance_test_")
+	user := testUser("mdance_", db)
 	mustExec(t, conn,
 		"CREATE USER '"+user+"'@'%' IDENTIFIED BY 'pw'",
 		"GRANT SELECT ON `"+db+"`.* TO '"+user+"'@'%'",
