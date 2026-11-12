@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -314,6 +315,48 @@ func TestParseArgsPasswordFile(t *testing.T) {
 	// The file wins over MYSQL_PWD; only the trailing line break is removed.
 	if got.Source.Password != "file pw" {
 		t.Errorf("Password = %q, want %q", got.Source.Password, "file pw")
+	}
+}
+
+func TestParseArgsPasswordFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mode bits carry no access rules on windows")
+	}
+	for _, tt := range []struct {
+		mode os.FileMode
+		warn bool
+	}{
+		{0o600, false},
+		{0o400, false},
+		{0o640, true},
+		{0o604, true},
+		{0o644, true},
+	} {
+		path := filepath.Join(t.TempDir(), "pw")
+		if err := os.WriteFile(path, []byte("topsecret\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, tt.mode); err != nil {
+			t.Fatal(err)
+		}
+		var stderr bytes.Buffer
+		got, err := parseArgsTo([]string{"--password-file", path, "-o", "out", "d"}, noEnv, &stderr)
+		if err != nil {
+			t.Fatalf("mode %o: parseArgs: %v", tt.mode, err)
+		}
+		if got.Source.Password != "topsecret" {
+			t.Errorf("mode %o: Password = %q, the run must go on", tt.mode, got.Source.Password)
+		}
+		out := stderr.String()
+		if has := strings.Contains(out, "level=WARN"); has != tt.warn {
+			t.Errorf("mode %o: warned = %v, want %v; stderr: %q", tt.mode, has, tt.warn, out)
+		}
+		if tt.warn && !strings.Contains(out, path) {
+			t.Errorf("mode %o: warning does not name the file: %q", tt.mode, out)
+		}
+		if strings.Contains(out, "topsecret") {
+			t.Errorf("mode %o: the password is in the log: %q", tt.mode, out)
+		}
 	}
 }
 

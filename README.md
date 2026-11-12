@@ -91,7 +91,7 @@ Put flags **before** the database names (Go's standard `flag` package stops pars
 | `-P`, `--port` | `3306` | Port to connect to |
 | `-u`, `--user` | (none) | User name |
 | `--socket` | (none) | Unix socket. Takes precedence over host and port |
-| `--password-file` | (none) | File containing the password. One trailing newline is stripped |
+| `--password-file` | (none) | File containing the password. One trailing newline is stripped. A warning is logged if group or others can read it |
 | `--ssl-mode` | `preferred` | TLS mode: `disabled`, `preferred`, `required`, `verify-ca` or `verify-identity` (see "TLS" below) |
 | `--ssl-ca` | (none) | PEM file of CA certificates used to verify the server. Only with `required`, `verify-ca` or `verify-identity`; required by `verify-ca` |
 | `-o`, `--output` | (required) | Output directory. Created if missing |
@@ -112,6 +112,7 @@ Put flags **before** the database names (Go's standard `flag` package stops pars
 | positional | (at least one required) | Names of the databases to dump |
 
 - The password is never accepted on the command line. If `--password-file` is given its contents are used; otherwise the `MYSQL_PWD` environment variable is used.
+- Prefer `--password-file` for anything but a throwaway run. On some systems the environment of a process can be read by other processes of the same host (for example through `/proc/<pid>/environ` or `ps e`), and it is inherited by every child process of the shell that exported it. A password file is not, and mysqldance warns when one is readable by group or others (see "Warnings").
 - The exit code is 0 on success and 1 on any error (including usage errors). Errors and warnings go to standard error.
 - Naming a system database (`information_schema`, `mysql`, `performance_schema`, `sys`) or a database that does not exist is an error. Every name is checked right after connecting, before the output directory is touched and before any lock is taken, so one bad name among several stops the run with nothing created, written or deleted.
 
@@ -312,6 +313,8 @@ All connections must show the same point in time, but each starts its own snapsh
 ### Warnings
 
 Every warning is a `WARN` record of the log (see `--log-level` and `--log-format`) on standard error; nothing is written to standard output. The record carries a `database` attribute, and a warning about one trigger also `table` and `trigger`. For example, in the text format: `time=... level=WARN msg="table `m` uses the MyISAM engine; ..." database=shop`. The warnings are the same between runs, in the same order; the time of a record (and the `duration` of the `INFO` records below) is what differs.
+
+A `--password-file` that group or others can read (any of the permission bits `0044`) also gets a warning, whose message names the file and its mode (never the contents); the run goes on. Restrict the file, for example with `chmod 600`. The mode is not checked on Windows, where it carries no access rules. The warning is a plain `WARN` record without a `database` attribute, written before the connection is made.
 
 ### How the snapshot is made
 
