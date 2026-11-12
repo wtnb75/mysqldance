@@ -139,6 +139,115 @@ func TestPostgresConstraints(t *testing.T) {
 	}
 }
 
+// longFKSchema renames the table child's output foreign key (fk_parent) and, if
+// other is set, its foreign key into another database (fk_other, never output).
+func longFKSchema(fk, other string) Schema {
+	s := pgSchema()
+	d := s.Defs["child"]
+	d.ForeignKeys[0].Name = fk
+	if other != "" {
+		d.ForeignKeys[1].Name = other
+	}
+	s.Defs["child"] = d
+	return s
+}
+
+func writeConstraintsText(t *testing.T, s Schema) (string, []string, error) {
+	t.Helper()
+	var warns []string
+	s.Warn = func(m string) { warns = append(warns, m) }
+	var b bytes.Buffer
+	err := NewPostgres(datafile.Options{}).WriteConstraints(&b, s)
+	return b.String(), warns, err
+}
+
+// MySQL allows 64 characters in a constraint name, PostgreSQL 63 bytes. The name
+// is shortened by the rule of the index names, and the warning names both.
+func TestPostgresShortensLongForeignKeyName(t *testing.T) {
+	long := strings.Repeat("f", 64)
+	short := pgShortName(long)
+	got, warns, err := writeConstraintsText(t, longFKSchema(long, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `ADD CONSTRAINT ` + sqlvalue.QuotePGIdent(short) + ` FOREIGN KEY`; !strings.Contains(got, want) {
+		t.Errorf("no %q in:\n%s", want, got)
+	}
+	if strings.Contains(got, long) {
+		t.Errorf("the full name is still in the output:\n%s", got)
+	}
+	if want := "foreign key `" + long + "` is named `" + short + "` in PostgreSQL"; !containsAny(warns, want) {
+		t.Errorf("no warning contains %q; got %q", want, warns)
+	}
+	// It is the index names' rule (pgShortName), cut to the limit.
+	if len(short) != pgMaxIdent || !strings.HasPrefix(short, strings.Repeat("f", 54)+"_") {
+		t.Errorf("short = %q (%d bytes)", short, len(short))
+	}
+}
+
+// A name within the limit is not changed, and says nothing.
+func TestPostgresKeepsForeignKeyNameWithinLimit(t *testing.T) {
+	name := strings.Repeat("f", pgMaxIdent)
+	got, warns, err := writeConstraintsText(t, longFKSchema(name, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `ADD CONSTRAINT "`+name+`" FOREIGN KEY`) {
+		t.Errorf("the name was changed:\n%s", got)
+	}
+	if containsAny(warns, "is named") {
+		t.Errorf("a name within the limit was reported: %q", warns)
+	}
+}
+
+// A foreign key that is not output has no PostgreSQL name, so its length is
+// not looked at.
+func TestPostgresLongNameOfSkippedForeignKeyIsNotAnError(t *testing.T) {
+	long := strings.Repeat("o", 64)
+	got, warns, err := writeConstraintsText(t, longFKSchema("fk_parent", long))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, long) || containsAny(warns, "is named") {
+		t.Errorf("a foreign key that is not output was shortened:\n%s\n%q", got, warns)
+	}
+	if !containsAny(warns, "foreign key `"+long+"` references another database") {
+		t.Errorf("no warning about the skipped foreign key: %q", warns)
+	}
+}
+
+// Within a table, a shortened name that is another foreign key's name is an
+// error. The error names the name before the cut, since a failed run prints no
+// warnings.
+func TestPostgresShortenedForeignKeyCollisionIsAnError(t *testing.T) {
+	long := strings.Repeat("f", 64)
+	s := longFKSchema(long, "")
+	d := s.Defs["child"]
+	// The second key is output too: it uses the same columns as the first.
+	second := d.ForeignKeys[0]
+	second.Name = pgShortName(long)
+	d.ForeignKeys = append(d.ForeignKeys, second)
+	s.Defs["child"] = d
+	_, _, err := writeConstraintsText(t, s)
+	if err == nil {
+		t.Fatal("WriteConstraints succeeded")
+	}
+	if !strings.Contains(err.Error(), long) {
+		t.Errorf("the error does not name the full name: %v", err)
+	}
+}
+
+// The primary key is a constraint of the table too, named table__PRIMARY.
+func TestPostgresForeignKeyNamedLikeThePrimaryKeyIsAnError(t *testing.T) {
+	_, _, err := writeConstraintsText(t, longFKSchema("child__PRIMARY", ""))
+	if err == nil {
+		t.Fatal("WriteConstraints succeeded")
+	}
+	if !strings.Contains(err.Error(), "child__PRIMARY") {
+		t.Errorf("the error does not name the constraint: %v", err)
+	}
+}
+
 // With no foreign key the constraints file is still written (the header only),
 // so a dump always has the same set of files.
 func TestPostgresConstraintsWithoutForeignKeys(t *testing.T) {

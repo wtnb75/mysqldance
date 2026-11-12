@@ -270,6 +270,55 @@ func TestPostgresRoundTrip(t *testing.T) {
 	}
 }
 
+// MySQL allows 64 characters in a foreign key name; PostgreSQL allows 63 bytes.
+// Such a key is restored under a shortened name, the same name every run, and
+// it still holds.
+func TestPostgresLongForeignKeyName(t *testing.T) {
+	e := newEnv(t)
+	pg := newPGEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	long := strings.Repeat("fk", 32) // 64 characters, the most MySQL takes
+	e.exec(t,
+		"CREATE TABLE parent (id INT NOT NULL, PRIMARY KEY (id))",
+		"CREATE TABLE child (id INT NOT NULL, pid INT NOT NULL, PRIMARY KEY (id), CONSTRAINT `"+long+"` FOREIGN KEY (pid) REFERENCES parent (id))",
+		"INSERT INTO parent VALUES (1)",
+		"INSERT INTO child VALUES (1, 1)",
+	)
+	dir := t.TempDir()
+	log := e.dumpPostgres(t, dir, datafile.Options{}, db)
+	again := t.TempDir()
+	e.dumpPostgres(t, again, datafile.Options{}, db)
+	constraints := naming.ConstraintsFile(db)
+	a, errA := os.ReadFile(filepath.Join(dir, constraints))
+	b, errB := os.ReadFile(filepath.Join(again, constraints))
+	if errA != nil || errB != nil {
+		t.Fatal(errA, errB)
+	}
+	if !bytes.Equal(a, b) {
+		t.Error("two dumps of the same database differ")
+	}
+	if !strings.Contains(log, "foreign key `"+long+"` is named") {
+		t.Errorf("no warning about a shortened name:\n%s", log)
+	}
+
+	pg.restore(t, dir)
+	conn := pg.connect(t)
+	got := pgCells(t, conn, db, "SELECT conname::text FROM pg_constraint WHERE contype = 'f' AND connamespace = current_schema()::regnamespace")
+	if len(got) != 1 {
+		t.Fatalf("foreign keys = %q, want 1", got)
+	}
+	// Ends in a hash of the whole name (a name PostgreSQL cut itself would end
+	// in a piece of the name), within the limit, and starts like the original.
+	name := strings.Trim(got[0], `"`)
+	if len(name) > 63 || !regexp.MustCompile(`^(fk)+_[0-9a-f]{8}$`).MatchString(name) || name == long {
+		t.Errorf("foreign key name %q is not a shortened %q", name, long)
+	}
+	if _, err := conn.Exec(context.Background(), "INSERT INTO child (id, pid) VALUES (2, 999)"); err == nil {
+		t.Error("PostgreSQL accepted a row that breaks the shortened foreign key")
+	}
+}
+
 // MySQL allows 64 characters in a table name and in an index name; PostgreSQL
 // allows 63 bytes in table__index. Such an index is restored under a shortened
 // name, and the same name every run.
