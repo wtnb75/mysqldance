@@ -278,3 +278,168 @@ MySQL ドライバ・CLI ライブラリの選定、パッケージ構成、フ�
   - MySQL 以外のターゲット（SQLite、PostgreSQL）は本体が MySQL の構文なので出力せず、トリガーごとに警告する。
 - **出力のアトミック化**: 一時的な名前で書いてからリネームし、ダンプが途中で失敗しても出力先に不完全な DB が残らないようにする（MVP は失敗時に不完全になりうることを README に明記している）。
 - **差し替え可能なライタ**: 8 節は一部しか実現していない。型付きのレコード値は入った（B-033）が、ライタは MySQL 向けの `datafile` / `schemafile` だけ。他 DBMS 出力の前に、ライタのインターフェースを入れる（B-034）。
+- **読み出し元の検査機能**: 13 節に案を書いた（B-078。コードは変えていない）。実装は、案を見てから別項目にする。
+
+## 13. 読み出し元の検査機能の設計案（B-078）
+
+この節は**案**であり、コードは変えていない。接続先のサーバーを前もって調べ、「このオプションで読める」「この設定は要注意」を、ダンプを始める前に報告する機能（`mysqldance check`）の形を決める。
+
+### 13.1 位置づけ
+
+- 検査するのは**読み出し元だけ**。本ツールが接続できるのは読み出し元だけで、復元先には接続しない（13.8）。
+- ダンプが今エラーや警告にしていることを、**ダンプの前に、まとめて**示すのが主な価値である。ダンプは最初の 1 つで止まる（例: 権限のないビューが 3 つあっても 1 つ目で止まる）が、検査は全部を列挙する。
+- ダンプの動作は変えない。`check` は別のサブコマンドで、既存のコマンドライン（`mysqldance [flags] -o DIR DB...`）は変わらない。
+
+### 13.2 実機で確かめたこと
+
+確認日: 2026-11-12。`mysql:8.4`（8.4.13）、`mysql:5.7.44`、`mysql:5.6`（5.6.51）、`mariadb:10.11`（10.11.19）。5.6 と 5.7.44 は `--platform linux/amd64`（エミュレーション）。検査の問い合わせを `mysql` クライアントで流して確かめた。コードは変えていない。
+
+- **権限の読み方**:
+  - 8.4 で、ロール経由で `SELECT, RELOAD, SHOW VIEW` を持つユーザー（`SET DEFAULT ROLE` 済み）に対して、`SHOW GRANTS FOR CURRENT_USER()` は有効なロールの権限をまとめた行（`GRANT SELECT, RELOAD, SHOW VIEW ON *.* TO ...`）を返した。`information_schema.USER_PRIVILEGES` は、同じユーザーの行が `USAGE` だけで、**ロール経由の権限を含まない**。つまり `USER_PRIVILEGES` で `RELOAD` の有無を調べると、ロールで権限を持つアカウントを誤って「なし」と判定する。権限は `SHOW GRANTS FOR CURRENT_USER()` で読む。
+  - `USER_PRIVILEGES` は、8.4 では**他のユーザーの行も返す**（`GRANTEE` で自分に絞る必要がある）。
+  - `SHOW GRANTS` の書式は版で違う: 5.6 と 5.7.44 は `GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' ...`（単引用符）、8.4 と MariaDB は `` `root`@`%` ``（逆引用符）。5.6 と MariaDB の `IDENTIFIED BY PASSWORD '*...'`（ハッシュ）が行に入る。MariaDB は `GRANT PROXY ...` の行も返す。**行の全文をログに出してはならない**（ハッシュが入る）。権限名だけを取り出す。
+  - 列単位の権限は、`information_schema.COLUMN_PRIVILEGES`（8.4）と `SHOW GRANTS` の `GRANT SELECT (`id`) ON `probe`.`inno` ...` に出る。このとき `SHOW CREATE TABLE` は全列を出す一方で、`information_schema.COLUMNS` は権限のある列だけ（既存の `checkAllColumnsVisible` が使う差）。
+- **`FLUSH TABLES WITH READ LOCK`（FTWRL）の権限**: 8.4 で、`RELOAD` を持たず `FLUSH_TABLES`（動的権限）だけを持つユーザーで FTWRL が**通った**。`BACKUP_ADMIN` だけでは通らず、`Error 1227: Access denied; you need (at least one of) the RELOAD or FLUSH_TABLES privilege(s) for this operation` になった。現在のエラー文言（`source.go` の「requires the RELOAD privilege」）と README の「Required privilege: RELOAD」は `FLUSH_TABLES` を言っていない（8.0 は未確認）。FTWRL は他のセッションの書き込みを止めるので、**権限を調べるためにロックを取ってはならない**。権限は `SHOW GRANTS` から読む。
+- **`SHOW VIEW`**: 8.4 で、`SELECT` だけを持つユーザーは `information_schema.VIEWS.VIEW_DEFINITION` が空（長さ 0。`NULL` ではない）で、`SHOW CREATE VIEW` は `Error 1142: SHOW VIEW command denied` になる。既存の `viewDefinitions`（5.7 と MariaDB）は空の定義をエラーにする。8.x の `viewTableUsage` は定義を読まないので、**`SHOW CREATE VIEW` の段で初めて失敗する**。検査は全ビューに `SHOW CREATE VIEW` を実行して、失敗したビューを列挙する。
+- **サーバーの変数**（`@@GLOBAL.`。読めない変数は `Error 1193: Unknown system variable` になる）:
+
+  | 変数 | 8.4.13 | 5.7.44 | 5.6.51 | MariaDB 10.11.19 |
+  | --- | --- | --- | --- | --- |
+  | `show_create_table_verbosity` | あり（ダンプの `SET SESSION` が通る。グローバルの値は未確認） | あり（`0`） | **なし** | **なし** |
+  | `explicit_defaults_for_timestamp` | 未確認 | `0` | `0` | `1` |
+  | `lower_case_table_names` | 未確認 | `0` | `0` | `0` |
+  | `sql_mode`（既定） | 未確認 | 厳格（`NO_ZERO_DATE` など） | `NO_ENGINE_SUBSTITUTION` だけ | 厳格（`NO_ZERO_DATE` なし） |
+  | `character_set_server` | 未確認 | `latin1` | `latin1` | `utf8mb4` |
+  | `have_ssl` | **なし（`Unknown system variable`）** | `YES` | `DISABLED` | `DISABLED` |
+  | `tls_version` | `TLSv1.2,TLSv1.3` | `TLSv1,TLSv1.1,TLSv1.2` | **なし** | `TLSv1.2,TLSv1.3` |
+  | `require_secure_transport` | あり（`0`） | あり | **なし** | あり |
+
+  8.4 の `have_ssl` が無いので、「サーバーが TLS を持つか」は変数ではなく、**検査自身のセッションの `SHOW SESSION STATUS LIKE 'Ssl_version'` / `'Ssl_cipher'`** で判定する（TCP の 8.4 で `TLSv1.3` / `TLS_AES_128_GCM_SHA256`。Unix ソケットでは空）。
+- **値の検出**（`probe` DB に、ゼロ日付、NUL を含む文字列、`TINYINT(1)` の `2`、`TIME` の `838:59:59`、`latin1` の列に入れた UTF-8 のバイト列を持つ表を作って確かめた。8.4）:
+  - ゼロ日付: `d = '0000-00-00'` は、**厳格モードのセッションでは `Error 1525: Incorrect DATE value` で失敗する**。セッションを `sql_mode = ''` にすると通る（本ツールのダンプ接続は `sql_mode = ''` に固定している。10.5 節）。`d < '0001-01-01'` は厳格でも通る。`0000-00-10` のような月か日が 0 の値は `DAY(d) = 0` / `MONTH(d) = 0` で検出できた（2 行）。`DATETIME` も同じ（1 行）。
+  - NUL: `LOCATE(CHAR(0), col) > 0` で検出できた（1 行）。
+  - `TINYINT(1)` が 0 / 1 でない値: `col NOT IN (0, 1)` で検出できた（1 行）。
+  - `TIME`: PostgreSQL 向けの出力は `interval` にするので（`writer/postgres.go`）、MySQL の範囲（`-838:59:59` から `838:59:59`）は入る。**検査の対象にしない**。
+  - `latin1` の列: `s <> CONVERT(s USING ascii)` で、非 ASCII を含む行を数えられた（1 行）。`HEX(s)` は `E38182` で、**列の中のバイト列は UTF-8 のまま**である。UTF-8 かどうかの判定は B-081 の範囲（13.4 の C12）。
+
+### 13.3 コマンドの形
+
+```
+mysqldance check [接続フラグ] [--target mysql|sqlite|postgres] [--format table|json]
+                 [--no-scan] [--fail-on warn|error] [--no-lock] [--jobs N] DB [DB...]
+```
+
+- **接続フラグ**（`-h` `-P` `-u` `--socket` `--password-file` `--ssl-mode` `--ssl-ca`）、`--log-level`、`--log-format`、対象 DB は、ダンプと**同じ**。出力ディレクトリ（`-o`）は要らない。ファイルを作らない。
+- `--target`、`--no-lock`、`--jobs` は、**ダンプで使う予定のオプション**を渡すためにある。検査は、そのオプションでダンプしたときの結果を答える（例: `--jobs 4` で `RELOAD` がなければエラー。`--no-lock` で非 InnoDB があれば警告）。渡さなければダンプの既定と同じ（`--target mysql`、ロックあり、`--jobs 1`）。
+- 出力ディレクトリの検査（既存ファイルが通常のファイルか、ファイル名の長さと大文字小文字の衝突）は、`-o` が要るので、`check -o DIR` を渡したときだけ行う（C15）。
+- `--no-scan`: 値の検出（C11 と C12）をしない。表の全行を読むのでダンプと同程度の時間がかかる。既定は行う（前もって示すのがこの機能の目的）。
+
+### 13.4 検査する項目
+
+重さの印: **構造** = カタログの問い合わせだけ。**値** = 表の全行を読む。「共有」は 13.7 の、ダンプと判定のコードを共有する先。
+
+| ID | 何を調べるか | 見つかったとき（重さ。重大度） |
+| --- | --- | --- |
+| C01 版と方言 | `SELECT VERSION()` を `dialectFor` に渡す（ダンプと同じ関数）。方言（`mysql8` / `mysql57` / `mariadb`）と、確認した版かを報告する | 拒否される版: **error**（メッセージは `dialectFor` のもの。5.6 以前は B-095 と B-080 の後に変わる）。確認した版以外（5.7.44 以外の 5.7、5.6.51 以外の 5.6、10.11 と 11.4 以外の MariaDB）: **info**（「README の Compatibility で未確認」）。方言ごとの注意（5.7 の `int(11)` と `latin1`、MariaDB の照合順序）は **info** |
+| C02 TLS | 検査自身の接続の `Ssl_version` / `Ssl_cipher`（構造）と、`--ssl-mode` の要求。変数は読める版だけ読む: `have_ssl`（8.4 には無い）、`tls_version`（5.6 には無い）、`require_secure_transport` | `--ssl-mode preferred`（既定）で、サーバーが TLS を使えず**平文になった**: **warn**（「パスワードと全行が平文で流れた。`--ssl-mode required` を付けると失敗にできる」）。接続が TLS のハンドシェイクで失敗した: **error**（C02 の診断。13.5）。`tls_version` が TLS 1.2 を含まない（`TLSv1,TLSv1.1`）: **warn**（「本ツールの下限は TLS 1.2。`--ssl-mode disabled` では平文になる。B-082 の結果を待つ」）。`require_secure_transport = ON` なのに `--ssl-mode disabled`: 接続が失敗するので C02 の診断になる |
+| C03 ロック権限 | `SHOW GRANTS FOR CURRENT_USER()` から、`*.*` の `RELOAD` / `FLUSH_TABLES`（8.x）/ `ALL PRIVILEGES` を探す（構造）。判定できないとき（行の書式が読めない）は「不明」 | `--jobs` が 2 以上で権限なし: **error**（推奨: `--jobs 1`）。非 InnoDB があり（C06）、`--no-lock` なしで、権限なし: **error**（推奨: 権限を付ける、または `--no-lock`（一貫性は保証されない））。InnoDB だけで `--jobs 1`: 権限は要らない（**ok**）。不明: **warn**（「権限を判定できなかった。ロックを取って確かめることはしない」） |
+| C04 `SHOW VIEW` | 全ビューに `SHOW CREATE VIEW` を実行する（読み取りだけ。構造） | 失敗（`Error 1142`）したビューを全部挙げる: **error**。推奨: 該当ビューに `SHOW VIEW` を付ける |
+| C05 全列の `SELECT` と `TRIGGER` | 各表の `SHOW CREATE TABLE` の列と `information_schema.COLUMNS` の列を比べる（`checkAllColumnsVisible`）。トリガーのある DB では、`SHOW CREATE TRIGGER` が文を返すかを見る | 読めない列がある表を全部挙げる: **error**（推奨: 列の権限を付ける。ダンプはその表を部分的に出さずに止まる）。`TRIGGER` 権限がない: **error** |
+| C06 非 InnoDB | `information_schema.TABLES` の `ENGINE`（構造）。`NULL` はビュー | 非 InnoDB の表を挙げる: **info**（ロックが要る旨。C03 と組む）。`--no-lock` が指定されていれば **warn**（「その表は一貫性の範囲の外」。ダンプの警告と同じ） |
+| C07 対応しない `TABLE_TYPE` | `BASE TABLE` と `VIEW` 以外（MariaDB の `SEQUENCE` / `SYSTEM VERSIONED`。`checkTableType`） | 全部挙げる: **error**（ダンプは最初の 1 つで止まる。推奨: 対象の DB から外す。出力できない） |
+| C08 `show_create_table_verbosity` | `@@GLOBAL.show_create_table_verbosity`（8.0 系と 5.7.22 以降。変数がなければ**この項目を出さない**） | 8.x: ダンプは接続のセッションで 0 に固定するので影響しない: **ok**。5.7 は固定を送らない（R-069。版を見分けないため）ので、グローバルが `ON` なら `SHOW CREATE TABLE` が変わる: **warn**（「サーバー側を `OFF` にする。README に書いた」）。5.7.21 以前と 5.6 と MariaDB: この変数がないので **ok** |
+| C09 ゼロ日付とその素地 | `@@GLOBAL.explicit_defaults_for_timestamp`、`@@GLOBAL.sql_mode`（構造）。表の `COLUMN_DEFAULT` が `0000-00-00` で始まるもの（構造）。値の検査: `DATE` / `DATETIME` / `TIMESTAMP` の列で `col < '0001-01-01'` または `DAY(col) = 0` または `MONTH(col) = 0`（値。セッションは `sql_mode = ''`。13.2） | 値がある: 列ごとに件数を出す。`--target postgres`: **error**（ダンプが `is not a date PostgreSQL accepts` で止まる。推奨: `--target mysql` か `sqlite`、またはデータを直す）。`--target mysql` / `sqlite`: **info**（復元はヘッダーの `SET SQL_MODE` で通る。B-079）。`explicit_defaults_for_timestamp = OFF` かつ `sql_mode` に `NO_ZERO_DATE` がない（5.6 の既定）: **info**（「暗黙の `TIMESTAMP` の `DEFAULT '0000-00-00 00:00:00'` が出る。`--target postgres` は既定値を出さずに警告する」） |
+| C10 `lower_case_table_names` | `@@GLOBAL.lower_case_table_names`（構造） | `1` または `2`: **info**（「表名は小文字、または保存された名前のまま比較される」。復元先の設定が違うと、名前の大文字小文字が合わなくなりうる）。`0` で、大文字小文字だけ違う名前の表がある（出力ファイル名が大文字小文字で衝突する）: **error**（ダンプの `output file ... collides case-insensitively` と同じ判定。C15） |
+| C11 `--target` に入らない値 | `--target postgres`: NUL を含む文字列（`LOCATE(CHAR(0), col) > 0`）、`TINYINT(1)` が 0 / 1 以外（`col NOT IN (0, 1)`）、`BIT(n)` の幅に収まらない値、ゼロ日付（C09）。`--target sqlite`: 値で入らないものは**ない**（`TEXT` にする。構造で写せないもの — ビュー、生成列、式の既定値など — はダンプの警告と同じものを C11 に出す）。`--target mysql`: なし。13.7 の方式で、実際のライタの変換に通して判定する | 件数を、表と列ごとに出す: **error**（ダンプがその値で止まる）。推奨: `--target` を変える、またはデータを直す。構造の警告（`sqlite` / `postgres` が写さないもの）: **warn** |
+| C12 `latin1` の列の UTF-8 | 文字セットが `latin1`（と、その別名）の列で、非 ASCII を含むものを数える（値。13.2 の `s <> CONVERT(s USING ascii)`）。UTF-8 のバイト列かどうかの判定（検出するか、利用者に指定させるか）は **B-081** で決める | 非 ASCII の値がある `latin1` の列: **warn**（「本ツールは `SET NAMES utf8mb4` で読むので、列の中身が UTF-8 のバイト列だと二重エンコードの文字化けになる可能性がある。B-081」）。B-081 で検出の方法が決まったら、**warn** を **error** か、推奨オプションつきの **warn** に変える |
+| C13 規模 | `TABLE_ROWS` の推定行数が `largeTableRows`（50 万行）を超え、キーがない表（構造） | **warn**（ダンプの警告と同じ文言） |
+| C14 対象 DB | 指定した DB の存在、システム DB（`checkNotSystem` / `checkDatabases`） | 存在しない、またはシステム DB: **error** |
+| C15 出力ファイル名 | 表名と DB 名から作るファイル名の長さ（255 バイト）と、大文字小文字の衝突。`-o` を渡したとき、既存の出力ディレクトリが通常のファイルだけか（`dump.go` の判定） | **error**（ダンプが書き出しの前に失敗する判定と同じ） |
+| C16 文字セットと照合順序 | 使われている `CHARACTER_SET_NAME` / `COLLATION_NAME` の一覧（構造） | **info**（事実の列挙だけ。どの復元先に入るかは README の表で示す。13.8） |
+
+重大度の意味（`--format json` の `severity`）:
+
+- **error**: このオプションでダンプすると失敗する、または検出した問題で出力が不完全になる。
+- **warn**: ダンプは通るが、一貫性や互換性の保証が弱い。
+- **info**: 事実と、あれば推奨。
+- **ok**: 検査して問題がなかった。
+- **unknown**: 権限が足りないなどで、判定できなかった（C03 の書式、読めない変数）。
+
+### 13.5 出力の形と終了コード
+
+- **人が読む表**（`--format table`。既定）: 標準出力に、項目 ID ごとの 1 行（`ok` / `warn` / `error` / `info` / `unknown`、対象、メッセージ）と、末尾に**推奨するオプションの一覧**（例: `--ssl-mode required`、`--jobs 1`）。ログ（`--log-level` / `--log-format`）は今まで通り標準エラー出力で、標準出力は結果だけにする（`--version` と同じ流儀）。
+- **機械が読める形式**（`--format json`）: 1 行 1 検査結果の JSON Lines。各行は `{"id":"C03","severity":"error","scope":"server","object":"","message":"...","recommend":["--jobs 1"]}`。`scope` は `server` / `database` / `table` / `column`、`object` は DB・表・列の名前。
+- **決定性**: 結果は ID、DB、表、列の順に並べる。時刻や接続のスレッド ID などを入れない（出力を git で管理しても、サーバーが変わらなければ同じになる）。
+- **メッセージ**: ダンプのエラーと同じ文言を使う（13.7）。パスワードと `SHOW GRANTS` の行の全文（ハッシュが入る）は出さない。
+- **終了コード**（`check` のみ。既存のダンプは 0 と 1 のまま）:
+
+  | コード | 意味 |
+  | --- | --- |
+  | 0 | `--fail-on`（既定は `error`）以上の結果がない |
+  | 1 | `--fail-on` 以上の結果がある（`error` が 1 つでもあれば、そのオプションでのダンプは失敗する。`--fail-on warn` では警告でも 1） |
+  | 2 | 検査を実行できなかった（フラグの誤り、接続と認証の失敗、検査の途中の失敗） |
+
+  CI で「ダンプの前に検査して、1 なら止める」使い方を想定している。ダンプの失敗（1）と検査の実行失敗（2）を分けるのは、スクリプトが「接続できない」と「問題を見つけた」を区別できるようにするため。
+- **接続できないとき**: 検査は最初の接続から始まるので、接続の失敗は結果の 1 行（`C02` または `C01`）になる。TLS のハンドシェイクの失敗（`tls: protocol version not supported` など）は C02 の **error** にし、TLS 1.2 未満しか話さないサーバー向けの推奨（B-082 の結果が出るまでは `--ssl-mode disabled` が平文であることを明記）を付ける。**平文に黙って落とさない**（再試行しない。R-006 と同じ）。認証の失敗は C01 の前の、検査を実行できなかったもの（終了コード 2）。
+
+### 13.6 検査が読み取りだけで、サーバーの状態を変えない保証
+
+検査は、次の 4 つで保証する。
+
+1. **許可する文を限る**: 検査の接続が送る文は、`SELECT`、`SHOW`、`SET SESSION`（セッションだけの変数。ダンプの `pinSession` と同じもの）、`START TRANSACTION READ ONLY`、`ROLLBACK` だけ。`FLUSH`、`LOCK TABLES`、`UNLOCK TABLES`、`SET GLOBAL`、`INSERT` / `UPDATE` / `DELETE` / DDL は送らない。**ロックを取らない**: `FLUSH TABLES WITH READ LOCK` は権限の確認にも使わない（13.2。他のセッションの書き込みを止めるため）。権限は `SHOW GRANTS` で読む。
+2. **サーバーに書き込みを拒否させる**: 検査の接続は `START TRANSACTION READ ONLY` で始める。書き込みの文があれば、サーバーが拒否する。`START TRANSACTION READ ONLY` が 5.6 と MariaDB で通るかは、**この調査では確かめていない**（マニュアルでは 5.6.5 以降）。実装の項目で確かめる。通らない版では、このトランザクションを省き、1 と 3 で保証する。
+3. **テストで文を検査する**: ドライバの前に文を記録するラッパー（`database/sql/driver` の `Connector` を包む）を置き、検査が送った**全ての文の先頭の語**が、1 の許可リストにあることを、統合テストで確かめる。MySQL なしの単体テストでは、ラッパーに偽のドライバをつないで同じ検査をする。
+4. **サーバー側のカウンタで確かめる**: 検査の終わりに、同じセッションの `SHOW SESSION STATUS LIKE 'Com_%'` のうち、`Com_flush`、`Com_lock_tables`、`Com_insert`、`Com_update`、`Com_delete`、`Com_create_*`、`Com_drop_*`、`Com_alter_*`、`Com_grant` などが 0 であることを、統合テストで確かめる（ラッパーが見落とした文を、サーバーの数え方で捕まえる）。
+
+さらに、**統合テストは `SELECT` と、必要な `SHOW VIEW` だけを持つ読み取り専用のアカウント**で `check` を通す（そのアカウントで検査が最後まで走ることが、書き込みの権限を使っていない証拠になる）。ダンプの特権テスト（R-073）と同じように、アカウントは DB 名ではなく固定の短い名前で作る。
+
+値の検査（C09、C11、C12）は表の全行を読むが、読み取りだけで、ダンプと同じく `READ ONLY` のトランザクションの一貫した読み取り（InnoDB）で行う。ロックは取らないので、非 InnoDB の表は検査中の更新が見えうる（検査は目安であって、一貫性の保証は求めない）。
+
+### 13.7 ダンプとの判定の共有
+
+**原則: 判定は 1 か所に置き、ダンプと検査の両方がそれを呼ぶ。** 検査だけの判定を別に書くと、ダンプが失敗するのに検査は通る、またはその逆になる（決定性の考え方と同じく、2 つの実装は必ずずれる）。
+
+方式: 今は判定がその場で `error` を返す（`checkTableType`、`checkAllColumnsVisible` など）。これを、**結果の列（`Finding`: ID、重大度、対象、メッセージ、推奨）を返す関数**に分け、ダンプは「`error` が 1 つでもあれば、その先頭のメッセージのエラーを返す」薄い包みにする。検査は全部を集めて表示する。メッセージ本文は変えないので、ダンプのエラーメッセージと既存のテストは変わらない。
+
+| 項目 | 今ある判定の場所 | 共有のしかた |
+| --- | --- | --- |
+| C01 | `dialect.go` の `dialectFor` | そのまま呼ぶ |
+| 検査の接続の設定 | `source.go` の `pinSession`、`dialect.session` | 検査の接続も同じ設定を使う（読む値の見え方がダンプと同じになる） |
+| C03 | `source.go` の `lockGlobal` のメッセージ（`RELOAD`）、`startParallel` の文言 | 権限の説明を定数にして、検査とダンプで同じ文を使う。`FLUSH_TABLES`（13.2）は別件（13.9） |
+| C04 | `dialect.go` の `viewDefinitions`（空の定義）、`SHOW CREATE VIEW` | 全ビューを集める版を足し、ダンプは最初の 1 つを返す |
+| C05 | `source.go` の `checkAllColumnsVisible`、`triggers.go` | 同上 |
+| C06 | `source.go` の `firstNonInnoDB`、`Tables` の警告 | 「最初の 1 つ」を「全部」にした版を足す |
+| C07 | `source.go` の `checkTableType` | 同上 |
+| C10、C15 | `dump.go` のファイル名の長さと衝突の判定、`naming` | 検査から呼べる関数に出す（`-o` なしでもファイル名の判定だけ走らせる） |
+| C11 | `sqlvalue.PostgresLiteral`、`writer/postgres.go` の名前と型の判定 | **行を読んで、ダンプと同じライタの変換に通す**（出力は捨てる）。SQL の述語（13.2 で確かめた `LOCATE(CHAR(0), ...)` など）は、速くするための前段として足せるが、判定の正はライタ |
+| C13、C14 | `source.go` の `largeTableRows`、`checkNotSystem`、`checkDatabases` | そのまま呼ぶ |
+| C02 | `tls.go` の `ValidateSSL`、`tlsConfig` | 同じ関数でフラグを検査する |
+
+C11 を「ライタの変換に通す」方式にすると、検査の遅さの原因（全行を読む）と引き換えに、**ダンプが止まる値と検査が示す値が必ず一致する**。もう 1 つの案は、ダンプの `dump.Run` に `DryRun`（ファイルを書かない）を足して、検査の値の部分を「`DryRun` で `--target` を走らせる」にすることである。ダンプの全経路（書き出しの前の検査を含む）が検査に入るので判定は最も揃うが、`dump` の調停に「書かない」分岐が増える。**推奨は、前者（ライタの変換だけを呼ぶ）。** 後者は、C15 の判定をダンプと揃える必要が出た段階で足す。
+
+### 13.8 復元先の検査を本ツールで扱わない理由と、README が示す範囲
+
+本ツールは**復元先に接続しない**。理由は次のとおり。
+
+- 出力はファイルで、復元は `mysql` クライアント、`docker-entrypoint-initdb.d`、`psql`、`sqlite3` が別に行う。復元先の版、設定（`sql_mode`、照合順序、`lower_case_table_names`）、既存のデータは、復元するときにだけ決まる。ダンプの時点に存在するとは限らない。
+- 復元先の接続情報を持たせると、認証情報の扱い（保存先、ログ、権限）が増える。復元先が空とは限らず、`DROP TABLE IF EXISTS` を含むファイルを流す前に接続させるのは、誤った接続先への事故に近づく。
+- 復元先の版の違いは、実機で確かめて**記録する**のが確実である（B-037 の MariaDB、B-039 の 5.7、B-079 の 5.6、B-068 の PostgreSQL）。検査の問い合わせで推定すると、README の表の「Tested」の基準（テストか設計書 11 節の記録の裏が取れている）を満たさない判定が出る。
+
+代わりにやること:
+
+1. **読み出し元の検査で、復元で困る値と構造を前もって示す**（C09、C11、C12、C16）。`--target postgres` で入らない値は、復元先の PostgreSQL に接続しなくても、読み出し元のデータとライタの規則から決まる。
+2. **README の「Compatibility」の表（B-067）が、出力 × 復元先の版を示す**。この表が、復元先について本ツールが言える範囲の全てである。検査は、C01 の方言と C16 の照合順序の一覧で、利用者がこの表のどの行を見ればよいかを示す（例: 「ソースは MySQL 8.4。`utf8mb4_0900_ai_ci` を使っている」→ 表の「MariaDB には復元できない」を読む）。検査が表を内蔵して、「この組み合わせは失敗する」と断定することは、**この案には入れない**（表と内蔵のデータが 2 つの正になるため）。要るかどうかは、検査を使った結果を見てから別に決める。
+3. 復元ファイルの先頭の固定ヘッダー（`sql_mode`、`FOREIGN_KEY_CHECKS` など。10.5 節）は、復元先の既定に依存しないために既にある。これも復元先を検査しないための設計である。
+
+### 13.9 実装の分け方（案）と、別件
+
+実装は、この案を見てから別項目にする（この項目では積まない）。分け方の案:
+
+1. `Finding` と、ダンプの判定を「結果の列を返す関数 + 先頭を返す包み」に分ける。**動作は変えない**。ダンプの既存のテストが通ることが条件（13.7）。
+2. `check` の骨組み: 接続、C01、C02、C14、表と JSON の出力、終了コード（13.5）。読み取りだけの保証（13.6）のテストを同時に入れる。
+3. 構造の検査: C03 から C08、C10、C13、C16。
+4. 値の検査: C09、C11（`--target postgres` と、構造の警告）、`--no-scan`。
+5. C12 は B-081 の後。TLS の診断（C02 の下限の部分）は B-082 の後。5.6 を拒否しない（B-095）後は、C01 の方言の表に 5.6 を足す。
+6. C15（`-o` つき）は、必要になったときに。
+
+この調査で見つけた別件（コードの変更なので、この項目では扱わない）: FTWRL の権限の不足のメッセージと README が `RELOAD` だけを挙げていて、8.4 では `FLUSH_TABLES`（動的権限）でも通る（13.2）。B-104 に積んだ。
