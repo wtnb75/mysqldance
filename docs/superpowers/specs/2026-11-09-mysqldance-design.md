@@ -254,6 +254,10 @@ MySQL ドライバ・CLI ライブラリの選定、パッケージ構成、フ�
   - 結果: 手元の `sqlite3` 3.46.1 で、両バージョンとも行数と値が一致した。CI（`ubuntu-latest`。Ubuntu 26.04）の `sqlite3` も 3.46.1 で、同じ 2 つのテストが通った（PR の CI のログで確認）。さらに Docker の `ubuntu:14.04`（`sqlite3` 3.8.2）に、`sample_main` の出力を流して、エラーなしで全表が復元できた。`ubuntu:12.04`（3.7.9）は、データファイルの `INSERT` が `near ",": syntax error` で失敗した。
   - 出力が使う構文のうち新しい版で入ったもの: 複数行の `INSERT ... VALUES (...),(...)`（3.7.11）、`char()`（3.7.16。改行を含む文字列。SQLite のリリースノートによる。3.7.16 そのものでは未確認）。それ以外（`PRAGMA foreign_keys`、`BEGIN` / `COMMIT`、`X'..'`、`CAST`、`DESC` つきのインデックス、`ON DELETE` / `ON UPDATE`、`DEFAULT CURRENT_TIMESTAMP`）はこれより古い版から使える。**最低の版は 3.7.16**（実機で通ったのは 3.8.2 から）。
   - 確認していないこと: 3.7.16〜3.8.1 の実機。古い版では 1 文の長さの上限（`SQLITE_MAX_SQL_LENGTH`）の既定が 1,000,000 バイトで、`INSERT` の上限の既定（`MaxInsertBytes` = 1048576）より小さい版がありうる。3.8.2 での動作は確かめていない（3.46.1 は 1,000,000,000）。
+- 【確認済み】`--target postgres` の出力を PostgreSQL 14〜18 に復元できること（B-068。確認日: 2026-11-12。出力は `mysql:8.4` から取った）。
+  - 方法: `task test:integration:postgres`（`PG_VERSIONS` で版を選べる。既定は `14 15 16 17 18`。`TESTFLAGS` の既定は `-run Postgres`）。版ごとに MySQL 8.4 と PostgreSQL のコンテナを起動し、`TestPostgres*`（`internal/dump/postgres_test.go`。出力を実機に復元して MySQL と行数・値を比べる）を実行する。`task test:integration` の既定は `postgres:17` のまま変えていない（`PG_IMAGE` で差し替えられる）。
+  - 結果: 5 つの版すべてで、6 つの統合テスト（`TestPostgresRoundTrip`、`TestPostgresDeterministicAndMinimalDiff`、`TestPostgresSplitsLargeTable`、`TestPostgresThenMySQLDumpRemovesTheConstraintsFile`、`TestPostgresRefusesValuesItCannotHold`、`TestPostgresBooleanRuleOnThisServer`）が通った。通らない版はなかった。確かめた版は 14.24、15.19、16.15、17.11、18.6（Docker の `postgres:14`〜`postgres:18`）。MariaDB と 5.7 の出力を使う 2 つのテストは、この実行では skip される（元のサーバーが違うため）。
+  - 最低の版: 出力が通る版は **14 以上**（実機で確かめた範囲）。13 以前は確かめていない。README に版の制限は書かない（通らない版がないため）。
 - 対象バージョンは MySQL 8.0 系以降で決定済み（10.5 節）。MariaDB は B-037 で差異を確認済み（上）、B-038 で対応した（`dialect` に、セッション設定・ビュー依存の取得・既定値の読み方を持たせた。ビュー依存は `VIEW_DEFINITION` の `` `schema`.`name` `` を大文字小文字を区別せずに探す）。5.7 系は B-039 で差異を確認した（上）。対応は B-040。5.6 は B-079 で差異を確認した（上）。対応は B-095。
 
 ## 12. バックログ（MVP の範囲外。後で課題として積む）
