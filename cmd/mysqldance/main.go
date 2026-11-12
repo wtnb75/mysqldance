@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,6 +32,28 @@ var (
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
+}
+
+// readPasswordFile reads the file and warns when group or others can read it.
+// The mode is taken from the opened file, so it is the one of the bytes read.
+// Windows mode bits carry no access rules, so nothing is checked there. The
+// warning never carries the contents.
+func readPasswordFile(path string, logger *slog.Logger) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	if runtime.GOOS != "windows" {
+		// Read bits only (B-024); a failed Stat skips the check, the read below still runs.
+		if fi, err := f.Stat(); err == nil {
+			if perm := fi.Mode().Perm(); perm&0o044 != 0 {
+				logger.Warn(fmt.Sprintf("password file %q is readable by group or others (mode %04o); "+
+					"restrict it, for example with chmod 600", path, perm))
+			}
+		}
+	}
+	return io.ReadAll(f)
 }
 
 // The values of --target: the DBMS the output is written for.
@@ -321,7 +344,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	opt.Source.ConnectTimeout, opt.Source.ReadTimeout = connectTimeout, readTimeout
 	opt.Source.Password = getenv("MYSQL_PWD")
 	if passwordFile != "" {
-		b, err := os.ReadFile(passwordFile)
+		b, err := readPasswordFile(passwordFile, logger)
 		if err != nil {
 			return dump.Options{}, fmt.Errorf("read password file: %w", err)
 		}

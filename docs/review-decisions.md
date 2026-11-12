@@ -1125,3 +1125,24 @@
 - 却下の理由: 好みの問題で、失敗のシナリオはない。`viewDep` と `viewDeps` のコメントに、`foreign` では `ref` が DB 名だと書いてある。呼び出しは `Views()` の 1 か所だけ。
 - 初出: B-023
 - 再出: 0
+
+## R-156 パスワードファイルの警告が `--log-level error` で隠れる
+- 対象: cmd/mysqldance/main.go の readPasswordFile
+- 指摘: CI でよくある `--log-level error` だと警告が出ず、README も常に出るように読める。
+- 却下の理由: 警告は全て `WARN` 記録で、`error` が隠すことは README の `--log-level` の行と「Warnings」節に明記済み（他の警告と同じ扱い）。パスワード用だけレベルを迂回する仕様は確定していない。README は「常に出る」とは書いていない。
+- 初出: B-024
+- 再出: 0
+
+## R-157 警告が引数解析の副作用で出る。`readPasswordFile` が読みとログを兼ねる
+- 対象: cmd/mysqldance/main.go の parseArgsTo / readPasswordFile
+- 指摘: `parseArgs` だけを呼ぶ検証や将来の dry-run でも警告が出る。モードを返して `run()` でログすべき。
+- 却下の理由: 失敗のシナリオが推測のみ（dry-run や validate モードは存在しない）。パスワードの読み込みは今も `parseArgsTo` の中にあり、同じ場所で警告するのが最も単純。`parseArgsTo` がロガーを作る箇所はここだけで、`run()` へ移すと読み込みを分ける必要が出る。
+- 初出: B-024
+- 再出: 0
+
+## R-158 `Stat` の失敗を握りつぶす。書き込み権限は見ない。FIFO・ディレクトリのテストがない
+- 対象: cmd/mysqldance/main.go の readPasswordFile、main_test.go の TestParseArgsPasswordFileMode
+- 指摘: `Stat` が失敗すると検査が黙って飛ぶ。グループ・他人が書けるファイルを検査しない。`/dev/fd/N` などのテストがない。
+- 却下の理由: 開いた直後のファイルの `Stat` が失敗するのは実際には起きず、失敗してもパスワードの読み込み（本体）は続き、データは落ちない（「黙って落とさない」は出力データの話）。読み取りビットだけを見るのは B-024 で確定した仕様（受け入れ条件は「読める」）。存在しないファイルは `TestParseArgsInvalid` の "missing password file" で、ディレクトリは `ReadAll` のエラーで失敗する。`/dev/fd/N` の誤警告は再現するシナリオを示せない（パイプはオーナーのみ 0600）。
+- 初出: B-024
+- 再出: 0
