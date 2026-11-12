@@ -4,7 +4,67 @@
 
 A CLI that connects directly to MySQL and writes databases to a flat directory of SQL files with **one record per line and fully deterministic output**. The same data always produces the same bytes, so you can keep dumps in Git and review diffs, or hand them straight to the official MySQL Docker image's `/docker-entrypoint-initdb.d` to restore.
 
-Targets MySQL 8.0 and later (including 8.4), MariaDB (tested on 10.11 and 11.4; see [MariaDB](#mariadb)) and MySQL 5.7 (tested on 5.7.44 only; see [MySQL 5.7](#mysql-57)). MySQL 5.6 and earlier are not supported.
+Targets MySQL 8.0 and later (including 8.4), MariaDB (tested on 10.11 and 11.4; see [MariaDB](#mariadb)) and MySQL 5.7 (tested on 5.7.44 only; see [MySQL 5.7](#mysql-57)). MySQL 5.6 and earlier are not supported. [Compatibility](#compatibility) lists which server, output format and restore destination were actually tried.
+
+## Compatibility
+
+Every cell says how far it is backed, not how likely it is to work. A cell is **Tested** only when an automated test or a recorded manual check (design document, section 11) covers it.
+
+| Mark | Meaning |
+| --- | --- |
+| **Tested** | An integration test or a recorded manual check passes. |
+| **Conditional** | It works for what was tried, with a stated condition or a part not tried. |
+| **Fails** | A failure was seen on a real server. The note says why. |
+| **Unverified** | Not tried. Do not assume it works, or that it fails. |
+
+### Source server and `--target`
+
+The source is the server `mysqldance` reads. The cells say whether the output was produced and restored into a server of that kind (`--target mysql` into the same server, `sqlite` through `modernc.org/sqlite`, `postgres` into PostgreSQL 17) with every row compared afterwards.
+
+| Source | `--target mysql` | `--target sqlite` | `--target postgres` |
+| --- | --- | --- | --- |
+| MySQL 8.4 | Tested | Tested | Tested (PostgreSQL 14 to 18) |
+| MySQL 8.0 | Tested | Tested | Tested |
+| MySQL 5.7.44 ([notes](#mysql-57)) | Tested | Tested | Tested |
+| MariaDB 10.11 and 11.4 ([notes](#mariadb)) | Tested | Tested | Tested |
+| MySQL 5.6 | Unverified: refused by `mysqldance` today | Unverified | Unverified |
+| MySQL 5.5 and earlier | Unverified: refused | Unverified | Unverified |
+| MySQL 9.x and other MySQL-compatible servers (TiDB and so on) | Unverified | Unverified | Unverified |
+
+Notes:
+
+- Only the versions named were run; other releases of the same series are unverified (5.7.21 only for the session settings).
+- `--target postgres` stops on a value PostgreSQL cannot hold (a zero date, a NUL byte), whatever the source; zero dates are common in old servers. See [PostgreSQL output](#postgresql-output).
+- MySQL 5.6.51 was examined by hand (design document, section 11, B-079): with the version check lifted it dumps, and its output restores into 8.4 and MariaDB. That is not a supported mode, so the row stays unverified. Support is tracked as B-095, and 5.5 as B-080.
+
+### Output and restore destination
+
+`--target mysql` output (the rows are the source; the columns are the server the files are restored into):
+
+| Output from | into MySQL 5.7.44 | into MySQL 8.0 | into MySQL 8.4 | into MariaDB 10.11 / 11.4 |
+| --- | --- | --- | --- | --- |
+| MySQL 8.4 | Unverified | Unverified | Tested | Fails: `utf8mb4_0900_ai_ci` does not exist in MariaDB |
+| MySQL 8.0 | Unverified | Tested | Unverified | Unverified (same default collation as 8.4) |
+| MySQL 5.7.44 | Tested | Unverified | Conditional: zero-date defaults restore only because of the `SET SQL_MODE` in each file's header; 8.0 was not tried | Unverified |
+| MariaDB 10.11 | Unverified | Unverified | Unverified | Tested into the same version; 11.4 not tried |
+| MariaDB 11.4 | Unverified | Unverified | Fails: `utf8mb4_uca1400_ai_ci` does not exist in MySQL | Tested into the same version; 10.11 not tried |
+
+MariaDB and MySQL outputs are not converted for each other (see [MariaDB](#mariadb)).
+
+`--target sqlite` and `--target postgres` output:
+
+| Output | Restored into | Status |
+| --- | --- | --- |
+| `sqlite` | `modernc.org/sqlite` v1.62.0 (SQLite 3.54.1; what the tests use) | Tested |
+| `sqlite` | `sqlite3` command 3.46.1 | Tested (from MySQL 8.0 and 8.4) |
+| `sqlite` | `sqlite3` command 3.8.2 | Tested (from `sample_main` of MySQL 8.x, recorded by hand) |
+| `sqlite` | `sqlite3` command 3.7.16 to 3.8.1 | Unverified (3.7.16 is the minimum by SQLite's release notes) |
+| `sqlite` | `sqlite3` command 3.7.9 | Fails: the multi-row `INSERT` is a syntax error |
+| `postgres` | PostgreSQL 14, 15, 16, 17, 18 | Tested (from MySQL 8.4; PostgreSQL 17 also from 8.0, 5.7.44 and MariaDB) |
+| `postgres` | PostgreSQL 13 and earlier | Unverified |
+| `sqlite` / `postgres` | Other SQLite-compatible or PostgreSQL-compatible DBMSs (libSQL, Cloudflare D1, CockroachDB and so on) | Unverified |
+
+When the supported servers or restore destinations change, update these tables in the same change.
 
 ## Build
 
@@ -125,14 +185,14 @@ LC_ALL=C cat dump/mydb.*.sql | sqlite3 mydb.db
 - Column types keep every value exact. Integer types, `YEAR` and `BIT(n)` with `n` up to 63 become `INTEGER`; `FLOAT` and `DOUBLE` become `REAL`; binary and spatial types become `BLOB`. `DECIMAL`, `BIGINT UNSIGNED` and `BIT(64)` become `TEXT`, because SQLite would store a number above 2^63-1 or a decimal as a lossy `REAL`; their values are written as strings. All other types (strings, `ENUM`, `SET`, `JSON`, dates and times) become `TEXT`. `NOT NULL`, the primary key, foreign keys (with `ON DELETE` / `ON UPDATE`), `UNIQUE` keys and ordinary indexes (with `DESC`) are carried over, and so are literal defaults and `DEFAULT CURRENT_TIMESTAMP`.
 - Index names are made unique in the database as `<table>__<index>`; if that collides with another table or index name, the run fails.
 - A line break inside a string value is written as `'a'||char(10)||'b'`, so one record stays on one line.
-- The files need `sqlite3` 3.7.16 or newer: they use multi-row `VALUES` (3.7.11) and `char()` (3.7.16), according to SQLite's release notes. The restore is verified with `sqlite3` 3.46.1 and 3.8.2 only; 3.7.9 rejects the `INSERT`s, and 3.7.16 to 3.8.1 were not run.
+- The files need `sqlite3` 3.7.16 or newer: they use multi-row `VALUES` (3.7.11) and `char()` (3.7.16), according to SQLite's release notes. The restore is verified with `sqlite3` 3.46.1 and 3.8.2 only; 3.7.9 rejects the `INSERT`s, and 3.7.16 to 3.8.1 were not run. See [Compatibility](#compatibility).
 - MySQL's `AUTO_INCREMENT` is not carried over (as in the MySQL output, the counter is not restored). Table and column comments, character sets and collations are dropped; text compares as plain bytes in SQLite, which is never stricter than MySQL's collations, so the data always loads.
 - **Not output, with a warning for each** (a `WARN` record on standard error with the attribute `database=db`, see "Warnings"; the dump continues): views (their `SELECT` is MySQL syntax; converting them is a separate backlog item), generated columns (their values are not dumped either), `ON UPDATE CURRENT_TIMESTAMP`, default expressions other than `CURRENT_TIMESTAMP`, `FULLTEXT` and `SPATIAL` indexes, indexes with an expression key part or on a generated column, CHECK constraints, and foreign keys into another database. A prefix index (`col(10)`) is created on the whole column, which is also reported. Triggers are not output either, with a warning for each (their bodies are MySQL syntax). Routines and events are not dumped for any target.
 - A column type with no SQLite counterpart makes the run fail instead of guessing.
 
 ### PostgreSQL output
 
-`--target postgres` writes the same one-record-per-line `INSERT`s, with the same splitting and determinism, in SQL that PostgreSQL runs. One MySQL database becomes one **schema** of the same name, so several databases fit into one PostgreSQL database. For each database, three kinds of files are written:
+`--target postgres` writes the same one-record-per-line `INSERT`s, with the same splitting and determinism, in SQL that PostgreSQL runs. One MySQL database becomes one **schema** of the same name, so several databases fit into one PostgreSQL database. The output was restored into PostgreSQL 14 to 18; see [Compatibility](#compatibility). For each database, three kinds of files are written:
 
 | File | Content |
 | --- | --- |
@@ -152,7 +212,7 @@ The foreign keys are in the last file because the data files run in table-name o
 
 ### MariaDB
 
-A server that reports itself as MariaDB is read as MariaDB. It is not rejected by version: 10.11 and 11.4 are the versions it was tested on, and other versions are untested.
+A server that reports itself as MariaDB is read as MariaDB. It is not rejected by version: 10.11 and 11.4 are the versions it was tested on, and other versions are untested. [Compatibility](#compatibility) shows which combinations of source, output and restore destination were tried.
 
 - **The output is MariaDB's own.** `CREATE TABLE` and `CREATE VIEW` are written as MariaDB's `SHOW CREATE` prints them (for example `current_timestamp()`, `int(11)`, `JSON` as `longtext` with a `CHECK`, and `CREATE DATABASE` with MariaDB's default collation). Restore the default `--target mysql` output of a MariaDB server into MariaDB. **It is not meant for MySQL**: for example, 11.4's default collation `utf8mb4_uca1400_ai_ci` does not exist in MySQL, and MySQL's `utf8mb4_0900_ai_ci` does not exist in MariaDB, so the statement fails on the other server. No conversion is made between the two.
 - **Views** are ordered by their dependencies, which are read from `information_schema.VIEWS` (MariaDB has no `VIEW_TABLE_USAGE`). The account needs the `SHOW VIEW` privilege (it already does, for `SHOW CREATE VIEW`).
@@ -161,7 +221,7 @@ A server that reports itself as MariaDB is read as MariaDB. It is not rejected b
 
 ### MySQL 5.7
 
-A server whose version starts with `5.7.` is read as MySQL 5.7. **Only 5.7.44 was tested** (the session settings were also tried on 5.7.21); other 5.7 releases are untested, and 5.6 and earlier are refused.
+A server whose version starts with `5.7.` is read as MySQL 5.7. **Only 5.7.44 was tested** (the session settings were also tried on 5.7.21); other 5.7 releases are untested, and 5.6 and earlier are refused. [Compatibility](#compatibility) shows which combinations of source, output and restore destination were tried.
 
 - **The output is 5.7's own.** `CREATE TABLE` is written as 5.7's `SHOW CREATE` prints it: integers keep their display width (`int(11)`, `bigint(20) unsigned`), and a database or table made with the stock `latin1` default says `DEFAULT CHARSET=latin1`. No conversion is made. Rows are read as `utf8mb4`, so the data of a `latin1` column is exact. The default `--target mysql` output restores into 5.7, and into MySQL 8.4 for the schemas tested; a zero-date default such as `DEFAULT '0000-00-00 00:00:00'` (a second `TIMESTAMP NOT NULL` column when `explicit_defaults_for_timestamp` is `OFF`, the 5.7 default) restores into 8.4 as well (8.0 was not tried), although 8.4's own `sql_mode` refuses it with `Invalid default value`: the `SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO'` in every file's header replaces the session's mode, which drops `NO_ZERO_DATE` and strict mode. A restore that skips the header (pasting only the `CREATE TABLE`) fails on 8.x.
 - **`show_create_table_verbosity` is not set.** 5.7.21 and earlier do not have it, and the version is not told apart. On 5.7.22 and later a server with the variable set to `ON` globally adds the default `ROW_FORMAT` to `SHOW CREATE TABLE`, so the output follows that setting (this is untested).
@@ -282,7 +342,7 @@ A dump contains the table data itself, which may include personal information or
 
 ## Limitations (out of scope for the MVP)
 
-- Source servers other than MySQL 5.7 and later and MariaDB (MySQL 5.6 and earlier), and output for DBMSs other than MySQL, SQLite and PostgreSQL. Parallel reading is per table (`--jobs`); one table is never read on several connections.
+- Source servers other than MySQL 5.7 and later and MariaDB (MySQL 5.6 and earlier; see [Compatibility](#compatibility)), and output for DBMSs other than MySQL, SQLite and PostgreSQL. Parallel reading is per table (`--jobs`); one table is never read on several connections.
 - Streaming for tables without a key. A table with a primary key or a NOT NULL unique key is read and written row by row, so its memory use does not grow with its size (a table of one million rows needs a few megabytes). A table without such a key is still read into memory and sorted there by the byte order of each row's output string (the intended scale for those is up to about 100,000 rows); with `--jobs N`, up to N of them are in memory at once. A temporary-file sort for them is planned.
 - Stored routines, events, and users and privileges. (Triggers are dumped for `--target mysql` only.)
 - Flags must be placed before the database names.
