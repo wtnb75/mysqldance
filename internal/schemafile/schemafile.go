@@ -23,8 +23,14 @@ var (
 // Table is a table name with its CREATE TABLE statement (without a trailing semicolon).
 type Table struct{ Name, Create string }
 
-// View is a view name with its CREATE VIEW statement (without a trailing semicolon).
-type View struct{ Name, Create string }
+// View is a view name with its CREATE VIEW statement (without a trailing
+// semicolon). Reads holds the other databases the view reads a table or a view
+// of, sorted; the statement needs them to exist when it runs. It is information
+// for the writer and is not part of the output.
+type View struct {
+	Name, Create string
+	Reads        []string
+}
 
 // createParts locates the pieces of a SHOW CREATE TABLE statement: the
 // top-level items of the definition list (columns, keys, constraints) and the

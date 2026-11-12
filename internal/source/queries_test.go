@@ -65,7 +65,7 @@ func TestListTablesIsReadOnce(t *testing.T) {
 	// Views: one SHOW CREATE VIEW per view and the dependency query, but not
 	// the list again.
 	deps := queriesOf(t, s, func() {
-		if _, err := s.dialect.viewDeps(ctx, s.conn, s.name, []string{"v1", "v2"}); err != nil {
+		if _, _, err := s.dialect.viewDeps(ctx, s.conn, s.name, []string{"v1", "v2"}); err != nil {
 			t.Fatal(err)
 		}
 	})

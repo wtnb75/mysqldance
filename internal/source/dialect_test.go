@@ -239,6 +239,30 @@ func TestMariaDBColumnDefault(t *testing.T) {
 	}
 }
 
+func TestViewForeignRefs(t *testing.T) {
+	views := []string{"v1", "v2", "v3", "v4", "v5"}
+	defs := map[string]string{
+		// A table of another database, read in a column and in the FROM clause.
+		"v1": "select `db2`.`t`.`id` AS `id` from `db2`.`t`",
+		// An alias that is not a database, and the database itself.
+		"v2": "select `x`.`id` AS `id` from `pr`.`t` `x`",
+		// Two databases (case-insensitive, as VIEW_DEFINITION may spell them
+		// under lower_case_table_names=2), and the system schemas, which exist on
+		// every server and are never a restore-order problem.
+		"v3": "select 1 from `pr`.`t`, `DB2`.`u`, `db3`.`z`, `mysql`.`user`, `information_schema`.`TABLES`, `sys`.`x`",
+		// A database whose name starts with the name of another is not that one.
+		"v4": "select 1 from `db20`.`t`",
+		// A backtick inside a name is doubled.
+		"v5": "select 1 from `we``ird`.`t`",
+	}
+	schemas := []string{"db3", "pr", "db2", "db20", "mysql", "information_schema", "sys", "we`ird"}
+	got := viewForeignRefs(defs, "pr", views, schemas)
+	want := []viewDep{{"v1", "db2"}, {"v3", "db2"}, {"v3", "db3"}, {"v4", "db20"}, {"v5", "we`ird"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("viewForeignRefs = %v, want %v", got, want)
+	}
+}
+
 func TestViewRefs(t *testing.T) {
 	views := []string{"a_top", "v1", "v2", "weird`name"}
 	defs := map[string]string{

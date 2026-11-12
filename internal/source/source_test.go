@@ -314,6 +314,43 @@ func TestViewsAndDeps(t *testing.T) {
 	}
 }
 
+// TestViewsReadingAnotherDatabase: a view that reads a table or a view of
+// another database is reported with that database (B-023), and is not a
+// dependency among the views of its own database.
+func TestViewsReadingAnotherDatabase(t *testing.T) {
+	cfg, db, conn := testDB(t)
+	_, other, otherConn := testDB(t)
+	mustExec(t, otherConn, "CREATE TABLE t (id INT PRIMARY KEY)", "CREATE VIEW ov AS SELECT id FROM t")
+	mustExec(t, conn,
+		"CREATE TABLE t (id INT PRIMARY KEY)",
+		"CREATE VIEW own AS SELECT id FROM t",
+		"CREATE VIEW reads_table AS SELECT id FROM `"+other+"`.t",
+		"CREATE VIEW reads_view AS SELECT id FROM `"+other+"`.ov",
+		"CREATE VIEW reads_both AS SELECT a.id FROM t a JOIN `"+other+"`.t b ON a.id = b.id",
+		"CREATE VIEW reads_own_view AS SELECT id FROM own",
+	)
+	s := openSnapshot(t, cfg, db)
+	views, deps, err := s.Views(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][]string{}
+	for _, v := range views {
+		if len(v.Reads) > 0 {
+			got[v.Name] = v.Reads
+		}
+	}
+	want := map[string][]string{
+		"reads_table": {other}, "reads_view": {other}, "reads_both": {other},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("databases read by views = %v, want %v", got, want)
+	}
+	if want := map[string][]string{"reads_own_view": {"own"}}; !reflect.DeepEqual(deps, want) {
+		t.Errorf("deps = %v, want %v", deps, want)
+	}
+}
+
 func TestCheckAllColumnsVisible(t *testing.T) {
 	create := "CREATE TABLE `t` (\n  `id` int NOT NULL,\n  `h` int DEFAULT NULL /*!80023 INVISIBLE */,\n" +
 		"  `s` int DEFAULT NULL,\n  PRIMARY KEY (`id`)\n) ENGINE=InnoDB"

@@ -1,6 +1,7 @@
 package writer
 
 import (
+	"fmt"
 	"io"
 
 	"mysqldance/internal/datafile"
@@ -32,6 +33,14 @@ func (m *MySQL) WriteSchema(w io.Writer, s Schema) error {
 	for i, v := range s.Views {
 		byName[v.Name] = v
 		names[i] = v.Name
+		// Files restore in file name order, and no order is kept between the
+		// files of two databases, so say what the view needs (B-023). Always
+		// warn, whatever the file order: the restore target is unknown (R-151).
+		// The SQLite and PostgreSQL writers output no views at all (R-152).
+		for _, db := range v.Reads {
+			emit(s.Warn, []string{fmt.Sprintf("view %s reads database %s: it must be restored before this one (files restore in file name order), or the CREATE VIEW fails",
+				sqlvalue.QuoteIdent(v.Name), sqlvalue.QuoteIdent(db))})
+		}
 	}
 	ordered := make([]schemafile.View, 0, len(s.Views))
 	for _, n := range schemafile.OrderViews(names, s.ViewDeps) {

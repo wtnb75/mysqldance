@@ -1,11 +1,5 @@
 # Backlog
 
-## B-023 [todo|P3] 別の DB を参照するビューの復元順を検証する
-- 概要: `Views` の依存取得は `TABLE_SCHEMA = 対象 DB` に限られ、別の DB のテーブルやビューを参照するビューは依存として扱わない。複数 DB を同じディレクトリに入れると、復元はファイル名の辞書順なので、参照先の DB が後に来ると `CREATE VIEW` が失敗する可能性がある（未確認）。B-003 とは別に、この制約を確認して README に書くか、警告を出す。
-- 受け入れ条件:
-  - [ ] 2 つの DB にまたがるビューを実機で復元して、失敗するかを確認する
-  - [ ] 失敗する場合は、ダンプ時に警告を出し、README の「Limitations」に書く
-
 ## B-024 [todo|P3] パスワードファイルのパーミッションを検査する
 - 概要: `--password-file` はパーミッションを見ずに読む。他のユーザーが読めるファイルなら警告を出す。環境変数 `MYSQL_PWD` は、同じホストの他のプロセスから見える場合があることを README に書く。
 - 受け入れ条件:
@@ -343,6 +337,14 @@
   - [ ] `--connect-timeout` と README の記述が、全ての接続に効くことに合っている
 
 # Done
+
+## B-023 [done|P3] 別の DB を参照するビューの復元順を検証する
+- 概要: `Views` の依存取得は `TABLE_SCHEMA = 対象 DB` に限られ、別の DB のテーブルやビューを参照するビューは依存として扱わない。複数 DB を同じディレクトリに入れると、復元はファイル名の辞書順なので、参照先の DB が後に来ると `CREATE VIEW` が失敗する可能性がある（未確認）。B-003 とは別に、この制約を確認して README に書くか、警告を出す。
+- 前提: 参照先の DB がファイル名順で先か後かは判定せず、`--target mysql` で、別の DB を読むビューごとに常に警告する（復元先の状態は分からないため）。システムスキーマ（`mysql` / `sys` / `information_schema` / `performance_schema`）の参照は対象外。復元の順は変えない。
+- 結果: 失敗することを実機で確認した（参照先が後に来ると `CREATE VIEW` が `Error 1049 Unknown database`。先なら通る。`TestViewReadingAnotherDatabase`）。`schemafile.View.Reads` に読む DB を持たせ、`MySQL` ライタが `view `v` reads database `d2`: ...` を警告する。8.0.13 以降は `VIEW_TABLE_USAGE`、MariaDB / 5.7 / 5.6 は `VIEW_DEFINITION` の文字列探索（`information_schema.SCHEMATA` の DB 名ごと）で求める。README の「Limitations」に書いた。MySQL 8.0 / 8.4、MariaDB 10.11 / 11.4、MySQL 5.7.44 で確認した。5.6 は未実行。詳細は設計書 11 節。
+- 受け入れ条件:
+  - [x] 2 つの DB にまたがるビューを実機で復元して、失敗するかを確認する
+  - [x] 失敗する場合は、ダンプ時に警告を出し、README の「Limitations」に書く
 
 ## B-019 [done|P3] テーブルごとのクエリ数を減らす
 - 概要: `Tables` はテーブルごとに `SHOW CREATE TABLE` と `SELECT ... LIMIT 0`（型名の取得）を実行し、`Views` は `listTables` をもう一度実行する。テーブルが数十を超えると往復の回数が目立つ。

@@ -1005,8 +1005,9 @@ func (s *Snapshot) showCreate(ctx context.Context, kind, name string) (string, e
 }
 
 // Views returns the views sorted by name with their SHOW CREATE VIEW
-// statements, and deps[v]: the other views of this database that v
-// references, sorted. Views without such references have no entry.
+// statements and the other databases each reads (View.Reads), and deps[v]: the
+// other views of this database that v references, sorted. Views without such
+// references have no entry.
 func (s *Snapshot) Views(ctx context.Context) ([]schemafile.View, map[string][]string, error) {
 	list, err := s.listTables(ctx)
 	if err != nil {
@@ -1030,7 +1031,7 @@ func (s *Snapshot) Views(ctx context.Context) ([]schemafile.View, map[string][]s
 	for i, v := range views {
 		names[i] = v.Name
 	}
-	found, err := s.dialect.viewDeps(ctx, s.conn, s.name, names)
+	found, foreign, err := s.dialect.viewDeps(ctx, s.conn, s.name, names)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1043,6 +1044,17 @@ func (s *Snapshot) Views(ctx context.Context) ([]schemafile.View, map[string][]s
 	for v, ds := range deps {
 		sort.Strings(ds)
 		deps[v] = compact(ds)
+	}
+	reads := map[string][]string{}
+	for _, d := range foreign {
+		if isView[d.view] {
+			reads[d.view] = append(reads[d.view], d.ref)
+		}
+	}
+	for i := range views {
+		rs := reads[views[i].Name]
+		sort.Strings(rs)
+		views[i].Reads = compact(rs)
 	}
 	return views, deps, nil
 }

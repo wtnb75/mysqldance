@@ -1076,3 +1076,52 @@
 - 却下の理由: 好みの問題。無駄は列数に比例する割り当て 1 回で、`LIMIT 0` の往復に比べて無視できる。全体を戻すのは確定した仕様（黙って別の名前にしない）。
 - 初出: B-019
 - 再出: 0
+
+## R-149 `viewForeignRefs` の文字列探索が、大文字小文字だけが違う DB 名や別名・リテラルで偽の警告を出す
+- 対象: internal/source/dialect.go の viewForeignRefs
+- 指摘: `Sales` と `sales` が両方ある大文字小文字を区別するサーバーで、自分の DB の修飾子が他方に一致する。別名や文字列リテラルでも一致する。
+- 却下の理由: 結果は警告が 1 件増えるだけで、出力（ファイル）も順序も変わらない。大文字小文字を区別せずに探すのは、`lower_case_table_names=2` の定義の綴り違いで参照を見落とさないための確定した仕様で、`viewRefs` と同じ（R-062）。大文字小文字だけが違う 2 つの DB を持つ構成は稀。コメントに書いた。
+- 初出: B-023
+- 再出: 0
+
+## R-150 `viewTableUsage` の `TABLE_SCHEMA = ?` の照合順序が、サーバーの DB 名の大小の扱いと違いうる
+- 対象: internal/source/dialect.go の viewTableUsage
+- 指摘: `lower_case_table_names=0` で `pr` と `PR` があるとき、同じ DB と見なされ、警告もビューの依存も誤る。
+- 却下の理由: この比較は B-023 より前（`TABLE_SCHEMA = ?`）からある挙動で、この項目の変更ではない。誤りの影響は警告の見落としと、自分の DB のビュー名に一致するときだけの依存の追加で、出力の欠落や破損はない。実機で再現できておらず（推測）、そのようなサーバー構成は想定外。
+- 初出: B-023
+- 再出: 0
+
+## R-151 別の DB を読むビューの警告が、ファイル名の順序にかかわらず常に出る
+- 対象: internal/writer/mysql.go の WriteSchema
+- 指摘: 参照先が先に復元される順序でも警告が出て、雑音になる。
+- 却下の理由: 確定した仕様。復元先に何があるかは `mysqldance` には分からず、参照先がダンプに含まれない場合や復元先にだけある場合と区別できないため、常に出す（設計書 11 節の B-023【決定】、`TestViewReadingAnotherDatabase` の「sorts first」）。
+- 初出: B-023
+- 再出: 0
+
+## R-152 別の DB を読むビューの警告が MySQL ライタだけにあり、SQLite / PostgreSQL では黙って落ちる
+- 対象: internal/writer/mysql.go の WriteSchema と `schemafile.View.Reads`
+- 指摘: 他のライタが `Reads` を見ないので、警告なしにビューが壊れる。
+- 却下の理由: 前提が事実と違う。SQLite と PostgreSQL のライタはビューを出力せず、ビューごとに「not output」の警告を出す（sqlite.go の `views are not converted to SQLite`、postgres.go の `views are not converted to PostgreSQL`）。壊れるビューは出力に存在しない。
+- 初出: B-023
+- 再出: 0
+
+## R-153 `schemaNames` が DB ごとに `SCHEMATA` を引き、ビュー × DB 名の探索になる
+- 対象: internal/source/dialect.go の viewDefinitions / schemaNames
+- 指摘: 数千の DB があるサーバーで、DB ごとに全件の一覧を引き、O(ビュー数 × DB 数) の探索になる。
+- 却下の理由: 効率だけの指摘で、失敗のシナリオはない。問い合わせは MariaDB / 5.7 / 5.6 で、ビューがある DB ごとに 1 回。想定の規模（MVP は小さなサーバー）の外で、`Snapshot` に一覧を持たせると `Use` で捨てる状態が増える（R-007 と同じ理由）。
+- 初出: B-023
+- 再出: 0
+
+## R-154 `Sys` など、システムスキーマと同じ名前の利用者の DB が警告から外れる
+- 対象: internal/source/dialect.go の systemSchemas
+- 指摘: 利用者の DB がシステムスキーマと同名だと、警告が出ない。
+- 却下の理由: `mysql` / `sys` / `information_schema` / `performance_schema` はサーバーが持つ名前で、同名の利用者の DB を作ることはできない（作れても、それはサーバーのものと同じ DB）。失敗のシナリオを示せない。
+- 初出: B-023
+- 再出: 0
+
+## R-155 `foreign` の結果が `viewDep` を流用し、`ref` が名前でなく DB 名の意味になる
+- 対象: internal/source/dialect.go の viewDeps と viewDep
+- 指摘: 別の型か、ビュー → 並べた名前の map の方が分かりやすく、`Views()` のループも減る。
+- 却下の理由: 好みの問題で、失敗のシナリオはない。`viewDep` と `viewDeps` のコメントに、`foreign` では `ref` が DB 名だと書いてある。呼び出しは `Views()` の 1 か所だけ。
+- 初出: B-023
+- 再出: 0
