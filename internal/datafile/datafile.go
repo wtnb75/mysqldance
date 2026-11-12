@@ -3,9 +3,7 @@
 package datafile
 
 import (
-	"hash/fnv"
 	"io"
-	"strings"
 
 	"mysqldance/internal/sqlvalue"
 )
@@ -76,18 +74,39 @@ func Split(rows [][]string, keyCols []int, rowsPerFile uint32) [][][]string {
 	return groups
 }
 
+const (
+	fnvOffset32 uint32 = 2166136261
+	fnvPrime32  uint32 = 16777619
+)
+
+// fnvAdd folds s into an FNV-1a 32-bit hash. It is hash/fnv without the hasher
+// and []byte allocations; the results are identical.
+func fnvAdd(h uint32, s string) uint32 {
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= fnvPrime32
+	}
+	return h
+}
+
 func keyHash(row []string, keyCols []int) uint32 {
-	h := fnv.New32a()
+	h := fnvOffset32
 	if len(keyCols) == 0 {
-		_, _ = h.Write([]byte(strings.Join(row, ",")))
-		return mix32(h.Sum32())
+		// The same bytes as strings.Join(row, ",").
+		for i, v := range row {
+			if i > 0 {
+				h = fnvAdd(h, ",")
+			}
+			h = fnvAdd(h, v)
+		}
+		return mix32(h)
 	}
 	for _, c := range keyCols {
 		// The separator keeps ("1,2", "3") apart from ("1", "2,3").
-		_, _ = h.Write([]byte(row[c]))
-		_, _ = h.Write([]byte{0})
+		h = fnvAdd(h, row[c])
+		h = fnvAdd(h, "\x00")
 	}
-	return mix32(h.Sum32())
+	return mix32(h)
 }
 
 // mix32 is the MurmurHash3 finalizer. The low bits of FNV-1a depend only on

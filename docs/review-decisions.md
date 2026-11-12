@@ -1020,3 +1020,31 @@
 - 却下の理由: 事実と違う。TestOpenReadTimeout（応答しないサーバー、ヒントの文言、所要時間）、TestOpenConnectTimeoutCoversHandshake（挨拶を返さないサーバー、`--read-timeout` 無し）、TestOpenConnectTimeout（到達できないアドレス）が、どれも失敗を先に確かめてから書いてある。
 - 初出: B-015
 - 再出: 0
+
+## R-141 `fileStream.add` の行のハッシュと `keyHash` の行の連結が重複している
+- 対象: internal/datafile/stream.go の fileStream.add / internal/datafile/datafile.go の keyHash
+- 指摘: 「フィールドを `,` でつなぐ」ループが 2 か所にあり、片方だけ変わるとずれる。共通の関数にすべき。
+- 却下の理由: 2 つのハッシュは対象のバイト列が違う（`keyHash` は括弧なし、`add` は `(` と `)` 付き）。しかも `add` は書き込みとハッシュと長さの計算を同じループで行うのが、割り当てを減らす（B-017）仕組みそのもの。共通化すると 2 回走査するか、コールバックが要る。ずれは、`TestStreamMatchesInMemoryOutput`（旧実装との出力の比較）と `TestKeyHashMatchesFNV`（`hash/fnv` との比較）が検出する。`)` をハッシュから外す変更を入れると前者が落ちることを確かめた。
+- 初出: B-017
+- 再出: 0
+
+## R-142 `fileStream.add` が途中の `WriteString` のエラーを見ない
+- 対象: internal/datafile/stream.go の fileStream.add
+- 指摘: フィールドの書き込みのエラーを捨て、最後の `)` の書き込みだけ確かめている。`bufio.Writer` でなくなると、書き込みの失敗を見逃す。
+- 却下の理由: `f.bw` は具体型の `*bufio.Writer` で、最初のエラーを保持し、以降の書き込みはそのエラーを返す（標準ライブラリの仕様）。最後の書き込みで必ず見える。型が変わる将来の変更は、コンパイルの時点では気づかれないが、コメントに前提を書いてある。失敗のシナリオは、今のコードでは示せない。
+- 初出: B-017
+- 再出: 0
+
+## R-143 `f.size += n + 2` の `2` と `n` の初期値の `2` が紛らわしい
+- 対象: internal/datafile/stream.go の fileStream.add
+- 指摘: `n` の初期値の `2` は括弧、`+ 2` は区切り（`,\n` / `;\n`）で、読み違えると `MaxInsertBytes` の区切りが動く。
+- 却下の理由: 好みの問題（コメントの書き方）。動作は旧実装（`len(text) + 2`）と同じで、`MaxInsertBytes` の区切りは `TestStreamMatchesInMemoryOutput` が旧実装と比べている。理由を 1 行のコメントで足した。
+- 初出: B-017
+- 再出: 0
+
+## R-144 `fileStream.add` のハッシュを `hash/fnv` と直接比べるテストがない
+- 対象: internal/datafile/stream_test.go / bench_test.go
+- 指摘: `add` の行のハッシュは、旧実装との出力の比較でしか確かめられていない。`)` を落とすなどの誤りを見逃すかもしれない。
+- 却下の理由: 事実と違う。`)` をハッシュから外す変更を入れて `go test ./internal/datafile` を実行すると、`TestStreamMatchesInMemoryOutput/defaults` が落ちる（B-017 で確認した）。`legacyWriteStatements` は `hash/fnv` を使う旧実装そのもの。
+- 初出: B-017
+- 再出: 0
