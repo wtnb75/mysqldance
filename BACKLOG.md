@@ -345,15 +345,22 @@
   - [ ] `cp932` と `EUC-JP` のバイト列を `latin1` の列に入れた表を、`CAST(col AS BINARY)` で読み、Go の変換で正しい文字になることを 8.4 で確かめる
   - [ ] 指定の形（B-081 の `SPEC` の拡張）と、検出の限界（UTF-8 との見分け）を書く
 
-## B-106 [todo|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
-- 概要: `task test:integration:mysql57` で、`internal/source` の `TestTriggers` と `internal/dump` の `TestTriggersRoundTrip` が失敗する（B-095 の作業中に、`origin/main`（117d4c7）でも同じ失敗を確認した既存の失敗）。5.7 の `SHOW CREATE TRIGGER` は、書いたとおりの名前を返し、`CREATE DEFINER=`root`@`%` TRIGGER z_first ...` のように名前が逆引用符で囲まれない。そのため、作成順を確かめる判定（`` CREATE TRIGGER `z_first` `` を探す）に合わない。テストが 5.7 の形を想定していないのか、5.7 でのトリガーの出力が実際に正しくないのかを確かめて直す。
-- 前提: `task test:integration:mysql57` で再現する。MySQL 5.6 は同じイベントに複数のトリガーを作れないので、この 2 つのテストは 5.6 では skip する（B-095）。
+## B-107 [todo|P3] MySQL 5.7 で、DB 名で修飾して書かれたトリガーの出力を修飾なしにする
+- 概要: 5.7 の `SHOW CREATE TRIGGER` は、書いたとおりの文を返す（B-106 で確認）。`CREATE TRIGGER db.t ... ON db.b ...` と書かれたトリガーは、5.7 では修飾付きのまま出力に入り、別の DB 名へ復元できない（8.x の出力は修飾なしで、`TestTriggers` が「出力に DB 名を含まない」ことを確かめている）。5.7 で再現させてから、修飾なしにして出力する。
 - 受け入れ条件:
-  - [ ] 失敗の原因を、テストの想定の誤りか、出力の誤りかに分けて記録する
-  - [ ] `task test:integration:mysql57` で `TestTriggers` と `TestTriggersRoundTrip` が通る
-  - [ ] 5.7 のトリガーの出力が、作成順どおりに復元できることを往復で確かめる（8.0 / 8.4 と同じ条件で）
+  - [ ] 5.7 で、DB 名で修飾して作ったトリガーの出力に DB 名が含まれず、別名の DB へ復元できることを、失敗するテストを先に書いて確かめる
+  - [ ] 8.0 / 8.4 の出力は変わらない
 
 # Done
+
+## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
+- 概要: `task test:integration:mysql57` で、`internal/source` の `TestTriggers` と `internal/dump` の `TestTriggersRoundTrip` が失敗する（B-095 の作業中に、`origin/main`（117d4c7）でも同じ失敗を確認した既存の失敗）。5.7 の `SHOW CREATE TRIGGER` は、書いたとおりの名前を返し、`CREATE DEFINER=`root`@`%` TRIGGER z_first ...` のように名前が逆引用符で囲まれない。そのため、作成順を確かめる判定（`` CREATE TRIGGER `z_first` `` を探す）に合わない。テストが 5.7 の形を想定していないのか、5.7 でのトリガーの出力が実際に正しくないのかを確かめて直す。
+- 前提: `task test:integration:mysql57` で再現する。MySQL 5.6 は同じイベントに複数のトリガーを作れないので、この 2 つのテストは 5.6 では skip する（B-095）。
+- 結果: 原因はテストの想定の誤りで、出力は正しい。5.7 の `SHOW CREATE TRIGGER` は書いた文をそのまま返すので名前が囲まれないが、囲まれていない名前もそのまま復元できる。両テストの判定を、名前が逆引用符で囲まれていてもいなくても合うようにした（実装は変えていない）。往復テストは、5.7 でも `information_schema.TRIGGERS` の `ACTION_ORDER` を含む定義が復元の前後で一致する。5.7 では、DB 名で修飾して書かれたトリガーが修飾付きのまま出力に入ることを見つけたので、B-107 に積んだ。
+- 受け入れ条件:
+  - [x] 失敗の原因を、テストの想定の誤りか、出力の誤りかに分けて記録する
+  - [x] `task test:integration:mysql57` で `TestTriggers` と `TestTriggersRoundTrip` が通る
+  - [x] 5.7 のトリガーの出力が、作成順どおりに復元できることを往復で確かめる（8.0 / 8.4 と同じ条件で）
 
 ## B-101 [done|P2] 255 バイトを超える出力ファイル名を決定的に短縮する
 - 概要: エスケープ後のファイル名が 255 バイトを超えると全ターゲットで実行が失敗する（`maxFileNameBytes`、`internal/dump/dump.go`）。非 ASCII の名前は 1 文字約 9 バイトに膨らむので、30 文字ほどの日本語のテーブル名で超える。超えたときだけ名前を短縮して続ける。

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -97,7 +98,19 @@ func TestTriggersRoundTrip(t *testing.T) {
 		t.Errorf("triggers file does not start with the header and DELIMITER:\n%.300s", text)
 	}
 	// The creation order, not the name order, decides: z_first before a_second.
-	if iz, ia := strings.Index(text, "CREATE TRIGGER `z_first`"), strings.Index(text, "CREATE TRIGGER `a_second`"); iz < 0 || ia < iz {
+	// MySQL 5.7 keeps the statement as written, so the name may be unquoted.
+	quote := "`"
+	if e.isMySQL57(t) {
+		quote = "`?"
+	}
+	indexOf := func(name string) int {
+		loc := regexp.MustCompile("CREATE TRIGGER " + quote + regexp.QuoteMeta(name) + quote + `\s`).FindStringIndex(text)
+		if loc == nil {
+			return -1
+		}
+		return loc[0]
+	}
+	if iz, ia := indexOf("z_first"), indexOf("a_second"); iz < 0 || ia < iz {
 		t.Errorf("z_first (%d) must come before a_second (%d) in:\n%s", iz, ia, text)
 	}
 
