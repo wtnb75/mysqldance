@@ -915,3 +915,24 @@
 - 却下の理由: 手順どおり。`impl-backlog` は、完了の記録（チェックと `# Done` への移動）を検証の後、commit の前に、実装と同じ変更に入れる。レビューの時点では途中の状態を書かない（`BACKLOG.md` に実装中の中間状態は書かない）。
 - 初出: B-096
 - 再出: 0
+
+## R-126 外部キー名の短縮・警告・重複検出の手順と、主キー名の規則が `WriteSchema` と二重になっている
+- 対象: internal/writer/postgres.go の WriteConstraints（`used` と `pgShortName(t.Name+"__PRIMARY")`）
+- 指摘: 「短縮、警告、持ち主の記録、重複の検出」が `WriteSchema` の索引名の処理とほぼ同じで、主キー名の組み立ても 2 か所にある。ヘルパーに共通化すべき。
+- 却下の理由: 失敗のシナリオを示せない（好みの問題）。短縮の規則そのもの（切り方とハッシュ）は `pgShortName` 1 か所にあり、両方がそれを呼ぶ。重複しているのは数行の手順で、衝突の判定の単位が違う（索引はスキーマ全体の `taken`、制約名はテーブルごとの `used`）ので、共通化するとむしろ引数が増える。主キー名の規則が将来変わったら、`TestPostgresForeignKeyNamedLikeThePrimaryKeyIsAnError` が失敗する。
+- 初出: B-097
+- 再出: 0
+
+## R-127 主キーが出力されることを確かめずに、`<table>__PRIMARY` を予約している
+- 対象: internal/writer/postgres.go の WriteConstraints
+- 指摘: `WriteSchema` が主キーを出力しない仕様に変わると、外部キーが不要に失敗する。
+- 却下の理由: 推測。今の `WriteSchema` は、主キーが出力できない列を使うときにエラーで止まる（`the primary key uses a column that is not output`）ので、成功した実行では主キーは必ず出力される。仕様が変わったときは、上のテストが失敗して気づく。
+- 初出: B-097
+- 再出: 0
+
+## R-128 統合テスト `TestPostgresLongForeignKeyName` が `pgCells` の `search_path` に依存している
+- 対象: internal/dump/postgres_test.go の TestPostgresLongForeignKeyName
+- 指摘: `pgCells` が `search_path` を設定しなければ、`current_schema()` が `public` になって 0 行になる。
+- 却下の理由: 確認済み。`pgCells` は先頭で `SET search_path` を設定する（postgres_test.go の pgCells）。統合テストは MySQL 8.0 と 8.4 の両方で、PostgreSQL 17 に対して通った（`task test:integration`）。
+- 初出: B-097
+- 再出: 0

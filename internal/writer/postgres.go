@@ -51,7 +51,7 @@ func (p *Postgres) NeedsDefs() bool { return true }
 
 // pgMaxIdent is PostgreSQL's identifier limit in bytes. A longer name is cut
 // silently by the server, which could make two names one, so it is refused
-// (pgIdent) or, for an index name, shortened by us (pgShortName).
+// (pgIdent) or, for an index or foreign key name, shortened by us (pgShortName).
 const pgMaxIdent = 63
 
 const pgSettings = "SET client_encoding = 'UTF8';\n" +
@@ -479,13 +479,19 @@ func (p *Postgres) WriteConstraints(w io.Writer, s Schema) error {
 			return fmt.Errorf("table %s: no table definition was read", sqlvalue.QuoteIdent(t.Name))
 		}
 		have := outputs(t)
+		// Constraint names are unique within a table, and the primary key is one.
+		// Foreign key names are unique in MySQL, so a clash comes from a shortening.
+		// The primary key's name is the one WriteSchema gives it (<table>__PRIMARY,
+		// shortened); WriteSchema fails the run if the key is not output, so it is
+		// always there. Review ledger R-126, R-127.
+		used := map[string]string{}
+		if slices.ContainsFunc(def.Indexes, func(ix source.IndexDef) bool { return ix.Name == "PRIMARY" }) {
+			used[pgShortName(t.Name+"__PRIMARY")] = "the primary key"
+		}
 		for _, fk := range def.ForeignKeys {
 			skip := func(why string) {
 				warnings = append(warnings, fmt.Sprintf("table %s: foreign key %s %s and is not output",
 					sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(fk.Name), why))
-			}
-			if err := pgIdent("foreign key", fk.Name); err != nil {
-				return err
 			}
 			ref, inDB := byName[fk.RefTable]
 			refHave := outputs(ref)
@@ -506,7 +512,20 @@ func (p *Postgres) WriteConstraints(w io.Writer, s Schema) error {
 				skip("references columns that are not a primary key or unique key")
 				continue
 			}
-			out.WriteString("ALTER TABLE " + sqlvalue.QuotePGIdent(t.Name) + " ADD CONSTRAINT " + sqlvalue.QuotePGIdent(fk.Name) +
+			// Only a foreign key that is output has a PostgreSQL name. A failed run
+			// prints no warnings, so an error names the name before the cut.
+			name, myTable, myFK := pgShortName(fk.Name), sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(fk.Name)
+			who := "foreign key " + myFK
+			if name != fk.Name {
+				warnings = append(warnings, fmt.Sprintf("table %s: foreign key %s is named %s in PostgreSQL, not %s (over %d bytes)",
+					myTable, myFK, sqlvalue.QuoteIdent(name), myFK, pgMaxIdent))
+			}
+			if prev, dup := used[name]; dup {
+				return fmt.Errorf("table %s: the PostgreSQL name %s of %s is already used by %s",
+					myTable, sqlvalue.QuoteIdent(name), who, prev)
+			}
+			used[name] = who
+			out.WriteString("ALTER TABLE " + sqlvalue.QuotePGIdent(t.Name) + " ADD CONSTRAINT " + sqlvalue.QuotePGIdent(name) +
 				" FOREIGN KEY (" + pgList(fk.Columns) + ") REFERENCES " + sqlvalue.QuotePGIdent(fk.RefTable) +
 				" (" + pgList(fk.RefColumns) + ") ON DELETE " + fk.OnDelete + " ON UPDATE " + fk.OnUpdate + ";\n")
 		}
