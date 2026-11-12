@@ -284,6 +284,11 @@ MySQL ドライバ・CLI ライブラリの選定、パッケージ構成、フ�
     - 空間型（`POINT` など 9 種）はすべて `GEOMETRY`。MariaDB の `JSON` は `DATA_TYPE` が `longtext` なので `TEXT`（ドライバの名前と一致）。
   - 置き換えられない型: 写像にない `DATA_TYPE`（MariaDB の `UUID`、`INET6`、MySQL 9 の `VECTOR` など）は、写像を推測せず、その表だけ従来の `LIMIT 0` に戻る（1 列でも写像にないと、その表の全列をサーバーから取る）。そのため、こうした型を持つ表は問い合わせが 1 回多い。理由: ドライバの名前は型ごとのプロトコル上の型と文字セットで決まり、`information_schema` から機械的に導けない型は、ずれると `sqlvalue.Literal` の分岐（数値 / 16 進 / 引用）が黙って変わり、出力が壊れるため。
   - 確認していないこと: 5.7 / 5.6 / MariaDB 11.4 での写像の一致（5.7 / 5.6 の `DATA_TYPE` は 8.x と同じ表記のはずだが、実機では未確認）、`information_schema` が遅い大きなスキーマでの時間の差（往復の回数は測ったが、秒数は測っていない）。
+- 【確認済み】別の DB を参照するビューの復元（B-023。確認日: 2026-11-13。`mysql:8.0`、`mysql:8.4`、`mariadb:10.11`、`mariadb:11.4`、`mysql:5.7.44`。5.6 は 5.7 と同じ経路だが未実行）。
+  - 失敗する: DB `d` のビューが DB `d2` のテーブルを読み、`d2` のファイルが `d` のファイルより後に来る（`d.00-schema.sql` が先）と、`d.00-schema.sql` の `CREATE VIEW` が `Error 1049: Unknown database 'd2'` で失敗する（8.0 で確認。`TestViewReadingAnotherDatabase`）。参照先が先に来る名前なら、ファイル名順の復元でそのまま通る。ファイル名の順は DB 名の（エスケープ後の）辞書順で、`mysqldance` に DB 間の順序を決める手段はない。
+  - 【決定】復元の順は変えず、`--target mysql` で、別の DB を読むビューごとに `WARN` を出す（`view `v` reads database `d2`: ...`）。参照先がファイル名順で先か後かは判定せず、常に出す（復元先に何があるかは `mysqldance` には分からず、先の場合に出さないだけの判定を持つと、`d2` が出力に含まれない場合と区別がつかないため）。README の「Limitations」に書いた。`--target sqlite` / `postgres` はビューを出力しないので、従来の「ビューは出力しない」警告のままにする。
+  - 参照先の取得: 8.0.13 以降は `VIEW_TABLE_USAGE` の `TABLE_SCHEMA` が対象 DB でない行（システムスキーマ `mysql` / `sys` / `information_schema` / `performance_schema` は除く）。MariaDB / 5.7 / 5.6 は `VIEW_DEFINITION` に `` `db`.` `` が現れるかを、`information_schema.SCHEMATA` の DB 名ごとに大文字小文字を区別せずに探す（文字列リテラルの中や、DB 名と同じ別名でも一致するが、警告が増えるだけ）。
+  - 確認していないこと: 5.6、参照先の DB がダンプに含まれず復元先にもない場合の運用。
 - 対象バージョンは MySQL 8.0 系以降で決定済み（10.5 節）。MariaDB は B-037 で差異を確認済み（上）、B-038 で対応した（`dialect` に、セッション設定・ビュー依存の取得・既定値の読み方を持たせた。ビュー依存は `VIEW_DEFINITION` の `` `schema`.`name` `` を大文字小文字を区別せずに探す）。5.7 系は B-039 で差異を確認した（上）。対応は B-040。5.6 は B-079 で差異を確認した（上）。B-095 で対応した（`dialectFor` が 5.6 を `mysql57` にする。`dialect` の中身は変えていない。専用の統合テストは `task test:integration:mysql56`）。
 
 ## 12. バックログ（MVP の範囲外。後で課題として積む）

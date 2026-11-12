@@ -157,6 +157,15 @@ func (e *env) dump(t *testing.T, dir string, dbs ...string) string {
 // on a fresh multi-statement connection, like docker-entrypoint-initdb.d.
 func (e *env) restore(t *testing.T, dir string) {
 	t.Helper()
+	if err := e.tryRestore(t, dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// tryRestore is restore that returns the error of the first failing statement
+// (a failure of the test setup itself still stops the test).
+func (e *env) tryRestore(t *testing.T, dir string) error {
+	t.Helper()
 	mc := e.mc.Clone()
 	mc.DBName = ""
 	mc.MultiStatements = true
@@ -180,13 +189,14 @@ func (e *env) restore(t *testing.T, dir string) {
 		for _, stmt := range clientStatements(string(text)) {
 			if _, err := conn.ExecContext(context.Background(), stmt); err != nil {
 				_ = conn.Close()
-				t.Fatalf("restore %s: %v\nstatement: %s", name, err, stmt)
+				return fmt.Errorf("restore %s: %w\nstatement: %s", name, err, stmt)
 			}
 		}
 		if err := conn.Close(); err != nil {
 			t.Fatal(err)
 		}
 	}
+	return nil
 }
 
 // clientStatements splits a script the way the mysql client does for the one

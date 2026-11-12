@@ -2,6 +2,7 @@ package writer
 
 import (
 	"bytes"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -53,6 +54,41 @@ func TestMySQLSchemaMatchesSchemafile(t *testing.T) {
 	}
 	if strings.Contains(got.String(), "AUTO_INCREMENT=7") || strings.Contains(got.String(), "DEFINER") {
 		t.Errorf("AUTO_INCREMENT or DEFINER left in %q", got.String())
+	}
+}
+
+// A view that reads another database restores only if that database is already
+// there (B-023): the output is unchanged, and the dump says so for each view.
+func TestMySQLWarnsAboutViewsReadingAnotherDatabase(t *testing.T) {
+	w := NewMySQL(datafile.Options{})
+	views := []schemafile.View{
+		{Name: "a", Create: "CREATE VIEW `a` AS select 1"},
+		{Name: "b", Create: "CREATE VIEW `b` AS select 1 from `x`.`t`, `y`.`t`", Reads: []string{"x", "y"}},
+		{Name: "c", Create: "CREATE VIEW `c` AS select 1 from `x`.`t`", Reads: []string{"x"}},
+	}
+	var warns []string
+	var got bytes.Buffer
+	err := w.WriteSchema(&got, Schema{DB: "d", CreateDatabase: "CREATE DATABASE `d`", Views: views,
+		Warn: func(msg string) { warns = append(warns, msg) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"view `b` reads database `x`: it must be restored before this one (files restore in file name order), or the CREATE VIEW fails",
+		"view `b` reads database `y`: it must be restored before this one (files restore in file name order), or the CREATE VIEW fails",
+		"view `c` reads database `x`: it must be restored before this one (files restore in file name order), or the CREATE VIEW fails",
+	}
+	if !slices.Equal(warns, want) {
+		t.Errorf("warnings = %q, want %q", warns, want)
+	}
+
+	// The warnings do not change the file, and a nil Warn is allowed.
+	var quiet bytes.Buffer
+	if err := w.WriteSchema(&quiet, Schema{DB: "d", CreateDatabase: "CREATE DATABASE `d`", Views: views}); err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != quiet.String() {
+		t.Errorf("Warn changed the output:\n got: %q\nwant: %q", got.String(), quiet.String())
 	}
 }
 

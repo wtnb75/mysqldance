@@ -211,7 +211,7 @@ func TestWrite(t *testing.T) {
 	err := Write(&buf, "my`db",
 		"CREATE DATABASE `my``db` /*!40100 DEFAULT CHARACTER SET utf8mb4 */",
 		[]Table{{"b", "CREATE TABLE `b` (x int)"}, {"a", "CREATE TABLE `a` (x int)"}},
-		[]View{{"v", "CREATE VIEW `v` AS select 1"}})
+		[]View{{Name: "v", Create: "CREATE VIEW `v` AS select 1"}})
 	if err != nil {
 		t.Fatal(err)
 	}

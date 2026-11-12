@@ -34,10 +34,12 @@ type dialect struct {
 	// key parts, 8.0.13+) for unique indexes, in SEQ_IN_INDEX order.
 	// Param: schema.
 	uniqueKeys string
-	// viewDeps returns the objects of schema that each of views references,
-	// as (view, referenced name) pairs. Names not in views may be returned too;
-	// the caller keeps the views only.
-	viewDeps func(ctx context.Context, conn *sql.Conn, schema string, views []string) ([]viewDep, error)
+	// viewDeps returns what each of views references: same, the objects of
+	// schema, as (view, referenced name) pairs (names not in views may be
+	// returned too; the caller keeps the views only), and foreign, the other
+	// databases it reads, as (view, database name) pairs. The system schemas
+	// (mysql, sys and so on) are not reported: every server has them.
+	viewDeps func(ctx context.Context, conn *sql.Conn, schema string, views []string) (same, foreign []viewDep, err error)
 	// defColumns: TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_TYPE,
 	// IS_NULLABLE, COLUMN_DEFAULT, EXTRA in ordinal order. Param: schema.
 	defColumns string
@@ -58,8 +60,13 @@ type dialect struct {
 	defChecks string
 }
 
-// viewDep says that a view references an object of the same schema.
+// viewDep says that a view references an object of the same schema, or (for
+// the foreign result of viewDeps) a schema.
 type viewDep struct{ view, ref string }
+
+// systemSchemas are the schemas every server has. A view that reads one of
+// them restores anywhere, so it is not a reference to another database.
+var systemSchemas = map[string]bool{"information_schema": true, "mysql": true, "performance_schema": true, "sys": true}
 
 // Session settings both servers have.
 var (
@@ -156,32 +163,39 @@ func dialectFor(version string) (dialect, error) {
 }
 
 // viewTableUsage reads the references of views from VIEW_TABLE_USAGE (8.0.13+).
-func viewTableUsage(ctx context.Context, conn *sql.Conn, schema string, _ []string) ([]viewDep, error) {
-	rows, err := conn.QueryContext(ctx, "SELECT VIEW_NAME, TABLE_NAME"+
-		" FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = ? AND TABLE_SCHEMA = ?", schema, schema)
+func viewTableUsage(ctx context.Context, conn *sql.Conn, schema string, _ []string) (same, foreign []viewDep, err error) {
+	// The server decides whether TABLE_SCHEMA is schema, so its rules for the
+	// case of names apply.
+	rows, err := conn.QueryContext(ctx, "SELECT VIEW_NAME, TABLE_SCHEMA, TABLE_NAME, TABLE_SCHEMA = ?"+
+		" FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = ?", schema, schema)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var out []viewDep
 	for rows.Next() {
-		var d viewDep
-		if err := rows.Scan(&d.view, &d.ref); err != nil {
-			return nil, err
+		var view, refSchema, ref string
+		var own bool
+		if err := rows.Scan(&view, &refSchema, &ref, &own); err != nil {
+			return nil, nil, err
 		}
-		out = append(out, d)
+		switch {
+		case own:
+			same = append(same, viewDep{view, ref})
+		case !systemSchemas[strings.ToLower(refSchema)]:
+			foreign = append(foreign, viewDep{view, refSchema})
+		}
 	}
-	return out, rows.Err()
+	return same, foreign, rows.Err()
 }
 
 // viewDefinitions finds the references of views in VIEW_DEFINITION, for a
 // server without VIEW_TABLE_USAGE. A server shows the definition with every
 // table and view qualified by its schema, so a reference is `schema`.`name`.
-func viewDefinitions(ctx context.Context, conn *sql.Conn, schema string, views []string) ([]viewDep, error) {
+func viewDefinitions(ctx context.Context, conn *sql.Conn, schema string, views []string) (same, foreign []viewDep, err error) {
 	rows, err := conn.QueryContext(ctx,
 		"SELECT TABLE_NAME, VIEW_DEFINITION FROM information_schema.VIEWS WHERE TABLE_SCHEMA = ?", schema)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	defs := map[string]string{}
@@ -189,19 +203,77 @@ func viewDefinitions(ctx context.Context, conn *sql.Conn, schema string, views [
 		var name string
 		var def sql.NullString
 		if err := rows.Scan(&name, &def); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// An account without SHOW VIEW sees an empty definition. Reading it as
 		// "no references" would silently order the views wrongly.
 		if !def.Valid || def.String == "" {
-			return nil, fmt.Errorf("the definition of view %s is not visible (SHOW VIEW privilege)", sqlvalue.QuoteIdent(name))
+			return nil, nil, fmt.Errorf("the definition of view %s is not visible (SHOW VIEW privilege)", sqlvalue.QuoteIdent(name))
 		}
 		defs[name] = def.String
 	}
 	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	// The databases to look for in the definitions. A schema without views has
+	// nothing to look in.
+	var schemas []string
+	if len(views) > 0 {
+		if schemas, err = schemaNames(ctx, conn); err != nil {
+			return nil, nil, err
+		}
+	}
+	return viewRefs(defs, schema, views), viewForeignRefs(defs, schema, views, schemas), nil
+}
+
+// schemaNames returns the names of all databases of the server.
+func schemaNames(ctx context.Context, conn *sql.Conn) ([]string, error) {
+	rows, err := conn.QueryContext(ctx, "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA")
+	if err != nil {
 		return nil, err
 	}
-	return viewRefs(defs, schema, views), nil
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// viewForeignRefs returns which databases of schemas (the names of all the
+// databases of the server) each definition in defs (view name ->
+// VIEW_DEFINITION) reads, as (view, database) pairs in the order of views and
+// then of the database names. A definition names every table with its
+// database, so a database is read when `database`. appears in it. The schema
+// itself and the system schemas do not count. Like viewRefs, this is a text
+// search: a name inside a string literal counts, and so does a table alias that
+// is also the name of a database. Both only add a warning, as does the case
+// folding (for lower_case_table_names=2) when two databases differ only in case
+// (R-149 in docs/review-decisions.md).
+func viewForeignRefs(defs map[string]string, schema string, views, schemas []string) []viewDep {
+	// The search text of each database that can count, in name order.
+	type target struct{ db, prefix string }
+	var targets []target
+	for _, db := range slices.Sorted(slices.Values(schemas)) {
+		lower := strings.ToLower(db)
+		if lower != strings.ToLower(schema) && !systemSchemas[lower] {
+			targets = append(targets, target{db, strings.ToLower(sqlvalue.QuoteIdent(db)) + ".`"})
+		}
+	}
+	var out []viewDep
+	for _, v := range views {
+		def := strings.ToLower(defs[v])
+		for _, t := range targets {
+			if strings.Contains(def, t.prefix) {
+				out = append(out, viewDep{v, t.db})
+			}
+		}
+	}
+	return out
 }
 
 // viewRefs returns which of views each definition in defs (view name ->
