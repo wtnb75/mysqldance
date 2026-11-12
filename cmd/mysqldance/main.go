@@ -65,7 +65,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	ctx, stop := notifyContext(context.Background())
 	defer stop()
 	if err := dump.Run(ctx, opt); err != nil {
-		_, _ = fmt.Fprintf(stderr, "mysqldance: %v\n", err)
+		// Report through the logger so --log-format and --log-level apply.
+		opt.Log.Error("dump failed", "error", err)
 		return 1
 	}
 	return 0

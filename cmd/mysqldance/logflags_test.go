@@ -90,6 +90,75 @@ func TestLogFlagsRejectBadValues(t *testing.T) {
 	}
 }
 
+// failingRun runs a dump against a closed port, so dump.Run fails without a
+// server, and returns the exit code and both output buffers.
+func failingRun(t *testing.T, extra ...string) (int, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	args := append(extra, "--host", "127.0.0.1", "--port", "1", "-o", t.TempDir(), "d")
+	var stdout, stderr bytes.Buffer
+	code := run(args, noEnv, &stdout, &stderr)
+	return code, &stdout, &stderr
+}
+
+// The final error of a failed dump goes through the logger: a text record by
+// default, and nothing but records in the JSON format.
+func TestRunFinalErrorUsesLogger(t *testing.T) {
+	t.Run("text", func(t *testing.T) {
+		code, stdout, stderr := failingRun(t)
+		if code != 1 {
+			t.Fatalf("run = %d, want 1", code)
+		}
+		if stdout.Len() != 0 {
+			t.Errorf("stdout = %q, want empty", stdout.String())
+		}
+		got := stderr.String()
+		if !strings.Contains(got, "level=ERROR") || strings.HasPrefix(got, "mysqldance:") {
+			t.Errorf("stderr = %q, want a level=ERROR record", got)
+		}
+	})
+	t.Run("json", func(t *testing.T) {
+		code, stdout, stderr := failingRun(t, "--log-format", "json")
+		if code != 1 {
+			t.Fatalf("run = %d, want 1", code)
+		}
+		if stdout.Len() != 0 {
+			t.Errorf("stdout = %q, want empty", stdout.String())
+		}
+		lines := strings.Split(strings.TrimSpace(stderr.String()), "\n")
+		last := lines[len(lines)-1]
+		var m map[string]any
+		if err := json.Unmarshal([]byte(last), &m); err != nil {
+			t.Fatalf("last line is not JSON: %v\n%s", err, stderr.String())
+		}
+		if m["level"] != "ERROR" || m["error"] == nil {
+			t.Errorf("last record = %v, want level ERROR with an error attribute", m)
+		}
+	})
+}
+
+// The final error is the highest level there is, so --log-level error keeps it.
+func TestRunFinalErrorSurvivesLevelError(t *testing.T) {
+	code, _, stderr := failingRun(t, "--log-level", "error")
+	if code != 1 {
+		t.Fatalf("run = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "level=ERROR") {
+		t.Errorf("stderr = %q, want a level=ERROR record", stderr.String())
+	}
+}
+
+// A usage error keeps the plain message, and the error is not logged twice.
+func TestRunUsageErrorStaysPlain(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--log-format", "json"}, noEnv, &stdout, &stderr); code != 1 {
+		t.Fatalf("run = %d, want 1", code)
+	}
+	got := stderr.String()
+	if !strings.HasPrefix(got, "mysqldance: ") || strings.Contains(got, "ERROR") {
+		t.Errorf("stderr = %q, want only the plain usage message", got)
+	}
+}
+
 // The logger writes to the stderr given to run and nothing reaches stdout.
 func TestRunLogsToStderrOnly(t *testing.T) {
 	var stdout, stderr bytes.Buffer
