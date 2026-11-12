@@ -1,6 +1,8 @@
 package writer
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"math/big"
@@ -8,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/source"
@@ -47,7 +50,8 @@ func NewPostgres(opt datafile.Options) *Postgres { return &Postgres{data: opt} }
 func (p *Postgres) NeedsDefs() bool { return true }
 
 // pgMaxIdent is PostgreSQL's identifier limit in bytes. A longer name is cut
-// silently by the server, which could make two names one, so it is refused.
+// silently by the server, which could make two names one, so it is refused
+// (pgIdent) or, for an index name, shortened by us (pgShortName).
 const pgMaxIdent = 63
 
 const pgSettings = "SET client_encoding = 'UTF8';\n" +
@@ -56,6 +60,29 @@ const pgSettings = "SET client_encoding = 'UTF8';\n" +
 
 func pgSearchPath(db string) string {
 	return "SET search_path = " + sqlvalue.QuotePGIdent(db) + ";\n"
+}
+
+// pgHashBytes is the number of bytes of the hash (two hex digits each) that
+// ends a shortened name.
+const pgHashBytes = 4
+
+// pgShortName returns name unchanged if PostgreSQL can hold it. Otherwise it
+// returns the start of name, cut on a character boundary, followed by "_" and
+// the first pgHashBytes bytes of the SHA-256 of the whole name in hex, in
+// pgMaxIdent bytes. The result depends on name alone, so a run gives the same
+// bytes every time, and names that differ only after the cut still differ.
+func pgShortName(name string) string {
+	if len(name) <= pgMaxIdent {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	suffix := "_" + hex.EncodeToString(sum[:pgHashBytes])
+	cut := pgMaxIdent - len(suffix)
+	// Back off to the start of a character, so the prefix is whole characters.
+	for cut > 0 && !utf8.RuneStart(name[cut]) {
+		cut--
+	}
+	return name[:cut] + suffix
 }
 
 // pgIdent checks that name is usable as a PostgreSQL identifier.
@@ -69,8 +96,9 @@ func pgIdent(what, name string) error {
 
 // WriteSchema implements Writer. Tables come in the order of s.Tables, each
 // followed by its indexes. The primary key and the unique and ordinary indexes
-// are named table__index, which is unique in the schema (PostgreSQL keeps
-// indexes and tables in one namespace) or an error.
+// are named table__index (shortened by pgShortName if over the limit), which is
+// unique in the schema (PostgreSQL keeps indexes and tables in one namespace)
+// or an error.
 func (p *Postgres) WriteSchema(w io.Writer, s Schema) error {
 	if err := pgIdent("database", s.DB); err != nil {
 		return err
@@ -167,14 +195,23 @@ func writePostgresTable(out *strings.Builder, t source.TableInfo, def source.Tab
 		if slices.ContainsFunc(ix.Parts, func(p source.IndexPart) bool { return p.Prefix }) {
 			warn("index %s covers a column prefix; the whole column is indexed", myName)
 		}
+		// An index name is built from two MySQL names, so MySQL's own limits do not
+		// keep it within PostgreSQL's. Only this name is shortened; the table and
+		// column names are the user's and fail the run (pgIdent).
 		full := t.Name + "__" + ix.Name
-		if err := pgIdent("index", full); err != nil {
-			return err
+		// who describes this index in an error. A failed run prints no warnings, so the
+		// error has to carry the name that was shortened.
+		who := "index " + myName + " of table " + myTable
+		if short := pgShortName(full); short != full {
+			warn("index %s is named %s in PostgreSQL, not %s (over %d bytes)",
+				myName, sqlvalue.QuoteIdent(short), sqlvalue.QuoteIdent(full), pgMaxIdent)
+			who += " (shortened from " + sqlvalue.QuoteIdent(full) + ")"
+			full = short
 		}
 		if prev, dup := taken[full]; dup {
-			return fmt.Errorf("the PostgreSQL name %s of index %s is already used by %s", sqlvalue.QuoteIdent(full), myName, prev)
+			return fmt.Errorf("the PostgreSQL name %s of %s is already used by %s", sqlvalue.QuoteIdent(full), who, prev)
 		}
-		taken[full] = "index " + myName + " of table " + myTable
+		taken[full] = who
 		switch {
 		case isPrimary:
 			lines = append(lines, "CONSTRAINT "+sqlvalue.QuotePGIdent(full)+" PRIMARY KEY ("+cl+")")

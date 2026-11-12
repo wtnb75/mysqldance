@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -266,6 +267,68 @@ func TestPostgresRoundTrip(t *testing.T) {
 	}
 	if got := pgCells(t, conn, db, "SELECT table_name::text FROM information_schema.views WHERE table_schema = current_schema()"); len(got) != 0 {
 		t.Errorf("views = %q, want none", got)
+	}
+}
+
+// MySQL allows 64 characters in a table name and in an index name; PostgreSQL
+// allows 63 bytes in table__index. Such an index is restored under a shortened
+// name, and the same name every run.
+func TestPostgresLongIndexNames(t *testing.T) {
+	e := newEnv(t)
+	pg := newPGEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	table := strings.Repeat("t", 40)
+	idx := strings.Repeat("ix", 20)
+	jp := strings.Repeat("あ", 20) // 60 bytes, 20 characters
+	e.exec(t,
+		"CREATE TABLE `"+table+"` (id INT NOT NULL, a INT, b INT, c INT, PRIMARY KEY (id),"+
+			" UNIQUE KEY `"+idx+"` (a), KEY `"+idx+"2` (b), KEY `"+jp+"` (c))",
+		"INSERT INTO `"+table+"` VALUES (1, 1, 2, 3)",
+	)
+	dir := t.TempDir()
+	log := e.dumpPostgres(t, dir, datafile.Options{}, db)
+	again := t.TempDir()
+	e.dumpPostgres(t, again, datafile.Options{}, db)
+	schema := naming.SchemaFile(db)
+	a, errA := os.ReadFile(filepath.Join(dir, schema))
+	b, errB := os.ReadFile(filepath.Join(again, schema))
+	if errA != nil || errB != nil {
+		t.Fatal(errA, errB)
+	}
+	if !bytes.Equal(a, b) {
+		t.Error("two dumps of the same database differ")
+	}
+	if !strings.Contains(log, "is named") {
+		t.Errorf("no warning about a shortened name:\n%s", log)
+	}
+
+	pg.restore(t, dir)
+	conn := pg.connect(t)
+	got := pgCells(t, conn, db, "SELECT indexname::text FROM pg_indexes WHERE schemaname = current_schema() ORDER BY indexname")
+	if len(got) != 4 {
+		t.Fatalf("indexes = %q, want 4", got)
+	}
+	for _, name := range got {
+		if n := len(strings.Trim(name, `"`)); n > 63 {
+			t.Errorf("index %s is %d bytes", name, n)
+		}
+	}
+	// The short name is kept; the long ones end in a hash of the whole name (a
+	// name PostgreSQL cut itself would end in a piece of the name instead).
+	short := strconv.Quote(table + "__PRIMARY")
+	if !slices.Contains(got, short) {
+		t.Errorf("no index %s in %q", short, got)
+	}
+	hashed := regexp.MustCompile(`_[0-9a-f]{8}"$`)
+	n := 0
+	for _, name := range got {
+		if hashed.MatchString(name) {
+			n++
+		}
+	}
+	if n != 3 {
+		t.Errorf("%d names end in a hash, want 3: %q", n, got)
 	}
 }
 
