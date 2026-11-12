@@ -22,8 +22,5 @@ jobs:
   # Builds the image and runs it, but does not push.
   image:
     uses: ./.github/workflows/image.yml
-    with:
-      push: true  # TEMP B-028
     permissions:
       contents: read
-      packages: write  # TEMP B-028
