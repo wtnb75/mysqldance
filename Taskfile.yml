@@ -9,6 +9,22 @@ tasks:
     cmds:
       - go test ./...
 
+  # Unit tests with the race detector (needs cgo and a C compiler).
+  test:race:
+    desc: Run unit tests with the race detector
+    cmds:
+      - go test -race ./...
+
+  # Writes the profile to COVER (default coverage.out, ignored by git) and
+  # prints the per-function summary.
+  test:cover:
+    desc: Run unit tests with coverage and print the per-function summary
+    vars:
+      COVER: '{{.COVER | default "coverage.out"}}'
+    cmds:
+      - go test -coverprofile={{.COVER}} ./...
+      - go tool cover -func={{.COVER}}
+
   lint:
     desc: Run golangci-lint
     cmds:
@@ -21,11 +37,49 @@ tasks:
       - go fix ./...
 
   check:
-    desc: Run fmt (go fmt, go fix), lint and unit tests in order
+    desc: Run fmt (go fmt, go fix), lint, unit tests and build in order
     cmds:
       - task: fmt
       - task: lint
       - task: test
+      - task: build
+
+  # Builds ./mysqldance (ignored by git) for the current platform, with the
+  # version and commit embedded as goreleaser does. Pass OUT=path to change
+  # the output file.
+  build:
+    desc: Build the mysqldance binary for this platform into ./mysqldance
+    vars:
+      OUT: '{{.OUT | default "mysqldance"}}'
+      VERSION:
+        sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+      COMMIT:
+        sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
+    cmds:
+      - go build -ldflags "-X main.version={{.VERSION}} -X main.commit={{.COMMIT}}" -o {{.OUT}} ./cmd/mysqldance
+
+  # Installs into $GOBIN (or $GOPATH/bin) with the same version info as build.
+  install:
+    desc: Install mysqldance into GOBIN with the version embedded
+    vars:
+      VERSION:
+        sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+      COMMIT:
+        sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
+    cmds:
+      - go install -ldflags "-X main.version={{.VERSION}} -X main.commit={{.COMMIT}}" ./cmd/mysqldance
+
+  # Passes everything after `--` to mysqldance: task run -- --version
+  run:
+    desc: Run mysqldance with the arguments given after `--`
+    cmds:
+      - go run ./cmd/mysqldance {{.CLI_ARGS}}
+
+  # Removes only the build outputs named here, and only if git ignores them.
+  clean:
+    desc: Remove build outputs (./mysqldance, dist/, dump/, coverage.out) that git ignores
+    cmds:
+      - git clean -fdX -- mysqldance dist dump coverage.out
 
   snapshot:
     desc: Build binaries for all platforms into dist/ without releasing

@@ -1,5 +1,7 @@
 # Binary built by `go build ./cmd/mysqldance` at the repository root.
 /mysqldance
+# Coverage profile of `task test:cover`.
+/coverage.out
 # Release artifacts (goreleaser).
 /dist/
 # Dump output used for local trials.
