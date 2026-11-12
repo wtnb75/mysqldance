@@ -52,6 +52,17 @@ type Config struct {
 	// seconds. Zero leaves the server's lock_wait_timeout in force (no limit of
 	// the tool's own); a negative value is an error.
 	LockTimeout time.Duration
+	// ConnectTimeout bounds making the first connection: the TCP connect, the
+	// server's greeting and the login. Zero sets no limit of its own (the TCP
+	// connect is left to the operating system); a negative value is an error.
+	ConnectTimeout time.Duration
+	// ReadTimeout bounds each wait for the server's response, so a server that
+	// stops answering fails the dump instead of stalling it. It is not a limit
+	// on the whole transfer, but it also covers a statement that sends nothing
+	// until it is done (a large ORDER BY, the wait for the global read lock),
+	// so a small value cuts those off. Zero means no limit; a negative value
+	// is an error.
+	ReadTimeout time.Duration
 	// Log receives how the snapshot is made: the target, the connections, the
 	// lock and how long it is awaited and held (Info), and the statements that
 	// take the lock and start the snapshots (Debug). Nil discards them. It never
@@ -65,6 +76,11 @@ const MaxJobs = 64
 // DefaultLockTimeout is the LockTimeout the command line uses unless told
 // otherwise.
 const DefaultLockTimeout = 30 * time.Second
+
+// DefaultConnectTimeout is the ConnectTimeout the command line uses unless
+// told otherwise. There is no default ReadTimeout: it would cut off a normal
+// read of a large table (see Config.ReadTimeout).
+const DefaultConnectTimeout = 30 * time.Second
 
 // maxLockWaitSeconds is the largest value of the lock_wait_timeout variable.
 const maxLockWaitSeconds = 31536000
@@ -162,6 +178,12 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 	if cfg.LockTimeout < 0 {
 		return nil, fmt.Errorf("option LockTimeout must not be negative, not %v", cfg.LockTimeout)
 	}
+	if cfg.ConnectTimeout < 0 {
+		return nil, fmt.Errorf("option ConnectTimeout must not be negative, not %v", cfg.ConnectTimeout)
+	}
+	if cfg.ReadTimeout < 0 {
+		return nil, fmt.Errorf("option ReadTimeout must not be negative, not %v", cfg.ReadTimeout)
+	}
 	if len(dbs) == 0 {
 		return nil, errors.New("no database to read")
 	}
@@ -207,17 +229,44 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 	// everything, including rows, travels over the text protocol. ParseTime
 	// stays false so temporal values arrive as the server's text.
 	mc.InterpolateParams = true
+	mc.Timeout, mc.ReadTimeout = cfg.ConnectTimeout, cfg.ReadTimeout
 	connector, err := mysql.NewConnector(mc)
 	if err != nil {
 		return nil, err
 	}
 	sdb := sql.OpenDB(connector)
-	s, err := start(ctx, sdb, dbs, cfg.NoLock, cfg.Jobs, cfg.LockTimeout, lg)
+	err = pingWithin(ctx, sdb, cfg.ConnectTimeout)
+	var s *Snapshot
+	if err == nil {
+		s, err = start(ctx, sdb, dbs, cfg.NoLock, cfg.Jobs, cfg.LockTimeout, lg)
+	}
 	if err != nil {
 		_ = sdb.Close()
+		// The driver reports a read timeout only as "invalid connection", and
+		// cannot tell it from a connection the server dropped, hence "may".
+		if cfg.ReadTimeout > 0 && errors.Is(err, mysql.ErrInvalidConn) {
+			err = fmt.Errorf("%w (the server may not have answered within the read timeout of %v)", err, cfg.ReadTimeout)
+		}
 		return nil, err
 	}
 	return s, nil
+}
+
+// pingWithin opens the first connection (dial, greeting and login) and gives up
+// after timeout, so a server that accepts the TCP connection but never answers
+// cannot hang Open even when no ReadTimeout is set. Zero means no limit. The
+// pool reuses the connection, so start does not connect again.
+func pingWithin(ctx context.Context, db *sql.DB, timeout time.Duration) error {
+	if timeout <= 0 {
+		return nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	err := db.PingContext(cctx)
+	if err != nil && cctx.Err() != nil && ctx.Err() == nil {
+		return fmt.Errorf("connect: no connection within the connect timeout of %v: %w", timeout, err)
+	}
+	return err
 }
 
 // pinSession runs the statements that pin every session setting that changes
