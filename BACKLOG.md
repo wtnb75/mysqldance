@@ -1,11 +1,5 @@
 # Backlog
 
-## B-019 [todo|P3] テーブルごとのクエリ数を減らす
-- 概要: `Tables` はテーブルごとに `SHOW CREATE TABLE` と `SELECT ... LIMIT 0`（型名の取得）を実行し、`Views` は `listTables` をもう一度実行する。テーブルが数十を超えると往復の回数が目立つ。
-- 受け入れ条件:
-  - [ ] `listTables` の結果を使い回し、`Tables` / `Views` で 1 回にする
-  - [ ] 型名の取得を `information_schema` の結果で置き換えられるか確かめる（置き換えられない型があれば理由を書く）
-
 ## B-023 [todo|P3] 別の DB を参照するビューの復元順を検証する
 - 概要: `Views` の依存取得は `TABLE_SCHEMA = 対象 DB` に限られ、別の DB のテーブルやビューを参照するビューは依存として扱わない。複数 DB を同じディレクトリに入れると、復元はファイル名の辞書順なので、参照先の DB が後に来ると `CREATE VIEW` が失敗する可能性がある（未確認）。B-003 とは別に、この制約を確認して README に書くか、警告を出す。
 - 受け入れ条件:
@@ -349,6 +343,15 @@
   - [ ] `--connect-timeout` と README の記述が、全ての接続に効くことに合っている
 
 # Done
+
+## B-019 [done|P3] テーブルごとのクエリ数を減らす
+- 概要: `Tables` はテーブルごとに `SHOW CREATE TABLE` と `SELECT ... LIMIT 0`（型名の取得）を実行し、`Views` は `listTables` をもう一度実行する。テーブルが数十を超えると往復の回数が目立つ。
+- 前提: 型名は mysql ドライバの `DatabaseTypeName`（`fields.go`）の値で、`sqlvalue.Literal` と SQLite / Postgres 側の出力が使う。`DATA_TYPE` と `COLUMN_TYPE`（`unsigned` の判定）から同じ名前に写像し、写像にない型は従来どおり `SELECT ... LIMIT 0` で取る（黙って別の名前にしない）。`listTables` の使い回しは `Use` で DB を切り替えたときに捨てる。
+- 結果: `listTables` の結果を `Snapshot` が DB ごとに 1 回だけ読んで持つ（`Use` で捨てる）。型名は `information_schema.COLUMNS` の `DATA_TYPE` / `COLUMN_TYPE` から写像する（`catalogTypeNames`）。1 テーブルあたりの問い合わせは `SHOW CREATE TABLE` の 1 回だけ（`TestListTablesIsReadOnce`。以前は `LIMIT 0` を含めて 2 回で、`Views` と `Defs` も一覧を読み直していた）。写像は全型の列を持つ表で、ドライバの名前と列ごとに比べた（`TestTableInfoColumnTypes`）。TEXT / BLOB は 4 つの大きさとも 1 つの名前（`TEXT` / `BLOB`）になる。写像にない型（MariaDB の `UUID` など）は、その表だけ `LIMIT 0` に戻る。詳細は設計書 11 節。MySQL 8.0 / 8.4 と MariaDB 10.11 で確認した。5.7 / 5.6 は未確認。
+- 受け入れ条件:
+  - [x] `listTables` の結果を使い回し、`Tables` / `Views`（と `Defs`）で 1 回にする
+  - [x] 型名を `information_schema` の `DATA_TYPE` / `COLUMN_TYPE` から求める。全型を含む表で、ドライバの `DatabaseTypeName` と一致することを統合テストで確かめる
+  - [x] 写像にない型は `LIMIT 0` に戻る。写像できない型があれば、その理由を設計書に書く
 
 ## B-018 [done|P3] 文字列キーの ORDER BY がインデックスを使えない影響を測る
 - 概要: 文字列キー（`char` / `varchar` / `text` 系）は `ORDER BY CAST(col AS BINARY)` で並べる。列に式を掛けるので、インデックス順では返せず filesort になる可能性がある（`EXPLAIN` で未確認）。想定規模では問題ないが、B-044 の前に影響を把握しておく。

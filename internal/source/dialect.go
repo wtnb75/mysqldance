@@ -25,7 +25,7 @@ type dialect struct {
 	session []string
 	// tables: TABLE_NAME, TABLE_TYPE, ENGINE, TABLE_ROWS. Param: schema.
 	tables string
-	// columns: TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, EXTRA, in
+	// columns: TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, EXTRA, in
 	// ordinal order. EXTRA contains "VIRTUAL GENERATED" / "STORED GENERATED"
 	// for generated columns and "INVISIBLE" (8.0.23+) for invisible ones.
 	// Param: schema.
@@ -77,7 +77,7 @@ var mysql8 = dialect{
 	session: slices.Concat(sessionPrelude, []string{"SET SESSION show_create_table_verbosity = 0"}, sessionPostlude),
 	tables: "SELECT TABLE_NAME, TABLE_TYPE, ENGINE, TABLE_ROWS" +
 		" FROM information_schema.TABLES WHERE TABLE_SCHEMA = ?",
-	columns: "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, EXTRA" +
+	columns: "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, EXTRA" +
 		" FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ?" +
 		" ORDER BY TABLE_NAME, ORDINAL_POSITION",
 	uniqueKeys: "SELECT TABLE_NAME, INDEX_NAME, COLUMN_NAME" +
