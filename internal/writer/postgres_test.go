@@ -3,8 +3,10 @@ package writer
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/schemafile"
@@ -239,11 +241,6 @@ func TestPostgresSchemaErrors(t *testing.T) {
 		"table name over 63 bytes":  func(s *Schema) { s.Tables[1].Name = long; s.Defs[long] = s.Defs["parent"] },
 		"schema name over 63 bytes": func(s *Schema) { s.DB = long },
 		"schema name starts pg_":    func(s *Schema) { s.DB = "pg_x" },
-		"index name over 63 bytes": func(s *Schema) {
-			d := s.Defs["parent"]
-			d.Indexes[1].Name = strings.Repeat("i", 60)
-			s.Defs["parent"] = d
-		},
 		"column name over 63 bytes": func(s *Schema) {
 			d := s.Defs["parent"]
 			d.Columns[1].Name = long
@@ -266,6 +263,149 @@ func TestPostgresSchemaErrors(t *testing.T) {
 				t.Errorf("WriteSchema succeeded:\n%s", b.String())
 			}
 		})
+	}
+}
+
+var hexSuffix = regexp.MustCompile(`^_[0-9a-f]{8}$`)
+
+// A name within PostgreSQL's limit is kept as it is; a longer one is cut on a
+// character boundary and ends in a hash of the whole name.
+func TestPgShortName(t *testing.T) {
+	at63 := strings.Repeat("a", 63)
+	if got := pgShortName(at63); got != at63 {
+		t.Errorf("a 63-byte name changed: %q", got)
+	}
+	for _, name := range []string{
+		strings.Repeat("a", 64),
+		strings.Repeat("a", 200),
+		// 3 bytes per character: the cut at 54 bytes falls between characters, but
+		// a prefix of 55 bytes would end in the middle of one.
+		strings.Repeat("あ", 25) + "__idx",
+		// 4 bytes per character: 54 is not a multiple of 4, so the cut must back off.
+		strings.Repeat("😀", 20) + "__idx",
+		"é" + strings.Repeat("a", 70),
+	} {
+		got := pgShortName(name)
+		if len(got) > pgMaxIdent {
+			t.Errorf("%q: %d bytes, over %d", name, len(got), pgMaxIdent)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("%q: result %q is not valid UTF-8", name, got)
+		}
+		if len(got) < 9 || !hexSuffix.MatchString(got[len(got)-9:]) {
+			t.Errorf("%q: result %q does not end in _ and 8 hex digits", name, got)
+		}
+		if !strings.HasPrefix(name, got[:len(got)-9]) {
+			t.Errorf("%q: result %q does not start with a prefix of the name", name, got)
+		}
+		if again := pgShortName(name); again != got {
+			t.Errorf("%q: %q then %q", name, got, again)
+		}
+	}
+	// The rule is part of the output format: a change to it renames indexes in
+	// every dump. The hash is sha256("parent__" + 60 "i").
+	if got, want := pgShortName("parent__"+strings.Repeat("i", 60)), "parent__"+strings.Repeat("i", 46)+"_a5daa4f3"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	// The hash is of the whole name, so two names with the same first 54 bytes differ.
+	a, b := strings.Repeat("a", 70)+"1", strings.Repeat("a", 70)+"2"
+	if pgShortName(a) == pgShortName(b) {
+		t.Errorf("%q and %q both became %q", a, b, pgShortName(a))
+	}
+}
+
+func longIndexSchema(index string) Schema {
+	s := pgSchema()
+	d := s.Defs["parent"]
+	d.Indexes[1].Name = index
+	s.Defs["parent"] = d
+	return s
+}
+
+// An index whose name would pass PostgreSQL's limit once the table name is put
+// in front is shortened, and the warning names both.
+func TestPostgresShortensLongIndexName(t *testing.T) {
+	long := strings.Repeat("i", 60)
+	full := "parent__" + long
+	short := pgShortName(full)
+	got, warns := writeSchemaText(t, longIndexSchema(long))
+	if want := "CREATE UNIQUE INDEX " + sqlvalue.QuotePGIdent(short) + ` ON "parent" ("code");` + "\n"; !strings.Contains(got, want) {
+		t.Errorf("no %q in:\n%s", want, got)
+	}
+	if strings.Contains(got, full) {
+		t.Errorf("the full name %q is still in the output:\n%s", full, got)
+	}
+	if want := "index `" + long + "` is named `" + short + "` in PostgreSQL, not `" + full + "`"; !containsAny(warns, want) {
+		t.Errorf("no warning contains %q; got %q", want, warns)
+	}
+	// Short names are untouched, and say nothing.
+	if !strings.Contains(got, `"parent__PRIMARY"`) || containsAny(warns, "parent__PRIMARY") {
+		t.Errorf("a short name was changed or reported: %q", warns)
+	}
+}
+
+func TestPostgresShortensLongPrimaryKeyName(t *testing.T) {
+	s := pgSchema()
+	table := strings.Repeat("t", 60) // within the limit, but table__PRIMARY is not
+	s.Tables[1].Name = table
+	s.Defs[table] = s.Defs["parent"]
+	delete(s.Defs, "parent")
+	for i, fk := range s.Defs["child"].ForeignKeys {
+		if fk.RefTable == "parent" {
+			s.Defs["child"].ForeignKeys[i].RefTable = table
+		}
+	}
+	full := table + "__PRIMARY"
+	short := pgShortName(full)
+	got, warns := writeSchemaText(t, s)
+	if want := "CONSTRAINT " + sqlvalue.QuotePGIdent(short) + " PRIMARY KEY"; !strings.Contains(got, want) {
+		t.Errorf("no %q in:\n%s", want, got)
+	}
+	if want := "index `PRIMARY` is named `" + short + "` in PostgreSQL, not `" + full + "`"; !containsAny(warns, want) {
+		t.Errorf("no warning contains %q; got %q", want, warns)
+	}
+}
+
+func TestPostgresLongIndexNamesAreDeterministic(t *testing.T) {
+	long := strings.Repeat("あ", 30)
+	a, _ := writeSchemaText(t, longIndexSchema(long))
+	b, _ := writeSchemaText(t, longIndexSchema(long))
+	if a != b {
+		t.Error("two renderings of the same schema differ")
+	}
+}
+
+// Two long names that start alike stay apart; only a real collision is an error.
+func TestPostgresLongIndexNamesThatStartAlike(t *testing.T) {
+	s := longIndexSchema(strings.Repeat("i", 60) + "1")
+	d := s.Defs["parent"]
+	d.Indexes[2].Name = strings.Repeat("i", 60) + "2"
+	s.Defs["parent"] = d
+	got, _ := writeSchemaText(t, s)
+	for _, n := range []string{"1", "2"} {
+		short := pgShortName("parent__" + strings.Repeat("i", 60) + n)
+		if !strings.Contains(got, sqlvalue.QuotePGIdent(short)) {
+			t.Errorf("no index %s in:\n%s", short, got)
+		}
+	}
+}
+
+func TestPostgresShortenedNameCollisionIsAnError(t *testing.T) {
+	long := strings.Repeat("i", 60)
+	short := pgShortName("parent__" + long)
+	s := longIndexSchema(long)
+	d := s.Defs["parent"]
+	// This index's own name, parent__<x>, is the shortened name above.
+	d.Indexes[2].Name = strings.TrimPrefix(short, "parent__")
+	s.Defs["parent"] = d
+	var b bytes.Buffer
+	err := NewPostgres(datafile.Options{}).WriteSchema(&b, s)
+	if err == nil {
+		t.Fatalf("WriteSchema succeeded:\n%s", b.String())
+	}
+	// A failed run reports no warnings, so the error has to say what was shortened.
+	if !strings.Contains(err.Error(), "parent__"+long) {
+		t.Errorf("the error does not name the full name: %v", err)
 	}
 }
 
