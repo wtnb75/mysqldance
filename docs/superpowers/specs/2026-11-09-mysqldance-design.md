@@ -258,6 +258,23 @@ MySQL ドライバ・CLI ライブラリの選定、パッケージ構成、フ�
   - 方法: `task test:integration:postgres`（`PG_VERSIONS` で版を選べる。既定は `14 15 16 17 18`。`TESTFLAGS` の既定は `-run Postgres`）。版ごとに MySQL 8.4 と PostgreSQL のコンテナを起動し、`TestPostgres*`（`internal/dump/postgres_test.go`。出力を実機に復元して MySQL と行数・値を比べる）を実行する。`task test:integration` の既定は `postgres:17` のまま変えていない（`PG_IMAGE` で差し替えられる）。
   - 結果: 5 つの版すべてで、6 つの統合テスト（`TestPostgresRoundTrip`、`TestPostgresDeterministicAndMinimalDiff`、`TestPostgresSplitsLargeTable`、`TestPostgresThenMySQLDumpRemovesTheConstraintsFile`、`TestPostgresRefusesValuesItCannotHold`、`TestPostgresBooleanRuleOnThisServer`）が通った。通らない版はなかった。確かめた版は 14.24、15.19、16.15、17.11、18.6（Docker の `postgres:14`〜`postgres:18`）。MariaDB と 5.7 の出力を使う 2 つのテストは、この実行では skip される（元のサーバーが違うため）。
   - 最低の版: 出力が通る版は **14 以上**（実機で確かめた範囲）。13 以前は確かめていない。README に版の制限は書かない（通らない版がないため）。
+- 【確認済み】文字列キーの `ORDER BY CAST(col AS BINARY)` は filesort になるが、影響は小さい（B-018。確認日: 2026-11-12。`mysql:8.4`（8.4.x）で 10 万行と 100 万行、`mysql:8.0` で 10 万行）。コードは変えていない。
+  - 方法: `task sample:big ROWSIZE=short` の `sample_big.str_short`（`k CHAR(32)` の主キー。行番号の MD5）と `int_short`（`BIGINT` の主キー）。`SELECT k, a, b FROM ... ORDER BY ...` を `mysql --quick` で全行読み、3 回の中央値を取った（`docker exec` を含む壁時計。クライアントとサーバーは同じホスト）。`EXPLAIN` と `Sort_*` のステータスは同じセッションで取った。`mysqldance` 全体の時間は、`int_short` と `str_short` を別々の DB に分けて 3 回ずつ測った。
+  - `EXPLAIN`: `ORDER BY CAST(k AS BINARY)` は `type=ALL`、`key=NULL`、`Extra=Using filesort`。素の `ORDER BY k` は `type=index`、`key=PRIMARY`、`Extra` なし。
+  - 所要時間（`SELECT` の全行読み、秒）:
+
+    | 問い合わせ | 8.4 / 10 万行 | 8.4 / 100 万行 | 8.0 / 10 万行 |
+    |---|---|---|---|
+    | 整数キー `ORDER BY id`（`index`） | 0.07 | 0.31 | 0.06 |
+    | 文字列キー `ORDER BY k`（`index`。照合順序の順なので**使えない**。比較用） | 0.09 | 0.55 | 0.08 |
+    | 文字列キー `ORDER BY CAST(k AS BINARY)`（**現在**。filesort） | 0.11 | 0.71 | 0.12 |
+    | 文字列キー `ORDER BY k COLLATE utf8mb4_bin`（filesort） | 0.10 | 0.73 | 0.11 |
+    | 列が `utf8mb4_0900_bin` で `ORDER BY k`（`index`） | 0.08 | 0.51 | 0.09 |
+
+    filesort の増分は、100 万行で 0.16〜0.2 秒（約 30%）。`Sort_merge_passes` は 10 万行で 7、100 万行で 66（既定の `sort_buffer_size`。`Created_tmp_disk_tables` は 0）。ディスクとメモリの使用量は測っていない。`mysqldance` 全体は、100 万行（`short`）で整数キー 0.57 秒、文字列キー 1.03 秒（行の中身も違うので、差の全部が `ORDER BY` ではない）。
+  - 注意（filesort は最初の行が出るのが遅い）: 並べ替えが終わるまで 1 行も返らない。`--read-timeout`（0 以外）を設定すると、巨大な文字列キーの表で並べ替えの間に切れうる（README の `--read-timeout` の記述にある）。この点は測っていない。
+  - 代替案: (1) `COLLATE utf8mb4_bin` で並べる: 列の照合順序と違うのでインデックスが使えず、改善しない。(2) 列がもともとバイト順の **NO PAD** の照合順序（`utf8mb4_0900_bin`、`binary` / `varbinary`）なら、`CAST` を省くとインデックスで返る。**PAD SPACE の `*_bin`（`utf8mb4_bin`、`latin1_bin` など）は不可**: 8.4 で `'a'`、`'a\t'`、`'a!'` を `utf8mb4_bin` で並べると `61`、`6109`、`6121` ではなく `6109`、`61`、`6121` になる（末尾を空白で埋めて比べるため）。決定性（バイト順）を壊すので、省いてよいのは NO PAD のものだけ。(3) 影響が小さく、効くのは NO PAD の `_bin` の列だけなので、入れない。必要になったら、列の照合順序の判定を足す別項目にする。
+  - 確認していないこと: 5.7 / 5.6 / MariaDB、複数列の文字列キー、`utf8mb4` 以外の文字セット、行が大きい表（`large`）、サーバーの `sort_buffer_size` を変えたとき、ディスクとメモリの使用量。
 - 対象バージョンは MySQL 8.0 系以降で決定済み（10.5 節）。MariaDB は B-037 で差異を確認済み（上）、B-038 で対応した（`dialect` に、セッション設定・ビュー依存の取得・既定値の読み方を持たせた。ビュー依存は `VIEW_DEFINITION` の `` `schema`.`name` `` を大文字小文字を区別せずに探す）。5.7 系は B-039 で差異を確認した（上）。対応は B-040。5.6 は B-079 で差異を確認した（上）。B-095 で対応した（`dialectFor` が 5.6 を `mysql57` にする。`dialect` の中身は変えていない。専用の統合テストは `task test:integration:mysql56`）。
 
 ## 12. バックログ（MVP の範囲外。後で課題として積む）
