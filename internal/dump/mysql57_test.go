@@ -28,11 +28,7 @@ func (e *env) requireMySQL57(t *testing.T) {
 // leave out what 5.7 lacks (INVISIBLE columns); production code never asks.
 func (e *env) isMySQL57(t *testing.T) bool {
 	t.Helper()
-	var v string
-	if err := e.admin.QueryRowContext(context.Background(), "SELECT VERSION()").Scan(&v); err != nil {
-		t.Fatal(err)
-	}
-	return strings.HasPrefix(v, "5.7.")
+	return strings.HasPrefix(e.serverVersion(t), "5.7.")
 }
 
 // TestMySQL57RoundTrip dumps a 5.7 database that has what 5.7 writes

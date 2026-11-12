@@ -9,10 +9,16 @@ import (
 
 func TestDefs(t *testing.T) {
 	cfg, db, conn := testDB(t)
-	// MariaDB and MySQL 5.7 have no functional key parts. 5.7 also drops DESC
-	// of a key part and parses a CHECK without keeping it.
+	// MariaDB and MySQL 5.7 (and 5.6; mysql57 below covers both) have no
+	// functional key parts. 5.7 also drops DESC of a key part and parses a CHECK
+	// without keeping it.
 	functionalKey, wantFunctional := " KEY ((qty + 1)),", 1
-	mariadb, mysql57 := isMariaDB(t, conn), isMySQL57(t, conn)
+	mariadb, mysql57 := isMariaDB(t, conn), isMySQL5(t, conn)
+	// MySQL 5.6 has no generated columns: twice is a plain column there.
+	twiceDef, wantGenerated := "INT AS (parent_id * 2) VIRTUAL", true
+	if isMySQL56(t, conn) {
+		twiceDef, wantGenerated = "INT", false
+	}
 	if mariadb || mysql57 {
 		functionalKey, wantFunctional = "", 0
 	}
@@ -25,7 +31,7 @@ func TestDefs(t *testing.T) {
 			" qty DECIMAL(10,2) NOT NULL DEFAULT 1.50,"+
 			" created DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"+
 			" note VARCHAR(100) NULL,"+
-			" twice INT AS (parent_id * 2) VIRTUAL,"+
+			" twice "+twiceDef+","+
 			" PRIMARY KEY (id),"+
 			" KEY idx_note (note(10), created DESC),"+
 			functionalKey+
@@ -76,7 +82,7 @@ func TestDefs(t *testing.T) {
 	if c := byName["id"]; !c.AutoIncrement {
 		t.Errorf("id = %+v", c)
 	}
-	if c := byName["twice"]; !c.Generated {
+	if c := byName["twice"]; c.Generated != wantGenerated {
 		t.Errorf("twice = %+v", c)
 	}
 

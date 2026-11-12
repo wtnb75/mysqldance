@@ -33,9 +33,9 @@ func TestSessionSettingsPinned(t *testing.T) {
 		"sql_mode":              "'ANSI_QUOTES,PAD_CHAR_TO_FULL_LENGTH'",
 		"sql_quote_show_create": "0",
 	}
-	// MariaDB has no show_create_table_verbosity, and MySQL 5.7 is not pinned
-	// to it (5.7.21 and earlier lack it), so neither can be tested for it.
-	pinsVerbosity := !isMariaDB(t, conn) && !isMySQL57(t, conn)
+	// MariaDB has no show_create_table_verbosity, and MySQL 5.7 and 5.6 are not
+	// pinned to it (5.7.21 and earlier lack it), so none can be tested for it.
+	pinsVerbosity := !isMariaDB(t, conn) && !isMySQL5(t, conn)
 	if pinsVerbosity {
 		// Adds ROW_FORMAT=DYNAMIC (the default) to SHOW CREATE TABLE.
 		mc.Params["show_create_table_verbosity"] = "1"

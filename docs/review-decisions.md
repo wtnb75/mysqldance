@@ -521,7 +521,7 @@
 - 指摘: 判定が 3 か所（`isMariaDB` を含む）に重複し、本番の `dialectFor` とずれうる。
 - 却下の理由: `isMariaDB` と同じ流儀の、パッケージごとのテスト用判定。テストが本番の判定を呼ぶと、本番が間違ったときにテストも一緒に間違う（「本番のコードは聞かない」という `isMariaDB` の方針）。
 - 初出: B-040
-- 再出: 0
+- 再出: 1（B-095。5.6 用に `isMySQL56` / `serverVersion` を足したときに再び出た。両パッケージの `serverVersion` に理由のコメントを足した）
 
 ## R-073 特権テストのユーザー名がデータベース名の接尾辞から作られ、長さの上限を超えうる
 - 対象: internal/source/parallel_snapshot_test.go の TestParallelSnapshotPrivileges
@@ -858,4 +858,39 @@
 - 指摘: `KILL` が効かない（権限がない、接続の状態など）と、`<-longDone` が 60 秒ブロックし、ロックが残る。
 - 却下の理由: 推測。テストは管理用アカウント（`MYSQLDANCE_TEST_DSN`、`root`）で、自分で開いた接続を `KILL QUERY` するので、権限は足りる。失敗したときは `t.Errorf` で報告し、待ちは 60 秒で終わる（無期限ではない）。
 - 初出: B-094
+- 再出: 0
+
+## R-118 `test:integration:mysql56` の 2 回目が `TESTFLAGS` を `-run MySQL56` で固定している
+- 対象: Taskfile.yml の test:integration:mysql56（MariaDB への 2 回目）
+- 指摘: 利用者の `TESTFLAGS=-v` が 2 回目に効かない。名前が `MySQL56` を含まない 5.6 の往復テストは MariaDB に流れず、README の「Tested」の裏が取れなくなる。
+- 却下の理由: 確定した仕様（B-095「1 回目は全テストを 8.4 へ、2 回目は 5.6 の往復テストだけを MariaDB へ」）そのもの。`test:integration:postgres` も `TESTFLAGS` を既定の `-run Postgres` で固定していて、同じ作り。5.6 の往復テストの名前は `TestMySQL56*` に揃えてある（Taskfile のコメントに書いた）。`-v` が要るときは 1 回目に効く。
+- 初出: B-095
+- 再出: 0
+
+## R-119 README の「5.6.51 は証明書を設定すれば TLS 1.2 でつながる」に、テストの裏がない
+- 対象: README.md の「MySQL 5.6」節（TLS）
+- 指摘: テストにも設計書にも裏がないまま、事実として書いている。
+- 却下の理由: 設計書 11 節（B-079）に実機の記録がある（自分で作った CA とサーバー証明書で起動した 5.6.51 に、`--ssl-mode required` と `verify-identity` の両方でハンドシェイクと認証が通った。`openssl s_client` でも TLS 1.2 を確認）。README の文言は「5.6.51 は」と版を限り、「前の版は TLS 1.2 を持たないことがある」と書いている。互換性の表の「Tested」にはしていない。
+- 初出: B-095
+- 再出: 0
+
+## R-120 `dialectFor` が 5.6.0 から 5.6.3 を、5.6.51 以外として弾かない
+- 対象: internal/source/dialect.go の dialectFor
+- 指摘: 小数秒（5.6.4 から）や TLS 1.2 を持たない古い 5.6 を黙って受け付け、後で SQL やハンドシェイクのエラーになる。
+- 却下の理由: 確定した仕様（B-095「拒否を 5.6 まで緩める」。設計書 11 節の方針 (1)）。5.7 も 5.7.44 以外を版で弾いていない（B-040）。確認した版が 5.6.51 だけであることは README に明記している。エラーは握りつぶされず、そのまま報告される（黙って落とさない）。
+- 初出: B-095
+- 再出: 0
+
+## R-121 `TestColumnPrivilegesRefused` の後始末が `DROP USER IF EXISTS` から `DROP USER` になった
+- 対象: internal/dump/dump_test.go の TestColumnPrivilegesRefused（`t.Cleanup`）
+- 指摘: アカウントが既に無いと、後始末がエラーを報告する。
+- 却下の理由: 推測。後始末は `CREATE USER` が成功した後にだけ登録され、途中でアカウントを消すコードはない。`DROP USER IF EXISTS` は 5.6 にない（5.7.8 から）ので、5.6 でも通る形にした。既存の `source` パッケージのテストも `DROP USER` を使っている。
+- 初出: B-095
+- 再出: 0
+
+## R-122 `testUser` が DB 名の乱数部分を切り詰めて、アカウント名が衝突しうる
+- 対象: internal/source/itest_test.go の testUser
+- 指摘: 12 桁の 16 進数を 7 から 8 桁に切るので、並行する実行でアカウント名が衝突しうる。
+- 却下の理由: 衝突のシナリオを示せない（推測）。8 桁の 16 進数は 32 ビットで、同じサーバーで同時に動くテストの数では衝突しない。5.6 のユーザー名の上限は 16 文字で、切らないと `CREATE USER` が失敗することを実機で確認した（R-073 の前提は 5.7 以降）。
+- 初出: B-095
 - 再出: 0

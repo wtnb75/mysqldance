@@ -292,16 +292,6 @@
   - [ ] 一致しない値があれば、一致する出力にする
   - [ ] 結果を設計書 11 節に書き、出力の表記が変わるなら README に書く
 
-## B-095 [todo|P2] MySQL 5.6 に対応する
-- 依存: B-079
-- 概要: B-079 の調査結果（設計書 11 節）に基づき、`dialectFor` の「5.7 以上が必要」の拒否を 5.6 まで緩め、5.6 は 5.7 向けの `dialect`（`mysql57`）をそのまま使う。`dialect` の中身は変えない。確認した版は 5.6.51 だけ。5.5 以前は対象外のまま拒否する（B-080 の結果を見てから別項目にする）。TLS の下限を下げる件は B-082。
-- 前提: テストは `mysql:5.6`（5.6.51）。イメージは amd64 のみなので `--platform linux/amd64` で起動する。公式イメージの 5.6 は TLS 無効で起動する（証明書を自動生成しない）ので、既定の統合テストは `--ssl-mode` を `disabled` か `preferred`（平文に落ちる）で動かす。
-- 受け入れ条件:
-  - [ ] `dialectFor` が 5.6 を `mysql57` にし、5.5 以前は拒否のまま。拒否のメッセージを「MySQL 5.6 or later」にする。`dialect` 以外のコードにバージョン固有の分岐を入れない
-  - [ ] 5.6.51 の実機で統合テストが通る（`task test:integration:mysql57` と同じ形の専用タスクで実行し、`task test:integration` の既定には含めない。MySQL 8 固有のテキストを前提にするテストは、テスト専用の判定で skip する）
-  - [ ] 5.6 の出力（`--target mysql`）を新しい 8.4 と MariaDB に復元して、行数と値が一致する往復テストがある（ゼロ日付、`DATETIME(3)` / `TIMESTAMP(6)`、暗黙の `TIMESTAMP` の既定値を含む）
-  - [ ] README の対象バージョンと、5.6 の注意（確認した版が 5.6.51 だけであること、TLS を有効にしないと `--ssl-mode preferred` が平文になること、ゼロ日付は `--target postgres` で失敗すること）を更新する
-
 ## B-096 [todo|P2] PostgreSQL 向けの出力で、長すぎるインデックス名を決定的に短縮する
 - 概要: `--target postgres` はインデックスと主キー制約を `<table>__<index>` と名付けるため、MySQL では有効な名前（テーブル名・インデックス名とも最大 64 文字）でも、PostgreSQL の上限（63 バイト）を超えて `pgIdent` でエラーになる。63 バイトを超えるときだけ、名前を決定的に短縮して出力を続ける。テーブル名・列名など、インデックス以外の名前が長すぎる場合は今まで通りエラー（対象外）。
 - 方針: 超えたときだけ、`<table>__<index>` の先頭を UTF-8 の文字境界で切り、末尾に元の完全な名前（`<table>__<index>`）の短いハッシュ（固定長の 16 進）を付けて 63 バイト以内にする。名前が上限以内なら変えない（既存の出力は 1 バイトも変わらない）。時刻・乱数・マップの反復順は使わない。短縮した名前が他の名前と衝突したら、今まで通りエラーにする。
@@ -384,7 +374,26 @@
   - [ ] `cp932` と `EUC-JP` のバイト列を `latin1` の列に入れた表を、`CAST(col AS BINARY)` で読み、Go の変換で正しい文字になることを 8.4 で確かめる
   - [ ] 指定の形（B-081 の `SPEC` の拡張）と、検出の限界（UTF-8 との見分け）を書く
 
+## B-106 [todo|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
+- 概要: `task test:integration:mysql57` で、`internal/source` の `TestTriggers` と `internal/dump` の `TestTriggersRoundTrip` が失敗する（B-095 の作業中に、`origin/main`（117d4c7）でも同じ失敗を確認した既存の失敗）。5.7 の `SHOW CREATE TRIGGER` は、書いたとおりの名前を返し、`CREATE DEFINER=`root`@`%` TRIGGER z_first ...` のように名前が逆引用符で囲まれない。そのため、作成順を確かめる判定（`` CREATE TRIGGER `z_first` `` を探す）に合わない。テストが 5.7 の形を想定していないのか、5.7 でのトリガーの出力が実際に正しくないのかを確かめて直す。
+- 前提: `task test:integration:mysql57` で再現する。MySQL 5.6 は同じイベントに複数のトリガーを作れないので、この 2 つのテストは 5.6 では skip する（B-095）。
+- 受け入れ条件:
+  - [ ] 失敗の原因を、テストの想定の誤りか、出力の誤りかに分けて記録する
+  - [ ] `task test:integration:mysql57` で `TestTriggers` と `TestTriggersRoundTrip` が通る
+  - [ ] 5.7 のトリガーの出力が、作成順どおりに復元できることを往復で確かめる（8.0 / 8.4 と同じ条件で）
+
 # Done
+
+## B-095 [done|P2] MySQL 5.6 に対応する
+- 依存: B-079
+- 概要: B-079 の調査結果（設計書 11 節）に基づき、`dialectFor` の「5.7 以上が必要」の拒否を 5.6 まで緩め、5.6 は 5.7 向けの `dialect`（`mysql57`）をそのまま使う。`dialect` の中身は変えない。確認した版は 5.6.51 だけ。5.5 以前は対象外のまま拒否する（B-080 の結果を見てから別項目にする）。TLS の下限を下げる件は B-082。
+- 前提: テストは `mysql:5.6`（5.6.51）。イメージは amd64 のみなので `--platform linux/amd64` で起動する。公式イメージの 5.6 は TLS 無効で起動する（証明書を自動生成しない）ので、既定の統合テストは `--ssl-mode` を `disabled` か `preferred`（平文に落ちる）で動かす。専用タスクは `test:integration:mysql56`。復元先は 8.4 と MariaDB 10.11 の 2 つで、タスクを 2 回に分けて走らせる（1 回目は全テストを 8.4 へ、2 回目は 5.6 の往復テストだけを MariaDB へ）。`--ssl-mode` は既定（`preferred`）のまま、平文で動かす（5.6 は TLS 1.2 を持つが、イメージは無効なので `disabled` にはしない）。
+- 結果: `dialectFor` が `5.6.` を `mysql57` にした（`dialect` の中身は変えていない）。5.5 以前は `MySQL 5.6 or later (or MariaDB) is required` で拒否する。`task test:integration:mysql56` を足した（8.4 への 1 回目は全テスト、MariaDB 10.11 への 2 回目は `-run MySQL56`）。5.6 にない機能（JSON、生成列、同じイベントの複数トリガー）を使うテストの fixture は 5.6 で skip するか 5.6 向けにし、ユーザー名は 16 文字に収めた。往復テストは `TestMySQL56RoundTrip`。README に「MySQL 5.6」節と互換性の表の行を足した。5.7.44 の統合テストで落ちる `TestTriggers` / `TestTriggersRoundTrip` は、`origin/main` でも落ちる既存の失敗で、B-106 に積んだ。
+- 受け入れ条件:
+  - [x] `dialectFor` が 5.6 を `mysql57` にし、5.5 以前は拒否のまま。拒否のメッセージを「MySQL 5.6 or later」にする。`dialect` 以外のコードにバージョン固有の分岐を入れない
+  - [x] 5.6.51 の実機で統合テストが通る（`task test:integration:mysql57` と同じ形の専用タスクで実行し、`task test:integration` の既定には含めない。MySQL 8 固有のテキストを前提にするテストは、テスト専用の判定で skip する）
+  - [x] 5.6 の出力（`--target mysql`）を新しい 8.4 と MariaDB に復元して、行数と値が一致する往復テストがある（ゼロ日付、`DATETIME(3)` / `TIMESTAMP(6)`、暗黙の `TIMESTAMP` の既定値を含む）
+  - [x] README の対象バージョンと、5.6 の注意（確認した版が 5.6.51 だけであること、TLS を有効にしないと `--ssl-mode preferred` が平文になること、ゼロ日付は `--target postgres` で失敗すること）を更新する
 
 ## B-094 [done|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
 - 概要: B-069 の PR（#43）の CI で、MySQL 8.0 の `TestLockTimeout/jobs=2`（`internal/source/lock_test.go`）が `lock_test.go:114: Open succeeded although the lock could not be taken within the timeout` で失敗した。同じコードの 1 回目の run は 8.0 / 8.4 とも通り、2 回目は 8.4 が通って 8.0 だけが失敗した。6 秒の `SLEEP` の文と 1 秒の `--lock-timeout` を、時間で競わせる作りが原因と推測している（未確認）。原因を調べ、再現させてから、安定させる。

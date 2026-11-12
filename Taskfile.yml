@@ -318,11 +318,50 @@ tasks:
           SSL_MODE: '{{if eq .VERSION "5.7.21"}}disabled{{end}}'
           RESTORE_IMAGE: "mysql:8.4"
 
+  # MySQL 5.6 is not part of test:integration either: run it when the dialect,
+  # the session settings or the catalog queries change. Only 5.6.51 (the last
+  # image) is checked. It reads with the dialect of 5.7, so the whole suite
+  # runs, and the tests written for 8.x or for 5.7 only skip themselves.
+  # The image exists for linux/amd64 only (slow to start on arm64).
+  #   - The server runs with utf8mb4, as in test:integration:mysql57.
+  #   - The official 5.6 image starts with TLS disabled (no certificate is
+  #     generated), so the default --ssl-mode (preferred) falls back to plain
+  #     text, and the tests that need a TLS server fail or skip there.
+  #   - Two runs: the whole suite restores 5.6 dumps into MySQL 8.4, then the
+  #     round-trip tests of 5.6 restore them into MariaDB 10.11. The second run
+  #     selects them by name (-run MySQL56), so name such a test TestMySQL56*
+  #     (R-118 in docs/review-decisions.md).
+  test:integration:mysql56:
+    desc: Run tests against MySQL 5.6.51 (restoring into 8.4, then MariaDB 10.11; PostgreSQL 17) started via Docker
+    cmds:
+      - task: test:integration:one
+        vars:
+          IMAGE: "mysql:5.6"
+          VERSION: "5.6"
+          PLATFORM: "linux/amd64"
+          TIMEOUT: "600"
+          SERVER_ARGS: "--character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci"
+          RESTORE_IMAGE: "mysql:8.4"
+      - task: test:integration:one
+        vars:
+          IMAGE: "mysql:5.6"
+          VERSION: "5.6"
+          PLATFORM: "linux/amd64"
+          TIMEOUT: "600"
+          SERVER_ARGS: "--character-set-server=utf8mb4 --collation-server=utf8mb4_general_ci"
+          RESTORE_IMAGE: "mariadb:10.11"
+          RESTORE_ROOT_ENV: MARIADB_ROOT_PASSWORD
+          RESTORE_ADMIN: mariadb-admin
+          TESTFLAGS: "-run MySQL56"
+
   test:integration:one:
     internal: true
     requires:
       vars: [VERSION]
     vars:
+      # The root-password variable and the ping tool of the RESTORE_IMAGE.
+      RESTORE_ROOT_ENV: '{{.RESTORE_ROOT_ENV | default "MYSQL_ROOT_PASSWORD"}}'
+      RESTORE_ADMIN: '{{.RESTORE_ADMIN | default "mysqladmin"}}'
       # Set for an image that exists for one platform only (MySQL 5.7).
       PLATFORM_FLAG: '{{if .PLATFORM}}--platform {{.PLATFORM}}{{end}}'
       # Arguments for the server, GODEBUG for the test binaries, and a second
@@ -350,7 +389,7 @@ tasks:
       - docker run -d --name {{.NAME}}-pg -e POSTGRES_PASSWORD=pg -p 127.0.0.1:{{.PG_PORT}}:5432 {{.PG_IMAGE}}
       - |
         if [ -n "{{.RESTORE_IMAGE}}" ]; then
-          docker run -d --name {{.NAME}}-restore -e MYSQL_ROOT_PASSWORD=root -p 127.0.0.1:{{.RESTORE_PORT}}:3306 {{.RESTORE_IMAGE}}
+          docker run -d --name {{.NAME}}-restore -e {{.RESTORE_ROOT_ENV}}=root -p 127.0.0.1:{{.RESTORE_PORT}}:3306 {{.RESTORE_IMAGE}}
         fi
       # The entrypoint's temporary init server has networking disabled, so a
       # TCP ping only succeeds once the real server is up.
@@ -384,7 +423,7 @@ tasks:
         if [ -n "{{.RESTORE_IMAGE}}" ]; then
           echo "waiting for the restore server {{.RESTORE_IMAGE}}..."
           i=0
-          until docker exec {{.NAME}}-restore mysqladmin ping -h 127.0.0.1 -uroot -proot --silent >/dev/null 2>&1; do
+          until docker exec {{.NAME}}-restore {{.RESTORE_ADMIN}} ping -h 127.0.0.1 -uroot -proot --silent >/dev/null 2>&1; do
             i=$((i + 1))
             if [ "$i" -ge {{.TIMEOUT}} ]; then
               echo "{{.RESTORE_IMAGE}} did not become ready within {{.TIMEOUT}}s" >&2

@@ -98,11 +98,49 @@ func isMariaDB(t *testing.T, conn *sql.Conn) bool {
 // show_create_table_verbosity, utf8mb4_0900 collations).
 func isMySQL57(t *testing.T, conn *sql.Conn) bool {
 	t.Helper()
+	return strings.HasPrefix(serverVersion(t, conn), "5.7.")
+}
+
+// isMySQL56 reports whether the test server is MySQL 5.6. Tests use it only to
+// skip checks of what 5.6 lacks (JSON, generated columns, several triggers for
+// one event, user names over 16 characters).
+func isMySQL56(t *testing.T, conn *sql.Conn) bool {
+	t.Helper()
+	return strings.HasPrefix(serverVersion(t, conn), "5.6.")
+}
+
+// isMySQL5 reports whether the test server is MySQL 5.6 or 5.7, which have no
+// INVISIBLE columns, functional keys, CHECK, show_create_table_verbosity
+// (5.7.21 and 5.6) or utf8mb4_0900 collations.
+func isMySQL5(t *testing.T, conn *sql.Conn) bool {
+	t.Helper()
+	return isMySQL56(t, conn) || isMySQL57(t, conn)
+}
+
+// testUser names an account of a test: prefix and the random part of the name
+// of db, cut to 16 characters, the limit of MySQL 5.6 (5.7 allows 32).
+func testUser(prefix, db string) string {
+	id := strings.TrimPrefix(db, "mysqldance_test_")
+	return prefix + id[:min(len(id), max(0, 16-len(prefix)))]
+}
+
+// serverVersion returns SELECT VERSION() of the test server. It is not shared
+// with the other test packages on purpose (R-072 in docs/review-decisions.md).
+func serverVersion(t *testing.T, conn *sql.Conn) string {
+	t.Helper()
 	var v string
 	if err := conn.QueryRowContext(context.Background(), "SELECT VERSION()").Scan(&v); err != nil {
 		t.Fatal(err)
 	}
-	return strings.HasPrefix(v, "5.7.")
+	return v
+}
+
+// skipOnMySQL56 skips the test on MySQL 5.6, whose fixture needs what 5.6 lacks.
+func skipOnMySQL56(t *testing.T, conn *sql.Conn, what string) {
+	t.Helper()
+	if isMySQL56(t, conn) {
+		t.Skipf("MySQL 5.6 has no %s", what)
+	}
 }
 
 func mustExec(t *testing.T, conn *sql.Conn, stmts ...string) {

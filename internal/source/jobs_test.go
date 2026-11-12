@@ -248,9 +248,9 @@ func TestJobsLockHeldForNonInnoDB(t *testing.T) {
 // reload is set) and returns its name; the account is dropped at cleanup.
 func userWithRights(t *testing.T, admin *sql.Conn, db string, reload bool) string {
 	t.Helper()
-	user := "mdj_" + strings.TrimPrefix(db, "mysqldance_test_")
+	user := testUser("mdj_", db)
 	if reload {
-		user = "mdjr_" + strings.TrimPrefix(db, "mysqldance_test_")
+		user = testUser("mdjr_", db)
 	}
 	mustExec(t, admin,
 		"CREATE USER '"+user+"'@'%' IDENTIFIED BY 'pw'",

@@ -4,7 +4,7 @@
 
 A CLI that connects directly to MySQL and writes databases to a flat directory of SQL files with **one record per line and fully deterministic output**. The same data always produces the same bytes, so you can keep dumps in Git and review diffs, or hand them straight to the official MySQL Docker image's `/docker-entrypoint-initdb.d` to restore.
 
-Targets MySQL 8.0 and later (including 8.4), MariaDB (tested on 10.11 and 11.4; see [MariaDB](#mariadb)) and MySQL 5.7 (tested on 5.7.44 only; see [MySQL 5.7](#mysql-57)). MySQL 5.6 and earlier are not supported. [Compatibility](#compatibility) lists which server, output format and restore destination were actually tried.
+Targets MySQL 8.0 and later (including 8.4), MariaDB (tested on 10.11 and 11.4; see [MariaDB](#mariadb)), MySQL 5.7 (tested on 5.7.44 only; see [MySQL 5.7](#mysql-57)) and MySQL 5.6 (tested on 5.6.51 only; see [MySQL 5.6](#mysql-56)). MySQL 5.5 and earlier are not supported. [Compatibility](#compatibility) lists which server, output format and restore destination were actually tried.
 
 ## Compatibility
 
@@ -27,15 +27,15 @@ The source is the server `mysqldance` reads. The cells say whether the output wa
 | MySQL 8.0 | Tested | Tested | Tested |
 | MySQL 5.7.44 ([notes](#mysql-57)) | Tested | Tested | Tested |
 | MariaDB 10.11 and 11.4 ([notes](#mariadb)) | Tested | Tested | Tested |
-| MySQL 5.6 | Unverified: refused by `mysqldance` today | Unverified | Unverified |
-| MySQL 5.5 and earlier | Unverified: refused | Unverified | Unverified |
+| MySQL 5.6.51 ([notes](#mysql-56)) | Tested | Unverified | Unverified: a zero date, common in 5.6, stops it |
+| MySQL 5.5 and earlier | Unverified: refused (support is tracked as B-080) | Unverified | Unverified |
 | MySQL 9.x and other MySQL-compatible servers (TiDB and so on) | Unverified | Unverified | Unverified |
 
 Notes:
 
 - Only the versions named were run; other releases of the same series are unverified (5.7.21 only for the session settings).
 - `--target postgres` stops on a value PostgreSQL cannot hold (a zero date, a NUL byte), whatever the source; zero dates are common in old servers. See [PostgreSQL output](#postgresql-output).
-- MySQL 5.6.51 was examined by hand (design document, section 11, B-079): with the version check lifted it dumps, and its output restores into 8.4 and MariaDB. That is not a supported mode, so the row stays unverified. Support is tracked as B-095, and 5.5 as B-080.
+- MySQL 5.6.51 is tested with `--target mysql` only. Its `--target sqlite` and `--target postgres` output was made and compared with 5.7.44's by hand (design document, section 11, B-079), but no test restores it, so those cells stay unverified.
 
 ### Output and restore destination
 
@@ -46,6 +46,7 @@ Notes:
 | MySQL 8.4 | Unverified | Unverified | Tested | Fails: `utf8mb4_0900_ai_ci` does not exist in MariaDB |
 | MySQL 8.0 | Unverified | Tested | Unverified | Unverified (same default collation as 8.4) |
 | MySQL 5.7.44 | Tested | Unverified | Conditional: zero-date defaults restore only because of the `SET SQL_MODE` in each file's header; 8.0 was not tried | Unverified |
+| MySQL 5.6.51 | Unverified | Unverified | Conditional: zero dates and zero-date defaults restore only because of the `SET SQL_MODE` in each file's header; 8.0 was not tried | Tested (10.11; 11.4 not tried) |
 | MariaDB 10.11 | Unverified | Unverified | Unverified | Tested into the same version; 11.4 not tried |
 | MariaDB 11.4 | Unverified | Unverified | Fails: `utf8mb4_uca1400_ai_ci` does not exist in MySQL | Tested into the same version; 10.11 not tried |
 
@@ -221,7 +222,7 @@ A server that reports itself as MariaDB is read as MariaDB. It is not rejected b
 
 ### MySQL 5.7
 
-A server whose version starts with `5.7.` is read as MySQL 5.7. **Only 5.7.44 was tested** (the session settings were also tried on 5.7.21); other 5.7 releases are untested, and 5.6 and earlier are refused. [Compatibility](#compatibility) shows which combinations of source, output and restore destination were tried.
+A server whose version starts with `5.7.` is read as MySQL 5.7. **Only 5.7.44 was tested** (the session settings were also tried on 5.7.21); other 5.7 releases are untested. MySQL 5.6 is read the same way (see [MySQL 5.6](#mysql-56)); 5.5 and earlier are refused. [Compatibility](#compatibility) shows which combinations of source, output and restore destination were tried.
 
 - **The output is 5.7's own.** `CREATE TABLE` is written as 5.7's `SHOW CREATE` prints it: integers keep their display width (`int(11)`, `bigint(20) unsigned`), and a database or table made with the stock `latin1` default says `DEFAULT CHARSET=latin1`. No conversion is made. Rows are read as `utf8mb4`, so the data of a `latin1` column is exact. The default `--target mysql` output restores into 5.7, and into MySQL 8.4 for the schemas tested; a zero-date default such as `DEFAULT '0000-00-00 00:00:00'` (a second `TIMESTAMP NOT NULL` column when `explicit_defaults_for_timestamp` is `OFF`, the 5.7 default) restores into 8.4 as well (8.0 was not tried), although 8.4's own `sql_mode` refuses it with `Invalid default value`: the `SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO'` in every file's header replaces the session's mode, which drops `NO_ZERO_DATE` and strict mode. A restore that skips the header (pasting only the `CREATE TABLE`) fails on 8.x.
 - **`show_create_table_verbosity` is not set.** 5.7.21 and earlier do not have it, and the version is not told apart. On 5.7.22 and later a server with the variable set to `ON` globally adds the default `ROW_FORMAT` to `SHOW CREATE TABLE`, so the output follows that setting (this is untested).
@@ -230,6 +231,16 @@ A server whose version starts with `5.7.` is read as MySQL 5.7. **Only 5.7.44 wa
 - **Foreign keys** without `ON DELETE` / `ON UPDATE` are reported by 5.7 as `RESTRICT`, and by 8.x as `NO ACTION`. `--target sqlite` and `--target postgres` write the word the server reports, so the same schema gives `RESTRICT` from 5.7 and `NO ACTION` from 8.x. Both load in SQLite and PostgreSQL, and they differ only in when PostgreSQL checks them (not with a deferred constraint).
 - 5.7 has no `INVISIBLE` columns, expression keys or `CHECK` constraints (a `CHECK` is parsed and dropped by the server), and it ignores `DESC` in an index, so none of them is in the output.
 - **TLS:** the official 5.7 image offers only RSA key exchange cipher suites, which Go 1.22 and later do not enable by default, so the default `--ssl-mode preferred` fails with `tls: handshake failure` against it (it does not fall back to clear text). Use `--ssl-mode disabled`, or run `mysqldance` with `GODEBUG=tlsrsakex=1` (the integration tests do). The 5.7.21 image offers TLS 1.1 at most, below the TLS 1.2 minimum, so it needs `--ssl-mode disabled`.
+
+### MySQL 5.6
+
+A server whose version starts with `5.6.` is read as MySQL 5.7 is: the same catalog queries, session settings and view ordering (see [MySQL 5.7](#mysql-57)), with no code of its own. **Only 5.6.51 was tested** (the last release of the official image); other 5.6 releases are untested, and 5.5 and earlier are refused with `MySQL 5.6 or later (or MariaDB) is required`. [Compatibility](#compatibility) shows which combinations of source, output and restore destination were tried.
+
+- **The output is 5.6's own**, as for 5.7: `int(11)`, `DEFAULT CHARSET=latin1` for the stock default, no conversion. `DATETIME(n)` and `TIMESTAMP(n)` (5.6.4 and later) and `DEFAULT CURRENT_TIMESTAMP(n)` come out as on 5.7. The default `--target mysql` output restores into MySQL 8.4 and MariaDB 10.11 for the schemas tested.
+- **Zero dates are common.** 5.6's default `sql_mode` is not strict, so `0000-00-00` and `2020-00-10` can be stored, and with `explicit_defaults_for_timestamp` `OFF` (the 5.6 default) the second `TIMESTAMP NOT NULL` column gets `DEFAULT '0000-00-00 00:00:00'` by itself. `--target mysql` and `--target sqlite` write them as they are, and the `SET SQL_MODE` in each file's header lets them restore into a strict 8.4 or MariaDB (as for 5.7). **`--target postgres` fails** on a zero date (`is not a date and time PostgreSQL accepts`) and leaves a zero-date default out with a warning.
+- **TLS:** the official 5.6 image starts with TLS disabled (it makes no certificate), so the default `--ssl-mode preferred` **silently falls back to clear text**, and the password and every row travel unencrypted. Use `--ssl-mode required` to make that a failure. A 5.6.51 server given a certificate (`--ssl-ca`, `--ssl-cert`, `--ssl-key` on the server) connects with TLS 1.2, the minimum `mysqldance` asks for; earlier 5.6 releases may not offer it.
+- 5.6 has no generated columns, `JSON`, `INVISIBLE` columns, expression keys or `CHECK` constraints, ignores `DESC` in an index, and allows one trigger for each event of a table.
+- `show_create_table_verbosity` is not set (5.6 does not have it), as for 5.7.
 
 ### Splitting large tables
 
@@ -342,7 +353,7 @@ A dump contains the table data itself, which may include personal information or
 
 ## Limitations (out of scope for the MVP)
 
-- Source servers other than MySQL 5.7 and later and MariaDB (MySQL 5.6 and earlier; see [Compatibility](#compatibility)), and output for DBMSs other than MySQL, SQLite and PostgreSQL. Parallel reading is per table (`--jobs`); one table is never read on several connections.
+- Source servers other than MySQL 5.6 and later and MariaDB (MySQL 5.5 and earlier; see [Compatibility](#compatibility)), and output for DBMSs other than MySQL, SQLite and PostgreSQL. Parallel reading is per table (`--jobs`); one table is never read on several connections.
 - Streaming for tables without a key. A table with a primary key or a NOT NULL unique key is read and written row by row, so its memory use does not grow with its size (a table of one million rows needs a few megabytes). A table without such a key is still read into memory and sorted there by the byte order of each row's output string (the intended scale for those is up to about 100,000 rows); with `--jobs N`, up to N of them are in memory at once. A temporary-file sort for them is planned.
 - Stored routines, events, and users and privileges. (Triggers are dumped for `--target mysql` only.)
 - Flags must be placed before the database names.
@@ -354,6 +365,7 @@ task test                                   # unit tests (no MySQL needed; integ
 task test:integration                       # start MySQL 8.0 and 8.4 in Docker and run integration tests
 task test:integration:mariadb               # the same against MariaDB 10.11 and 11.4 (not part of the line above)
 task test:integration:mysql57               # the same against MySQL 5.7.44 (amd64 image, so slow to start on arm64; not part of the line above)
+task test:integration:mysql56               # the same against MySQL 5.6.51 (amd64 image; restores into 8.4, then MariaDB 10.11; not part of the line above)
 task test:integration HOST=host.docker.internal TESTFLAGS=-v   # when the Docker daemon is on another host
 task lint                                   # golangci-lint
 ```

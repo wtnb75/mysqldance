@@ -44,9 +44,9 @@ func TestRowsPrimaryKeyOrder(t *testing.T) {
 	// A collation whose order differs from the binary one: as_cs orders a/A
 	// next to each other (binary order is A, B, a). MariaDB has no as_cs, so
 	// it uses a case-insensitive one (binary order is B, a, c) on other rows.
-	// MySQL 5.7 has no utf8mb4_0900 collations and does the same.
+	// MySQL 5.7 and 5.6 have no utf8mb4_0900 collations and do the same.
 	collation, strRows, wantStrs := "utf8mb4_0900_as_cs", "('a'),('B'),('A')", [][]string{{"'A'"}, {"'B'"}, {"'a'"}}
-	if isMariaDB(t, conn) || isMySQL57(t, conn) {
+	if isMariaDB(t, conn) || isMySQL5(t, conn) {
 		collation, strRows, wantStrs = "utf8mb4_general_ci", "('a'),('B'),('c')", [][]string{{"'B'"}, {"'a'"}, {"'c'"}}
 	}
 	mustExec(t, conn,
@@ -179,6 +179,7 @@ func TestRowsNoKeyDuplicates(t *testing.T) {
 
 func TestGeneratedAndInvisibleColumns(t *testing.T) {
 	cfg, db, conn := testDB(t)
+	skipOnMySQL56(t, conn, "generated or INVISIBLE columns")
 	// MySQL 5.7 has no INVISIBLE columns: the table has generated ones only.
 	invisible, cols, want := " h INT INVISIBLE,", "id, a, h, c", [][]string{{"1", "5", "7", "'2024-01-02 03:04:05'"}}
 	wantNames, vals := []string{"id", "a", "h", "c"}, "1, 5, 7, '2024-01-02 03:04:05'"
@@ -225,11 +226,17 @@ func TestEmptyTable(t *testing.T) {
 
 func TestValueLiterals(t *testing.T) {
 	cfg, db, conn := testDB(t)
+	// MySQL 5.6 has no JSON type: the column is TEXT there, which keeps the
+	// text as written, as MariaDB's JSON does.
+	jsonType := "JSON"
+	if isMySQL56(t, conn) {
+		jsonType = "TEXT"
+	}
 	mustExec(t, conn,
 		"CREATE TABLE v (id INT PRIMARY KEY,"+
 			" b BLOB, bin BINARY(3), vb VARBINARY(8), bit5 BIT(5),"+
 			" dt DATETIME, dt6 DATETIME(6), ts TIMESTAMP NULL,"+
-			" j JSON, dec_ DECIMAL(10,3), f FLOAT, txt TEXT, vc VARCHAR(20), ch CHAR(3),"+
+			" j "+jsonType+", dec_ DECIMAL(10,3), f FLOAT, txt TEXT, vc VARCHAR(20), ch CHAR(3),"+
 			" u BIGINT UNSIGNED, e ENUM('x','y'), d DATE, tm TIME, y YEAR, es VARCHAR(5), eb BLOB)",
 		// The fixture session uses +09:00; the snapshot must read UTC.
 		"SET time_zone = '+09:00'",
@@ -259,9 +266,9 @@ func TestValueLiterals(t *testing.T) {
 		{"2", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL",
 			"NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL", "NULL"},
 	}
-	if isMariaDB(t, conn) {
-		// MariaDB's JSON is LONGTEXT: the text is kept as written, where MySQL
-		// returns its normalized form (keys sorted).
+	if isMariaDB(t, conn) || isMySQL56(t, conn) {
+		// MariaDB's JSON is LONGTEXT (and 5.6's column is TEXT): the text is kept
+		// as written, where MySQL returns its normalized form (keys sorted).
 		want[0][8] = `'{\"b\": 1, \"a\": [1, \"x\"]}'`
 	}
 	got := rowsOf(t, s, "v")
