@@ -136,6 +136,11 @@ type Snapshot struct {
 	// reader only (Config.Jobs above 1).
 	others   []*Snapshot
 	lockConn *sql.Conn
+	// tableList is the result of listTables for name, kept so Tables, Views and
+	// Defs read the catalog once; use drops it. tableListed tells a cached empty
+	// list from none.
+	tableList   []tableRow
+	tableListed bool
 }
 
 // Readers returns the connections that can read rows in parallel: the
@@ -559,6 +564,7 @@ func (s *Snapshot) use(ctx context.Context, db string) error {
 		return err
 	}
 	s.name = db
+	s.tableList, s.tableListed = nil, false
 	return nil
 }
 
@@ -634,7 +640,22 @@ type tableRow struct {
 	rows              int64
 }
 
+// listTables returns the tables and views of the current database sorted by
+// name. The list is read once per database (all readers are at the same point
+// in time, so a later read would say the same); callers must not modify it.
 func (s *Snapshot) listTables(ctx context.Context) ([]tableRow, error) {
+	if s.tableListed {
+		return s.tableList, nil
+	}
+	list, err := s.readTables(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.tableList, s.tableListed = list, true
+	return list, nil
+}
+
+func (s *Snapshot) readTables(ctx context.Context) ([]tableRow, error) {
 	rows, err := s.conn.QueryContext(ctx, s.dialect.tables, s.name)
 	if err != nil {
 		return nil, err
@@ -674,10 +695,10 @@ func checkTableType(name, typ string) error {
 }
 
 type columnRow struct {
-	name, dataType string
-	nullable       bool
-	generated      bool
-	invisible      bool
+	name, dataType, columnType string
+	nullable                   bool
+	generated                  bool
+	invisible                  bool
 }
 
 func (s *Snapshot) listColumns(ctx context.Context) (map[string][]columnRow, error) {
@@ -690,7 +711,7 @@ func (s *Snapshot) listColumns(ctx context.Context) (map[string][]columnRow, err
 	for rows.Next() {
 		var table, nullable, extra string
 		var c columnRow
-		if err := rows.Scan(&table, &c.name, &c.dataType, &nullable, &extra); err != nil {
+		if err := rows.Scan(&table, &c.name, &c.dataType, &c.columnType, &nullable, &extra); err != nil {
 			return nil, err
 		}
 		c.nullable = nullable == "YES"
@@ -791,13 +812,9 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
 			continue
 		}
 		ti := TableInfo{Name: r.name, Engine: r.engine, ApproxRows: r.rows}
-		var names []string
 		for _, c := range columns[r.name] {
 			if c.generated || c.invisible {
 				ti.ListColumns = true
-			}
-			if !c.generated {
-				names = append(names, c.name)
 			}
 		}
 		ti.OrderBy = chooseKey(keys[r.name], columns[r.name])
@@ -808,7 +825,7 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
 		if err := checkAllColumnsVisible(ti.Create, columns[r.name]); err != nil {
 			return nil, nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(r.name), err)
 		}
-		if ti.Columns, err = s.columnTypes(ctx, r.name, names); err != nil {
+		if ti.Columns, err = s.tableColumns(ctx, r.name, columns[r.name]); err != nil {
 			return nil, nil, fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(r.name), err)
 		}
 		if !strings.EqualFold(ti.Engine, "InnoDB") && !s.locked {
@@ -832,6 +849,67 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
 		out = append(out, ti)
 	}
 	return out, warnings, nil
+}
+
+// catalogTypeNames maps information_schema DATA_TYPE to the name the MySQL
+// driver gives the same column (database/sql's DatabaseTypeName), minus the
+// UNSIGNED prefix of the integer types. Only types whose name was checked
+// against the driver (TestTableInfoColumnTypes) are listed; the others are
+// read from the server instead.
+var catalogTypeNames = map[string]string{
+	"tinyint": "TINYINT", "smallint": "SMALLINT", "mediumint": "MEDIUMINT", "int": "INT", "bigint": "BIGINT",
+	"decimal": "DECIMAL", "float": "FLOAT", "double": "DOUBLE", "bit": "BIT", "year": "YEAR",
+	"date": "DATE", "datetime": "DATETIME", "timestamp": "TIMESTAMP", "time": "TIME",
+	"char": "CHAR", "varchar": "VARCHAR", "binary": "BINARY", "varbinary": "VARBINARY",
+	// The server sends one protocol type (BLOB) for all four sizes of TEXT and
+	// of BLOB, so the driver's names do not tell the sizes apart.
+	"tinytext": "TEXT", "text": "TEXT", "mediumtext": "TEXT", "longtext": "TEXT",
+	"tinyblob": "BLOB", "blob": "BLOB", "mediumblob": "BLOB", "longblob": "BLOB",
+	"enum": "ENUM", "set": "SET", "json": "JSON",
+	"geometry": "GEOMETRY", "point": "GEOMETRY", "linestring": "GEOMETRY", "polygon": "GEOMETRY",
+	"multipoint": "GEOMETRY", "multilinestring": "GEOMETRY", "multipolygon": "GEOMETRY",
+	"geometrycollection": "GEOMETRY", "geomcollection": "GEOMETRY",
+}
+
+// catalogTypeName returns the driver's type name for a column described by its
+// information_schema DATA_TYPE and COLUMN_TYPE, and false when the type has no
+// mapping.
+func catalogTypeName(dataType, columnType string) (string, bool) {
+	name, ok := catalogTypeNames[strings.ToLower(dataType)]
+	if !ok {
+		return "", false
+	}
+	switch name {
+	case "TINYINT", "SMALLINT", "MEDIUMINT", "INT", "BIGINT":
+		// ZEROFILL implies UNSIGNED, and COLUMN_TYPE shows both.
+		if strings.Contains(strings.ToLower(columnType), "unsigned") {
+			name = "UNSIGNED " + name
+		}
+	}
+	return name, true
+}
+
+// tableColumns returns the selectable (non-generated) columns of table with
+// their type names. The names come from the catalog rows already read; if one
+// column has a type without a mapping, they all come from the server, as a
+// query for no rows (columnTypes).
+func (s *Snapshot) tableColumns(ctx context.Context, table string, cols []columnRow) ([]sqlvalue.Column, error) {
+	out := make([]sqlvalue.Column, 0, len(cols))
+	names := make([]string, 0, len(cols))
+	mapped := true
+	for _, c := range cols {
+		if c.generated {
+			continue
+		}
+		names = append(names, c.name)
+		name, ok := catalogTypeName(c.dataType, c.columnType)
+		mapped = mapped && ok
+		out = append(out, sqlvalue.Column{Name: c.name, TypeName: name})
+	}
+	if mapped {
+		return out, nil
+	}
+	return s.columnTypes(ctx, table, names)
 }
 
 // keyTypes returns the DATA_TYPE of each key column, in key order.

@@ -1048,3 +1048,31 @@
 - 却下の理由: 事実と違う。`)` をハッシュから外す変更を入れて `go test ./internal/datafile` を実行すると、`TestStreamMatchesInMemoryOutput/defaults` が落ちる（B-017 で確認した）。`legacyWriteStatements` は `hash/fnv` を使う旧実装そのもの。
 - 初出: B-017
 - 再出: 0
+
+## R-145 型名の写像表がドライバの名前と合うかは、統合テストを実行しないと分からない
+- 対象: internal/source/source.go の catalogTypeNames
+- 指摘: 写像表の名前がドライバの `DatabaseTypeName` と違うと、`sqlvalue.Literal` が黙って別の分岐に進み、出力が変わる。
+- 却下の理由: 推測ではなく確認済み。`TestTableInfoColumnTypes` が全型の列を持つ表で、写像の結果と `columnTypes`（ドライバの名前）を列ごとに比べる。MySQL 8.0 / 8.4 と MariaDB 10.11 で通った（B-019）。このテストで TEXT / BLOB が 4 つの大きさとも 1 つの名前になることも見つかり、写像に反映した。
+- 初出: B-019
+- 再出: 0
+
+## R-146 `tableListed` は不要な状態で、DB 名をキーにすべき
+- 対象: internal/source/source.go の Snapshot.tableList / tableListed
+- 指摘: 将来 `s.name` を `use` を通さずに書き換えると、古い一覧を返す。
+- 却下の理由: 推測。`s.name` を書き換えるのは `use` だけで、そこで一覧を捨てる（`TestListTablesFollowsUse`）。空の一覧を「未取得」と区別するのに `tableListed` が要る。
+- 初出: B-019
+- 再出: 0
+
+## R-147 `catalogTypeName` の整数の型の一覧が写像表と二重になっている
+- 対象: internal/source/source.go の catalogTypeName の switch
+- 指摘: 整数の型を写像表に足して switch に足し忘れると、UNSIGNED の接頭辞が付かない。
+- 却下の理由: 仮定の話で、今の失敗は示せない。整数の型は固定（5 種類）で、`TestCatalogTypeName` と `TestTableInfoColumnTypes`（UNSIGNED と ZEROFILL の列）が全部を確かめる。
+- 初出: B-019
+- 再出: 0
+
+## R-148 `tableColumns` が、写像にない型があるとき捨てる結果も作る
+- 対象: internal/source/source.go の tableColumns
+- 指摘: 1 列でも写像にないと全体を `LIMIT 0` に戻すので、先に作った結果が無駄になる。
+- 却下の理由: 好みの問題。無駄は列数に比例する割り当て 1 回で、`LIMIT 0` の往復に比べて無視できる。全体を戻すのは確定した仕様（黙って別の名前にしない）。
+- 初出: B-019
+- 再出: 0

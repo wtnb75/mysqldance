@@ -275,6 +275,15 @@ MySQL ドライバ・CLI ライブラリの選定、パッケージ構成、フ�
   - 注意（filesort は最初の行が出るのが遅い）: 並べ替えが終わるまで 1 行も返らない。`--read-timeout`（0 以外）を設定すると、巨大な文字列キーの表で並べ替えの間に切れうる（README の `--read-timeout` の記述にある）。この点は測っていない。
   - 代替案: (1) `COLLATE utf8mb4_bin` で並べる: 列の照合順序と違うのでインデックスが使えず、改善しない。(2) 列がもともとバイト順の **NO PAD** の照合順序（`utf8mb4_0900_bin`、`binary` / `varbinary`）なら、`CAST` を省くとインデックスで返る。**PAD SPACE の `*_bin`（`utf8mb4_bin`、`latin1_bin` など）は不可**: 8.4 で `'a'`、`'a\t'`、`'a!'` を `utf8mb4_bin` で並べると `61`、`6109`、`6121` ではなく `6109`、`61`、`6121` になる（末尾を空白で埋めて比べるため）。決定性（バイト順）を壊すので、省いてよいのは NO PAD のものだけ。(3) 影響が小さく、効くのは NO PAD の `_bin` の列だけなので、入れない。必要になったら、列の照合順序の判定を足す別項目にする。
   - 確認していないこと: 5.7 / 5.6 / MariaDB、複数列の文字列キー、`utf8mb4` 以外の文字セット、行が大きい表（`large`）、サーバーの `sort_buffer_size` を変えたとき、ディスクとメモリの使用量。
+- 【確認済み】テーブルごとの問い合わせを減らした（B-019。確認日: 2026-11-13。`mysql:8.0`、`mysql:8.4`、`mariadb:10.11`）。
+  - `listTables`（`information_schema.TABLES`）は、DB ごとに 1 回だけ読む（`Snapshot` が結果を持ち、`Use` で捨てる）。`Tables` / `Views` / `Defs` が共有する。以前は `Tables` と `Views` と `Defs` が 1 回ずつ読んでいた。
+  - 列の型名（`sqlvalue.Column.TypeName`）は、以前はテーブルごとに `SELECT 列 FROM 表 LIMIT 0` を実行してドライバの `DatabaseTypeName` を取っていた。今は、すでに読んでいる `information_schema.COLUMNS` の `DATA_TYPE` / `COLUMN_TYPE` から同じ名前に写像する（`catalogTypeNames`）。1 テーブルあたりの問い合わせは、`SHOW CREATE TABLE` の 1 回だけになる（`TestListTablesIsReadOnce`。`Questions` で数えた）。
+  - 写像の要点（`TestTableInfoColumnTypes` が全型の列を持つ表で、ドライバの名前と列ごとに比べる）:
+    - `UNSIGNED` の接頭辞が付くのは整数の型（`TINYINT` 〜 `BIGINT`）だけ。`DECIMAL` / `FLOAT` / `DOUBLE` は `UNSIGNED` でも接頭辞なし。`COLUMN_TYPE` に `unsigned` があるかで決める（`ZEROFILL` は `unsigned` を含む）。
+    - `TINYTEXT` / `TEXT` / `MEDIUMTEXT` / `LONGTEXT` は、すべて `TEXT`。`TINYBLOB` 〜 `LONGBLOB` はすべて `BLOB`。サーバーは 4 つの大きさに 1 つのプロトコル型（BLOB）を送り、ドライバは大きさを区別できないため。
+    - 空間型（`POINT` など 9 種）はすべて `GEOMETRY`。MariaDB の `JSON` は `DATA_TYPE` が `longtext` なので `TEXT`（ドライバの名前と一致）。
+  - 置き換えられない型: 写像にない `DATA_TYPE`（MariaDB の `UUID`、`INET6`、MySQL 9 の `VECTOR` など）は、写像を推測せず、その表だけ従来の `LIMIT 0` に戻る（1 列でも写像にないと、その表の全列をサーバーから取る）。そのため、こうした型を持つ表は問い合わせが 1 回多い。理由: ドライバの名前は型ごとのプロトコル上の型と文字セットで決まり、`information_schema` から機械的に導けない型は、ずれると `sqlvalue.Literal` の分岐（数値 / 16 進 / 引用）が黙って変わり、出力が壊れるため。
+  - 確認していないこと: 5.7 / 5.6 / MariaDB 11.4 での写像の一致（5.7 / 5.6 の `DATA_TYPE` は 8.x と同じ表記のはずだが、実機では未確認）、`information_schema` が遅い大きなスキーマでの時間の差（往復の回数は測ったが、秒数は測っていない）。
 - 対象バージョンは MySQL 8.0 系以降で決定済み（10.5 節）。MariaDB は B-037 で差異を確認済み（上）、B-038 で対応した（`dialect` に、セッション設定・ビュー依存の取得・既定値の読み方を持たせた。ビュー依存は `VIEW_DEFINITION` の `` `schema`.`name` `` を大文字小文字を区別せずに探す）。5.7 系は B-039 で差異を確認した（上）。対応は B-040。5.6 は B-079 で差異を確認した（上）。B-095 で対応した（`dialectFor` が 5.6 を `mysql57` にする。`dialect` の中身は変えていない。専用の統合テストは `task test:integration:mysql56`）。
 
 ## 12. バックログ（MVP の範囲外。後で課題として積む）
