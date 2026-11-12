@@ -971,3 +971,52 @@
 - 却下の理由: B-106 が確かめたのは、書いたとおりに返る名前（囲み無し）が復元できることで、修飾付きの名前は別の条件（B-107）。結果の文に両方を書き分けてある。README の互換性の表は 5.7 のトリガーを個別のマスにしておらず、変更していない。
 - 初出: B-106
 - 再出: 0
+
+## R-134 読み取りタイムアウトのヒントが、サーバーが接続を切った場合にも出る
+- 対象: internal/source/source.go の Open（`errors.Is(err, mysql.ErrInvalidConn)` でヒントを足す箇所）
+- 指摘: `KILL`・`wait_timeout`・再起動でもドライバは `ErrInvalidConn` を返すので、タイムアウトが起きていないのに「read timeout 内に応答しなかったかも」と出て、誤解させる。
+- 却下の理由: ドライバは読み取りタイムアウトを `ErrInvalidConn` にまとめて返し、原因を区別できない（ログに `i/o timeout` を出すだけ）。ヒントは「may」と留保し、`--read-timeout` を指定したときだけ付く。何も付けないと、原因の分からない `invalid connection` だけが残る（受け入れ条件「指定時間で失敗する」を使い手が確かめられない）。経過時間での推定は、同じ条件で誤る上に脆い。
+- 初出: B-015
+- 再出: 1（接続の確立中に起きた `ErrInvalidConn` へのヒントとして。Open のコメントに「may」の理由は書いてある）
+
+## R-135 `--read-timeout` が `--lock-timeout` より短い組み合わせを起動時に拒否・警告すべき
+- 対象: cmd/mysqldance/main.go の parseArgsTo（`--read-timeout` の検査）
+- 指摘: `--lock-timeout 60s --read-timeout 10s` を許すと、ロック待ちが 10 秒で原因の分からない接続エラーになる。
+- 却下の理由: 確定した仕様（B-015）は「README に書く」で、`--read-timeout` は文の種類を問わず「応答を 1 回待つ時間」の上限という単純な意味を保つ。組み合わせの検査は `--lock-timeout 0`（サーバー任せ）との関係も決めることになり、別の仕様。README のフラグ表に、`--lock-timeout` より短くしないよう書いてある。
+- 初出: B-015
+- 再出: 1（フラグの定義にコメントを足した）
+
+## R-136 `TestOpenConnectTimeout` が到達できないアドレスの扱いにより skip し、接続タイムアウトを検証できない環境がある
+- 対象: internal/source/timeout_test.go の TestOpenConnectTimeout
+- 指摘: TEST-NET-1 を即座に拒否する環境では skip され、`mc.Timeout` の代入を消してもスイートが通る。
+- 却下の理由: skip は意図した動作（拒否する環境では待ちが起きず、検証する対象が無い）。接続の確立全体に効く `ConnectTimeout` は、無応答のサーバーを使う TestOpenConnectTimeoutCoversHandshake が決定的に検証している。
+- 初出: B-015
+- 再出: 0
+
+## R-137 既定の読み取りタイムアウト 0 がフラグの箇所に直書きで、接続側は定数になっている
+- 対象: cmd/mysqldance/main.go の `--read-timeout` の定義
+- 指摘: `DefaultConnectTimeout` は定数なのに、読み取り側の既定は 0 の直書きで、2 か所に分かれる。
+- 却下の理由: 好みの問題（`CLAUDE.md` や linter の規約に無い）。0 は「制限なし」という値そのもので、既定として選んだ理由（正常な読み出しを打ち切らない）は、フラグの定義の直前のコメントと `Config.ReadTimeout`・`DefaultConnectTimeout` のコメントに書いてある。
+- 初出: B-015
+- 再出: 0
+
+## R-138 `pingWithin` が `cctx.Err() != nil` で時間切れと判定するので、期限の直前に別の理由で失敗すると誤って時間切れと報告する
+- 対象: internal/source/source.go の pingWithin
+- 指摘: 認証の拒否が期限とほぼ同時に起きると「接続タイムアウト」と報告される。`errors.Is(err, context.DeadlineExceeded)` で判定すべき。
+- 却下の理由: 期限と同じミリ秒に別の失敗が重なる偶然が必要で、起きても 1 回の誤った文言に留まる（元のエラーは `%w` で残る）。ドライバは接続の確立中に ctx が切れると、ctx のエラーではなく `ErrInvalidConn` を返しうるので、`errors.Is` に変えると本物のタイムアウトを見逃す恐れがある（TestOpenConnectTimeoutCoversHandshake が見ているのは、この経路の文言）。
+- 初出: B-015
+- 再出: 0
+
+## R-139 `mc.Timeout` / `mc.ReadTimeout` を無条件に代入するので、ドライバの既存の設定を 0 で上書きする
+- 対象: internal/source/source.go の Open（`mc.Timeout, mc.ReadTimeout = ...`）
+- 指摘: DSN の `timeout=` などで設定済みの値を、新しいフィールドの 0 が消す。
+- 却下の理由: 事実と違う。`mc` は同じ関数の中で `mysql.NewConfig()` から作り、DSN を読まないので、上書きされる既存の値が無い。0 は「制限なし」で、README とフィールドのコメントに書いてある。
+- 初出: B-015
+- 再出: 0
+
+## R-140 ヒント、ping のタイムアウト、停止したサーバーでの `--read-timeout` がテストされていない
+- 対象: internal/source/timeout_test.go
+- 指摘: フラグ解析のテストだけで、`ErrInvalidConn` のヒント、ping のタイムアウトのエラー、停止したサーバーでの挙動は検証されていない。
+- 却下の理由: 事実と違う。TestOpenReadTimeout（応答しないサーバー、ヒントの文言、所要時間）、TestOpenConnectTimeoutCoversHandshake（挨拶を返さないサーバー、`--read-timeout` 無し）、TestOpenConnectTimeout（到達できないアドレス）が、どれも失敗を先に確かめてから書いてある。
+- 初出: B-015
+- 再出: 0

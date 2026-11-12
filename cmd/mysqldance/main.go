@@ -173,6 +173,13 @@ The password is read from --password-file, else from MYSQL_PWD.
       --lock-timeout DUR     give up when FLUSH TABLES WITH READ LOCK has not
                              got the lock after DUR, e.g. 30s or 2m (default
                              30s; 0 = the server's own lock_wait_timeout)
+      --connect-timeout DUR  give up when the server cannot be reached within DUR
+                             (default 30s; 0 = the operating system's own limit)
+      --read-timeout DUR     give up when the server has not answered for DUR
+                             (default 0 = no limit). It also covers a statement
+                             that sends nothing until it is done, such as the
+                             wait for the lock (see --lock-timeout) or a sort of
+                             a large table, so keep it generous
   -j, --jobs N               read N tables in parallel on N connections that
                              show the same point in time (default 1). Above 1
                              the lock is always taken, so the RELOAD privilege
@@ -194,6 +201,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 		rowsPerInsert, rowsPerFile               uint64
 		maxInsertBytes                           int
 		lockTimeout                              time.Duration
+		connectTimeout, readTimeout              time.Duration
 	)
 	fs.StringVar(&host, "h", "127.0.0.1", "")
 	fs.StringVar(&host, "host", "127.0.0.1", "")
@@ -215,6 +223,11 @@ The password is read from --password-file, else from MYSQL_PWD.
 	// A limit by default is intended (B-057): an unbounded wait for the lock
 	// stalls every statement queued behind it. It applies only when a lock is taken.
 	fs.DurationVar(&lockTimeout, "lock-timeout", source.DefaultLockTimeout, "")
+	fs.DurationVar(&connectTimeout, "connect-timeout", source.DefaultConnectTimeout, "")
+	// No limit by default: a read timeout would cut off the normal read of a
+	// large table (it also covers statements that send nothing until done). It is
+	// deliberately not checked against --lock-timeout: the README says to keep it higher.
+	fs.DurationVar(&readTimeout, "read-timeout", 0, "")
 	fs.IntVar(&jobs, "j", 1, "")
 	fs.IntVar(&jobs, "jobs", 1, "")
 	fs.StringVar(&logLevel, "log-level", "info", "")
@@ -256,6 +269,10 @@ The password is read from --password-file, else from MYSQL_PWD.
 		return usage("--jobs must be between 1 and %d", source.MaxJobs)
 	case lockTimeout < 0:
 		return usage("--lock-timeout must not be negative")
+	case connectTimeout < 0:
+		return usage("--connect-timeout must not be negative")
+	case readTimeout < 0:
+		return usage("--read-timeout must not be negative")
 	case jobs > 1 && noLock:
 		// Without the lock the snapshots of the connections cannot be aligned.
 		return usage("--jobs above 1 cannot be combined with --no-lock: the lock is what makes " +
@@ -301,6 +318,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	opt.Source.NoLock = noLock
 	opt.Source.Jobs = jobs
 	opt.Source.LockTimeout = lockTimeout
+	opt.Source.ConnectTimeout, opt.Source.ReadTimeout = connectTimeout, readTimeout
 	opt.Source.Password = getenv("MYSQL_PWD")
 	if passwordFile != "" {
 		b, err := os.ReadFile(passwordFile)
