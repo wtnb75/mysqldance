@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -45,7 +46,7 @@ func TestSessionSettingsPinned(t *testing.T) {
 	}
 	sdb := sql.OpenDB(connector)
 	ctx := context.Background()
-	s, err := start(ctx, sdb, []string{db}, false, 1, 0)
+	s, err := start(ctx, sdb, []string{db}, false, 1, 0, slog.New(slog.DiscardHandler))
 	if err != nil {
 		_ = sdb.Close()
 		t.Fatalf("start: %v", err)

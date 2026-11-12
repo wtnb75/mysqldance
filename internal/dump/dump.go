@@ -74,7 +74,9 @@ func Run(ctx context.Context, opt Options) (err error) {
 	// output directory: it checks the settings and every database (existence,
 	// not a system database), so a bad one leaves the directory as it was,
 	// not even created or swept.
-	snap, err := source.Open(ctx, opt.Source, opt.DBs...)
+	cfg := opt.Source
+	cfg.Log = opt.Log
+	snap, err := source.Open(ctx, cfg, opt.DBs...)
 	if err != nil {
 		// Open covers every database (system-database check, existence,
 		// lock decision), so the error is not attributed to the first one;
