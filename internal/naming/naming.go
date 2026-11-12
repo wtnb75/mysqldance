@@ -30,16 +30,21 @@ func EscapeName(s string) string {
 	return b.String()
 }
 
+// The standalone functions below (SchemaFile ... DataFileParts) name files of
+// one database and table without the others, so they cannot know whether the
+// database part is shortened because of another table; a run uses a Plan built
+// from all the tables (R-129).
+
 // SchemaFile returns the schema file name of a database.
 func SchemaFile(db string) string {
-	return EscapeName(db) + schemaSuffix
+	return NewPlan(db, nil).SchemaFile()
 }
 
 // TriggersFile returns the name of the file that holds the triggers of a
 // database. "20" sorts after every data file (they continue with ".10-data.")
 // so loading the rows fires no trigger, and before the constraints file.
 func TriggersFile(db string) string {
-	return EscapeName(db) + triggersSuffix
+	return NewPlan(db, nil).TriggersFile()
 }
 
 // ConstraintsFile returns the name of the file a writer may add after all data
@@ -47,12 +52,12 @@ func TriggersFile(db string) string {
 // after "10", and no escaped table name can make a data file sort past it:
 // data file names continue with ".10-data.".
 func ConstraintsFile(db string) string {
-	return EscapeName(db) + constraintsSuffix
+	return NewPlan(db, nil).ConstraintsFile()
 }
 
 // DataFile returns the data file name of a table.
 func DataFile(db, table string) string {
-	return EscapeName(db) + dataInfix + EscapeName(table) + sqlExt
+	return NewPlan(db, []string{table}).DataFile(table)
 }
 
 // minPartDigits is the least width of the part number in a split data file's
@@ -67,11 +72,16 @@ const minPartDigits = 4
 // width and the lexicographic order stays the numeric order. The escaped table
 // name never contains '.', so a part name cannot equal another table's file.
 func DataFileParts(db, table string, n int) []string {
+	return NewPlan(db, []string{table}).DataFileParts(table, n)
+}
+
+// dataFileParts builds the names from the database and table parts.
+func dataFileParts(dbComp, tableComp string, n int) []string {
 	if n <= 1 {
-		return []string{DataFile(db, table)}
+		return []string{dbComp + dataInfix + tableComp + sqlExt}
 	}
 	width := max(minPartDigits, len(fmt.Sprint(n)))
-	prefix := EscapeName(db) + dataInfix + EscapeName(table) + "."
+	prefix := dbComp + dataInfix + tableComp + "."
 	names := make([]string, n)
 	for i := range names {
 		names[i] = fmt.Sprintf("%s%0*d%s", prefix, width, i+1, sqlExt)
@@ -80,10 +90,8 @@ func DataFileParts(db, table string, n int) []string {
 }
 
 // IsOwnedBy reports whether file is the schema file, the triggers file, the
-// constraints file or a data file of db.
+// constraints file or a data file of db, by its unshortened name (see
+// Plan.IsOwned for the names of a run).
 func IsOwnedBy(file, db string) bool {
-	if file == SchemaFile(db) || file == TriggersFile(db) || file == ConstraintsFile(db) {
-		return true
-	}
-	return strings.HasPrefix(file, EscapeName(db)+dataInfix) && strings.HasSuffix(file, sqlExt)
+	return isOwned(file, EscapeName(db))
 }

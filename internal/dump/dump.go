@@ -23,9 +23,6 @@ import (
 	"mysqldance/internal/writer"
 )
 
-// maxFileNameBytes is the common file-name length limit of file systems.
-const maxFileNameBytes = 255
-
 // Options configures a dump run.
 type Options struct {
 	Source source.Config
@@ -95,13 +92,15 @@ func Run(ctx context.Context, opt Options) (err error) {
 	// Lower-cased output file name -> what it was generated for, across the
 	// whole run, so names that differ only in case are rejected.
 	seen := map[string]string{}
+	// The file names of each database, for finding its files of earlier dumps.
+	plans := map[string]*naming.Plan{}
 	for i, db := range opt.DBs {
 		if i > 0 {
 			if err := snap.Use(ctx, db); err != nil {
 				return fmt.Errorf("database %q: %w", db, err)
 			}
 		}
-		if err := dumpDB(ctx, opt, snap, db, seen, st); err != nil {
+		if err := dumpDB(ctx, opt, snap, db, seen, st, plans); err != nil {
 			return fmt.Errorf("database %q: %w", db, err)
 		}
 	}
@@ -113,7 +112,7 @@ func Run(ctx context.Context, opt Options) (err error) {
 	// The dump may have taken long, so check the owned names again before the
 	// first rename.
 	for _, db := range opt.DBs {
-		if _, err := ownedEntries(opt.OutDir, db); err != nil {
+		if _, err := ownedEntries(opt.OutDir, plans[db]); err != nil {
 			return fmt.Errorf("database %q: %w", db, err)
 		}
 	}
@@ -125,7 +124,7 @@ func Run(ctx context.Context, opt Options) (err error) {
 		written[filepath.Base(f.final)] = true
 	}
 	for _, db := range opt.DBs {
-		if err := removeStale(opt.OutDir, db, written); err != nil {
+		if err := removeStale(opt.OutDir, plans[db], written); err != nil {
 			return fmt.Errorf("database %q: %w", db, err)
 		}
 	}
@@ -161,7 +160,8 @@ func prepareOutDir(dir string, mode os.FileMode) error {
 	return os.Chmod(dir, mode)
 }
 
-func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, seen map[string]string, st *stage) error {
+// dumpDB stages the files of db and records its file names in plans.
+func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, seen map[string]string, st *stage, plans map[string]*naming.Plan) error {
 	createDB, err := snap.CreateDatabase(ctx)
 	if err != nil {
 		return err
@@ -209,7 +209,17 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	}
 
 	// Validate every file name before touching the directory.
-	schemaName := naming.SchemaFile(db)
+	tableNames := make([]string, len(tables))
+	for i, t := range tables {
+		tableNames[i] = t.Name
+	}
+	plan := naming.NewPlan(db, tableNames)
+	plans[db] = plan
+	if plan.DBShortened() {
+		opt.Log.Warn("the database part of the output file names is over the length limit and is shortened",
+			"database", db, "original", naming.EscapeName(db), "shortened", plan.DBComponent())
+	}
+	schemaName := plan.SchemaFile()
 	if err := claim(seen, schemaName, fmt.Sprintf("the schema of database %q", db)); err != nil {
 		return err
 	}
@@ -218,26 +228,28 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	// triggers is nil for a writer that cannot write them (see above).
 	writeTriggers := len(triggers) > 0
 	if writeTriggers {
-		if err := claim(seen, naming.TriggersFile(db), fmt.Sprintf("the triggers of database %q", db)); err != nil {
+		if err := claim(seen, plan.TriggersFile(), fmt.Sprintf("the triggers of database %q", db)); err != nil {
 			return err
 		}
 	}
 	cw, hasConstraints := opt.Writer.(writer.ConstraintWriter)
 	if hasConstraints {
-		if err := claim(seen, naming.ConstraintsFile(db), fmt.Sprintf("the constraints of database %q", db)); err != nil {
+		if err := claim(seen, plan.ConstraintsFile(), fmt.Sprintf("the constraints of database %q", db)); err != nil {
 			return err
 		}
 	}
 	dataNames := make([]string, len(tables))
 	for i, t := range tables {
-		dataNames[i] = naming.DataFile(db, t.Name)
+		// This is the name of a single file; a table that is split is claimed
+		// again under its part names (a provisional claim is safe: R-130).
+		dataNames[i] = plan.DataFile(t.Name)
 		if err := claim(seen, dataNames[i], fmt.Sprintf("table %q of database %q", t.Name, db)); err != nil {
 			return err
 		}
 	}
 
 	// Refuse owned entries that are not regular files before writing anything.
-	if _, err := ownedEntries(opt.OutDir, db); err != nil {
+	if _, err := ownedEntries(opt.OutDir, plan); err != nil {
 		return err
 	}
 
@@ -253,7 +265,7 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	partNames := make([][]string, len(tables))
 	errs := eachTable(ctx, snap.Readers(), len(tables), func(ctx context.Context, r *source.Snapshot, i int) error {
 		var err error
-		partNames[i], err = writeTable(ctx, opt, r, db, tables[i], st)
+		partNames[i], err = writeTable(ctx, opt, r, plan, db, tables[i], st)
 		return err
 	})
 	if err := firstError(ctx, errs); err != nil {
@@ -264,11 +276,16 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		return err
 	}
 	for i, t := range tables {
+		// The final names are known only now; say what is shortened for the
+		// files that are written (a part number can shorten the table part
+		// further than it is for a single file).
+		if plan.TableShortened(t.Name, len(partNames[i])) {
+			warnTableShortened(opt.Log, db, t.Name, plan.TableComponent(t.Name, len(partNames[i])))
+		}
 		if len(partNames[i]) <= 1 {
 			continue
 		}
-		// The part names are known only now. Claim them like the others,
-		// before anything is committed.
+		// Claim the part names like the others, before anything is committed.
 		for _, n := range partNames[i] {
 			if err := claim(seen, n, fmt.Sprintf("table %q of database %q", t.Name, db)); err != nil {
 				return err
@@ -276,14 +293,14 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		}
 	}
 	if writeTriggers {
-		if err := st.create(filepath.Join(opt.OutDir, naming.TriggersFile(db)), func(w io.Writer) error {
+		if err := st.create(filepath.Join(opt.OutDir, plan.TriggersFile()), func(w io.Writer) error {
 			return tw.WriteTriggers(w, schema)
 		}); err != nil {
 			return err
 		}
 	}
 	if hasConstraints {
-		return st.create(filepath.Join(opt.OutDir, naming.ConstraintsFile(db)), func(w io.Writer) error {
+		return st.create(filepath.Join(opt.OutDir, plan.ConstraintsFile()), func(w io.Writer) error {
 			return cw.WriteConstraints(w, schema)
 		})
 	}
@@ -301,9 +318,9 @@ type rowSource interface {
 // each one is written as it is read. The number of files is known only at the
 // end, and the names depend on it, so the files are renamed to their final
 // names then.
-func writeTable(ctx context.Context, opt Options, r rowSource, db string, t source.TableInfo, st *stage) ([]string, error) {
+func writeTable(ctx context.Context, opt Options, r rowSource, plan *naming.Plan, db string, t source.TableInfo, st *stage) ([]string, error) {
 	// Hooks and error messages see this path for every file of the table.
-	provisional := filepath.Join(opt.OutDir, naming.DataFile(db, t.Name))
+	provisional := filepath.Join(opt.OutDir, plan.DataFile(t.Name))
 	var staged []int
 	open := func() (io.WriteCloser, error) {
 		tf, err := st.open(provisional)
@@ -333,7 +350,7 @@ func writeTable(ctx context.Context, opt Options, r rowSource, db string, t sour
 	case closeErr != nil:
 		return nil, closeErr
 	}
-	names, err := dataFileNames(db, t.Name, len(staged))
+	names, err := dataFileNames(plan, t.Name, len(staged))
 	if err != nil {
 		return nil, err
 	}
@@ -346,11 +363,11 @@ func writeTable(ctx context.Context, opt Options, r rowSource, db string, t sour
 // dataFileNames returns the final names of the n data files of a table. A
 // writer that wrote none would leave the table without a file and no error, so
 // that is refused.
-func dataFileNames(db, table string, n int) ([]string, error) {
+func dataFileNames(plan *naming.Plan, table string, n int) ([]string, error) {
 	if n == 0 {
 		return nil, fmt.Errorf("table %q: the writer produced no data file", table)
 	}
-	return naming.DataFileParts(db, table, n), nil
+	return plan.DataFileParts(table, n), nil
 }
 
 // eachTable calls fn(ctx, reader, i) for i in [0, n), on len(readers)
@@ -406,9 +423,9 @@ func firstError(ctx context.Context, errs []error) error {
 // claim checks the length of an output file name and records it in seen,
 // failing if another output file has the same name ignoring case.
 func claim(seen map[string]string, name, what string) error {
-	if len(name) > maxFileNameBytes {
+	if len(name) > naming.MaxFileNameBytes {
 		return fmt.Errorf("output file name for %s is %d bytes, over the %d-byte limit: %s",
-			what, len(name), maxFileNameBytes, name)
+			what, len(name), naming.MaxFileNameBytes, name)
 	}
 	// Escaped names are ASCII, so lower-casing is exact.
 	key := strings.ToLower(name)
@@ -420,17 +437,25 @@ func claim(seen map[string]string, name, what string) error {
 	return nil
 }
 
-// ownedEntries returns the names of the entries in dir that belong to db's
-// dump. An entry with an owned name that is not a regular file (a symlink, a
-// directory, ...) is an error.
-func ownedEntries(dir, db string) ([]string, error) {
+// warnTableShortened says that the table part of the data file names of a table
+// is shortened. Names that are shortened because they would collide are
+// reported by claim.
+func warnTableShortened(log *slog.Logger, db, table, shortened string) {
+	log.Warn("the table part of the output file names is over the length limit and is shortened",
+		"database", db, "table", table, "original", naming.EscapeName(table), "shortened", shortened)
+}
+
+// ownedEntries returns the names of the entries in dir that belong to the dump
+// of the database of plan. An entry with an owned name that is not a regular
+// file (a symlink, a directory, ...) is an error.
+func ownedEntries(dir string, plan *naming.Plan) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 	var owned []string
 	for _, e := range entries {
-		if !naming.IsOwnedBy(e.Name(), db) {
+		if !plan.IsOwned(e.Name()) {
 			continue
 		}
 		if !e.Type().IsRegular() {
@@ -441,10 +466,10 @@ func ownedEntries(dir, db string) ([]string, error) {
 	return owned, nil
 }
 
-// removeStale deletes the files of db's earlier dump that this run did not
-// write again.
-func removeStale(dir, db string, written map[string]bool) error {
-	owned, err := ownedEntries(dir, db)
+// removeStale deletes the files of the earlier dump of the database of plan
+// that this run did not write again.
+func removeStale(dir string, plan *naming.Plan, written map[string]bool) error {
+	owned, err := ownedEntries(dir, plan)
 	if err != nil {
 		return err
 	}
