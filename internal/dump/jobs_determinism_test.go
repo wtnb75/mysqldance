@@ -75,7 +75,8 @@ func TestJobsOutputAndLogIndependentOfJobs(t *testing.T) {
 				if err := Run(context.Background(), opt); err != nil {
 					t.Fatalf("Run(jobs=%d): %v", jobs, err)
 				}
-				return readFiles(t, dir), log.String()
+				// Only the warnings: the Info lines name the jobs and the time the lock took.
+				return readFiles(t, dir), warnLines(log.String())
 			}
 
 			wantFiles, wantLog := run(1)
@@ -130,6 +131,17 @@ func countFiles(files map[string]string, prefix string) int {
 		}
 	}
 	return n
+}
+
+// warnLines returns the lines of log at the Warn level, in order.
+func warnLines(log string) string {
+	var out []string
+	for line := range strings.SplitSeq(log, "\n") {
+		if strings.Contains(line, "level=WARN") {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 // hasWarning reports whether a line of log contains both of the given strings.

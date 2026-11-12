@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"sort"
 	"strconv"
@@ -51,6 +52,11 @@ type Config struct {
 	// seconds. Zero leaves the server's lock_wait_timeout in force (no limit of
 	// the tool's own); a negative value is an error.
 	LockTimeout time.Duration
+	// Log receives how the snapshot is made: the target, the connections, the
+	// lock and how long it is awaited and held (Info), and the statements that
+	// take the lock and start the snapshots (Debug). Nil discards them. It never
+	// gets the password.
+	Log *slog.Logger
 }
 
 // MaxJobs is the largest Config.Jobs: each job is a server connection.
@@ -104,6 +110,11 @@ type Snapshot struct {
 	// locked is true while the global read lock is held; noLock is the NoLock
 	// option. A non-InnoDB table read with neither is an error.
 	locked, noLock bool
+	// log gets the messages of Open and Close. lockedAt is when the global read
+	// lock was taken; it is set while that lock is held until Close, on the first
+	// reader only, so Close can report how long it was held.
+	log      *slog.Logger
+	lockedAt time.Time
 	// others are the other readers, and lockConn is the connection that holds
 	// the global read lock while the snapshots start. Both are set on the first
 	// reader only (Config.Jobs above 1).
@@ -164,8 +175,11 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 	mc.User = cfg.User
 	mc.Passwd = cfg.Password
 	host := cfg.Host
+	// Only where the connection goes: never the password or the DSN.
+	var target []any
 	if cfg.Socket != "" {
 		mc.Net, mc.Addr = "unix", cfg.Socket
+		target = []any{"socket", cfg.Socket}
 	} else {
 		port := cfg.Port
 		if host == "" {
@@ -175,7 +189,13 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 			port = 3306
 		}
 		mc.Net, mc.Addr = "tcp", net.JoinHostPort(host, strconv.Itoa(port))
+		target = []any{"host", host, "port", port}
 	}
+	lg := cfg.Log
+	if lg == nil {
+		lg = slog.New(slog.DiscardHandler)
+	}
+	lg = lg.With(target...)
 	// A bad ssl setting must fail here, as the first thing Run does, so it
 	// aborts before the output directory is created or any file is deleted
 	// or written.
@@ -192,7 +212,7 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 		return nil, err
 	}
 	sdb := sql.OpenDB(connector)
-	s, err := start(ctx, sdb, dbs, cfg.NoLock, cfg.Jobs, cfg.LockTimeout)
+	s, err := start(ctx, sdb, dbs, cfg.NoLock, cfg.Jobs, cfg.LockTimeout, lg)
 	if err != nil {
 		_ = sdb.Close()
 		return nil, err
@@ -231,29 +251,45 @@ func (s *Snapshot) detectDialect(ctx context.Context) error {
 // statements, and everything that arrives behind it waits too, so with a
 // timeout above zero it gives up after that long (lock_wait_timeout, in whole
 // seconds, set for this one statement) and the request leaves the queue. A
-// timeout error says how to get past it; why is the caller's text.
-func lockGlobal(ctx context.Context, conn *sql.Conn, timeout time.Duration, why string) error {
+// timeout error says how to get past it; why is the caller's text. It returns
+// the time the lock was taken, and reports the wait (Info `duration`) to lg.
+func lockGlobal(ctx context.Context, conn *sql.Conn, timeout time.Duration, lg *slog.Logger, why string) (time.Time, error) {
 	var secs int64
 	if timeout > 0 {
 		secs = lockWaitSeconds(timeout)
 		if _, err := conn.ExecContext(ctx, "SET SESSION lock_wait_timeout = "+strconv.FormatInt(secs, 10)); err != nil {
-			return fmt.Errorf("SET SESSION lock_wait_timeout (%s): %w", why, err)
+			return time.Time{}, fmt.Errorf("SET SESSION lock_wait_timeout (%s): %w", why, err)
 		}
 		// Back to the server's value afterwards: the connection may go on to read.
 		// The session value is only ever set here, so DEFAULT is the previous one.
 		defer func() { _, _ = conn.ExecContext(ctx, "SET SESSION lock_wait_timeout = DEFAULT") }()
 	}
-	_, err := conn.ExecContext(ctx, "FLUSH TABLES WITH READ LOCK")
+	const stmt = "FLUSH TABLES WITH READ LOCK"
+	lg.Debug("executing", "statement", stmt, "lock_wait_timeout_seconds", secs)
+	begin := time.Now()
+	_, err := conn.ExecContext(ctx, stmt)
 	if err == nil {
-		return nil
+		lockedAt := time.Now()
+		lg.Info("global read lock acquired", "duration", lockedAt.Sub(begin))
+		return lockedAt, nil
 	}
 	var me *mysql.MySQLError
 	if timeout > 0 && errors.As(err, &me) && me.Number == errLockWaitTimeout {
-		return fmt.Errorf("FLUSH TABLES WITH READ LOCK did not get the lock within %d s (a running statement "+
+		return time.Time{}, fmt.Errorf("FLUSH TABLES WITH READ LOCK did not get the lock within %d s (a running statement "+
 			"did not finish; wait for it to end, or raise --lock-timeout, 0 for the server's own limit) (%s): %w",
 			secs, why, err)
 	}
-	return fmt.Errorf("FLUSH TABLES WITH READ LOCK (%s): %w", why, err)
+	return time.Time{}, fmt.Errorf("FLUSH TABLES WITH READ LOCK (%s): %w", why, err)
+}
+
+// startSnapshot runs START TRANSACTION WITH CONSISTENT SNAPSHOT on conn.
+func startSnapshot(ctx context.Context, conn *sql.Conn, lg *slog.Logger) error {
+	const stmt = "START TRANSACTION WITH CONSISTENT SNAPSHOT"
+	lg.Debug("executing", "statement", stmt)
+	if _, err := conn.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("%s: %w", stmt, err)
+	}
+	return nil
 }
 
 // lockWaitSeconds converts d (above zero) to whole seconds, rounding up and
@@ -267,15 +303,17 @@ func lockWaitSeconds(d time.Duration) int64 {
 	return min(secs, maxLockWaitSeconds)
 }
 
-func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int, lockTimeout time.Duration) (*Snapshot, error) {
+// start makes the Snapshot; lg must not be nil.
+func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int, lockTimeout time.Duration, lg *slog.Logger) (*Snapshot, error) {
 	if jobs > 1 {
-		return startParallel(ctx, sdb, dbs, jobs, lockTimeout)
+		return startParallel(ctx, sdb, dbs, jobs, lockTimeout, lg)
 	}
 	conn, err := sdb.Conn(ctx)
 	if err != nil {
 		return nil, err
 	}
-	s := &Snapshot{db: sdb, conn: conn, noLock: noLock}
+	lg.Info("connected", "jobs", 1)
+	s := &Snapshot{db: sdb, conn: conn, noLock: noLock, log: lg}
 	if err := s.detectDialect(ctx); err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -302,18 +340,20 @@ func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int
 			return nil, err
 		}
 		if first != "" {
-			if err := lockGlobal(ctx, conn, lockTimeout, fmt.Sprintf("needed because %s is not InnoDB; "+
-				"it requires the RELOAD privilege, or pass --no-lock to read without consistency", first)); err != nil {
+			s.lockedAt, err = lockGlobal(ctx, conn, lockTimeout, lg, fmt.Sprintf("needed because %s is not InnoDB; "+
+				"it requires the RELOAD privilege, or pass --no-lock to read without consistency", first))
+			if err != nil {
 				_ = conn.Close()
 				return nil, err
 			}
 			s.locked = true
 		}
 	}
-	if _, err := conn.ExecContext(ctx, "START TRANSACTION WITH CONSISTENT SNAPSHOT"); err != nil {
+	if err := startSnapshot(ctx, conn, lg); err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("START TRANSACTION WITH CONSISTENT SNAPSHOT: %w", err)
+		return nil, err
 	}
+	lg.Info("consistent snapshot started", "jobs", 1, "global_lock", s.locked)
 
 	if err := s.Use(ctx, dbs[0]); err != nil {
 		_ = conn.Close()
@@ -331,7 +371,7 @@ func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int
 //
 // On failure every connection is returned to the pool, so the caller's
 // sdb.Close ends the sessions, the transactions and the lock.
-func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int, lockTimeout time.Duration) (_ *Snapshot, err error) {
+func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int, lockTimeout time.Duration, lg *slog.Logger) (_ *Snapshot, err error) {
 	var conns []*sql.Conn
 	defer func() {
 		if err != nil {
@@ -358,8 +398,10 @@ func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int, loc
 		if err != nil {
 			return nil, err
 		}
-		readers[i] = &Snapshot{db: sdb, conn: c}
+		readers[i] = &Snapshot{db: sdb, conn: c, log: lg}
 	}
+	// One more connection than jobs: the one that holds the lock.
+	lg.Info("connected", "jobs", jobs, "connections", jobs+1)
 	first := readers[0]
 	if err := first.detectDialect(ctx); err != nil {
 		return nil, err
@@ -375,8 +417,9 @@ func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int, loc
 	if err := checkDatabases(ctx, first.conn, dbs); err != nil {
 		return nil, err
 	}
-	if err := lockGlobal(ctx, lockConn, lockTimeout, fmt.Sprintf("needed to start the snapshots of %d connections "+
-		"at one point in time; it requires the RELOAD privilege, or run with --jobs 1", jobs)); err != nil {
+	lockedAt, err := lockGlobal(ctx, lockConn, lockTimeout, lg, fmt.Sprintf("needed to start the snapshots of %d connections "+
+		"at one point in time; it requires the RELOAD privilege, or run with --jobs 1", jobs))
+	if err != nil {
 		return nil, err
 	}
 	nonInnoDB, err := first.firstNonInnoDB(ctx, dbs)
@@ -384,20 +427,25 @@ func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int, loc
 		return nil, err
 	}
 	for _, r := range readers {
-		if _, err := r.conn.ExecContext(ctx, "START TRANSACTION WITH CONSISTENT SNAPSHOT"); err != nil {
-			return nil, fmt.Errorf("START TRANSACTION WITH CONSISTENT SNAPSHOT: %w", err)
+		if err := startSnapshot(ctx, r.conn, lg); err != nil {
+			return nil, err
 		}
 	}
 	// A non-InnoDB table is not covered by the snapshots, so the lock stays
 	// until Close; the readers then know the tables are consistent.
 	if nonInnoDB == "" {
+		lg.Debug("executing", "statement", "UNLOCK TABLES")
 		if _, err := lockConn.ExecContext(ctx, "UNLOCK TABLES"); err != nil {
 			return nil, fmt.Errorf("UNLOCK TABLES: %w", err)
 		}
+		lg.Info("global read lock released", "duration", time.Since(lockedAt))
+	} else {
+		first.lockedAt = lockedAt
 	}
 	for _, r := range readers {
 		r.locked = nonInnoDB != ""
 	}
+	lg.Info("consistent snapshot started", "jobs", jobs, "global_lock", nonInnoDB != "")
 
 	first.others, first.lockConn = readers[1:], lockConn
 	if err := first.Use(ctx, dbs[0]); err != nil {
@@ -515,6 +563,12 @@ func (s *Snapshot) Close() error {
 	}
 	if s.lockConn != nil {
 		errs = append(errs, s.lockConn.Close())
+	}
+	// The lock ended with its connection, so this is how long it was held; logged
+	// after the close on purpose, as that is when it is released (R-112).
+	if !s.lockedAt.IsZero() {
+		s.log.Info("global read lock released", "duration", time.Since(s.lockedAt))
+		s.lockedAt = time.Time{}
 	}
 	return errors.Join(append(errs, s.db.Close())...)
 }

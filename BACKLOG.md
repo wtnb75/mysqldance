@@ -287,14 +287,6 @@
   - [ ] 細工した本体（コメントや文字列の中のクライアントコマンド）が、実クライアントで復元時に動くかを確かめ、結果を書く
   - [ ] 動くなら、ヘッダーの変更などで防ぎ、README の出力の節を合わせる。古いサーバーとクライアントでも復元できる
 
-## B-088 [todo|P2] 接続・スナップショット・ロックの方式をログに出す
-- 依存: B-052
-- 概要: 起動後に何が起きているか分からない。接続先（host と port か socket。パスワードは出さない）、一貫性の取り方（`FLUSH TABLES WITH READ LOCK` を取ったか、InnoDB のみの一貫性スナップショットか）、`--jobs` で開いた接続数、ロックの取得待ちと保持の時間を `Info` で出す。詳細（実行した文の種類など）は `Debug`。
-- 受け入れ条件:
-  - [ ] 上の項目が `Info` で出て、パスワードと接続文字列は出ない
-  - [ ] ロックを取った場合と取らない場合の両方をテストで確認する（統合テスト）
-  - [ ] 時間は属性（`duration`）で渡し、出力ファイルの内容には影響しない
-
 ## B-089 [todo|P3] 削除したファイルをログに出す
 - 依存: B-052
 - 概要: `removeStale` は前回のダンプのファイルを、`sweepTemps` は前回の一時ファイルを、何も言わずに消す。ユーザーのディレクトリのファイルを消す操作なので、消したファイル名を `Info`（`removeStale`）と `Debug`（`sweepTemps`）で出す。
@@ -350,6 +342,16 @@
   - [ ] README の対象バージョンと、5.6 の注意（確認した版が 5.6.51 だけであること、TLS を有効にしないと `--ssl-mode preferred` が平文になること、ゼロ日付は `--target postgres` で失敗すること）を更新する
 
 # Done
+
+## B-088 [done|P2] 接続・スナップショット・ロックの方式をログに出す
+- 依存: B-052
+- 概要: 起動後に何が起きているか分からない。接続先（host と port か socket。パスワードは出さない）、一貫性の取り方（`FLUSH TABLES WITH READ LOCK` を取ったか、InnoDB のみの一貫性スナップショットか）、`--jobs` で開いた接続数、ロックの取得待ちと保持の時間を `Info` で出す。詳細（実行した文の種類など）は `Debug`。
+- 結果: `source.Config.Log`（`dump.Run` が `Options.Log` を渡す）に、`connected`（接続先、`jobs`、`connections`）、`global read lock acquired`（`duration` は待ち時間）、`consistent snapshot started`（`global_lock`）、`global read lock released`（`duration` は保持時間）を `Info` で出す。`Debug` は `FLUSH TABLES WITH READ LOCK`、`START TRANSACTION WITH CONSISTENT SNAPSHOT`、`UNLOCK TABLES`。README に「How the snapshot is made」節を足した。
+- 前提: ロックの取得待ちと保持の時間は、どちらも属性 `duration` で渡す（メッセージで区別する）。ロックを取らないときは `acquired` / `released` を出さない。
+- 受け入れ条件:
+  - [x] 上の項目が `Info` で出て、パスワードと接続文字列は出ない
+  - [x] ロックを取った場合と取らない場合の両方をテストで確認する（統合テスト）
+  - [x] 時間は属性（`duration`）で渡し、出力ファイルの内容には影響しない
 
 ## B-087 [done|P2] 最終エラーを `slog.Error` で出す
 - 依存: B-052

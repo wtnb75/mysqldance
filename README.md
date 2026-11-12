@@ -237,7 +237,20 @@ All connections must show the same point in time, but each starts its own snapsh
 
 ### Warnings
 
-Every warning is a `WARN` record of the log (see `--log-level` and `--log-format`) on standard error; nothing is written to standard output. The record carries a `database` attribute, and a warning about one trigger also `table` and `trigger`. For example, in the text format: `time=... level=WARN msg="table `m` uses the MyISAM engine; ..." database=shop`. The time of a record is the only thing in the log that differs between runs.
+Every warning is a `WARN` record of the log (see `--log-level` and `--log-format`) on standard error; nothing is written to standard output. The record carries a `database` attribute, and a warning about one trigger also `table` and `trigger`. For example, in the text format: `time=... level=WARN msg="table `m` uses the MyISAM engine; ..." database=shop`. The warnings are the same between runs, in the same order; the time of a record (and the `duration` of the `INFO` records below) is what differs.
+
+### How the snapshot is made
+
+The `INFO` records say how the consistent snapshot was made; `--log-level debug` adds the statements. None of them carries the password or a connection string, and none changes the output files.
+
+| Message | Attributes | When |
+| --- | --- | --- |
+| `connected` | `host` and `port`, or `socket`; `jobs`; `connections` (with `--jobs` above 1: one more than `jobs`, for the lock) | after the connections are open |
+| `global read lock acquired` | `duration`: how long `FLUSH TABLES WITH READ LOCK` waited | only when the lock is taken (a non-InnoDB table, or `--jobs` above 1) |
+| `consistent snapshot started` | `jobs`; `global_lock`: `true` when the lock is kept until the end of the run | after `START TRANSACTION WITH CONSISTENT SNAPSHOT` |
+| `global read lock released` | `duration`: how long the lock was held | right after the snapshots have started (all tables InnoDB, `--jobs` above 1), or when the run ends |
+
+With one connection and only InnoDB tables, or with `--no-lock`, no lock is taken, so only `connected` and `consistent snapshot started` (`global_lock=false`) appear.
 
 With `--no-lock`, tables that are not InnoDB (MyISAM and so on) cannot guarantee snapshot consistency, so a warning is printed and the dump continues. A table without a primary key or NOT NULL unique key whose estimated row count (`information_schema.TABLES.TABLE_ROWS`) exceeds 500,000 gets a warning that it is far beyond the intended scale and that all its rows will be held in memory and sorted there. A table with a key gets none: its rows are streamed.
 
