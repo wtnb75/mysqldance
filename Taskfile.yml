@@ -189,7 +189,8 @@ tasks:
   #             Falls back to the MYSQLDANCE_TEST_HOST environment variable, so
   #             a per-user setting survives new worktrees.
   #   PG_PORT   host port published for PostgreSQL (default 33062)
-  #   NAME      container name (default mysqldance-test; PostgreSQL gets the
+  #   PG_IMAGE  PostgreSQL image to start (default postgres:17)
+  #   NAME     container name (default mysqldance-test; PostgreSQL gets the
   #             same name plus -pg)
   #   TIMEOUT   seconds to wait for the server to accept TCP (default 180)
   #   TESTFLAGS extra `go test` flags, e.g. TESTFLAGS=-v
@@ -202,6 +203,23 @@ tasks:
         vars: { VERSION: "8.0" }
       - task: test:integration:one
         vars: { VERSION: "8.4" }
+
+  # PostgreSQL 14 to 18 are not part of test:integration (which checks 17 only):
+  # run this when the PostgreSQL writer changes. Each version runs the tests of
+  # --target postgres against MySQL 8.4 (the source). Pass PG_VERSIONS="15 16"
+  # to pick versions, and TESTFLAGS to run other tests.
+  test:integration:postgres:
+    desc: Run the --target postgres tests against PostgreSQL 14 to 18 (MySQL 8.4 as the source) started via Docker
+    vars:
+      PG_VERSIONS: '{{.PG_VERSIONS | default "14 15 16 17 18"}}'
+      TESTFLAGS: '{{.TESTFLAGS | default "-run Postgres"}}'
+    cmds:
+      - for: { var: PG_VERSIONS, split: " " }
+        task: test:integration:one
+        vars:
+          VERSION: "8.4"
+          PG_IMAGE: "postgres:{{.ITEM}}"
+          TESTFLAGS: "{{.TESTFLAGS}}"
 
   # MariaDB is not part of test:integration: run it when the dialect, the
   # session settings or the catalog queries change. The whole suite runs; the
@@ -265,6 +283,7 @@ tasks:
       ADMIN: '{{.ADMIN | default "mysqladmin"}}'
       PORT: '{{.PORT | default "33061"}}'
       PG_PORT: '{{.PG_PORT | default "33062"}}'
+      PG_IMAGE: '{{.PG_IMAGE | default "postgres:17"}}'
       HOST: '{{.HOST | default .MYSQLDANCE_TEST_HOST | default "127.0.0.1"}}'
       NAME: '{{.NAME | default "mysqldance-test"}}'
       TIMEOUT: '{{.TIMEOUT | default "180"}}'
@@ -274,7 +293,7 @@ tasks:
       - defer: docker rm -fv {{.NAME}} {{.NAME}}-pg {{.NAME}}-restore >/dev/null 2>&1 || true
       - docker rm -fv {{.NAME}} {{.NAME}}-pg {{.NAME}}-restore >/dev/null 2>&1 || true
       - docker run -d {{.PLATFORM_FLAG}} --name {{.NAME}} -e {{.ROOT_ENV}}=root -p 127.0.0.1:{{.PORT}}:3306 {{.IMAGE}} {{.SERVER_ARGS}}
-      - docker run -d --name {{.NAME}}-pg -e POSTGRES_PASSWORD=pg -p 127.0.0.1:{{.PG_PORT}}:5432 postgres:17
+      - docker run -d --name {{.NAME}}-pg -e POSTGRES_PASSWORD=pg -p 127.0.0.1:{{.PG_PORT}}:5432 {{.PG_IMAGE}}
       - |
         if [ -n "{{.RESTORE_IMAGE}}" ]; then
           docker run -d --name {{.NAME}}-restore -e MYSQL_ROOT_PASSWORD=root -p 127.0.0.1:{{.RESTORE_PORT}}:3306 {{.RESTORE_IMAGE}}
@@ -296,7 +315,7 @@ tasks:
       # The official image restarts its server once after initializing, so
       # pg_isready is polled through TCP on the final server only.
       - |
-        echo "waiting for PostgreSQL..."
+        echo "waiting for PostgreSQL ({{.PG_IMAGE}})..."
         i=0
         until docker exec {{.NAME}}-pg pg_isready -h 127.0.0.1 -U postgres --quiet >/dev/null 2>&1; do
           i=$((i + 1))
