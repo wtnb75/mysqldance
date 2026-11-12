@@ -292,13 +292,6 @@
   - [ ] 一致しない値があれば、一致する出力にする
   - [ ] 結果を設計書 11 節に書き、出力の表記が変わるなら README に書く
 
-## B-094 [todo|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
-- 概要: B-069 の PR（#43）の CI で、MySQL 8.0 の `TestLockTimeout/jobs=2`（`internal/source/lock_test.go`）が `lock_test.go:114: Open succeeded although the lock could not be taken within the timeout` で失敗した。同じコードの 1 回目の run は 8.0 / 8.4 とも通り、2 回目は 8.4 が通って 8.0 だけが失敗した。6 秒の `SLEEP` の文と 1 秒の `--lock-timeout` を、時間で競わせる作りが原因と推測している（未確認）。原因を調べ、再現させてから、安定させる。
-- 受け入れ条件:
-  - [ ] 失敗の原因を、再現するか、ログと `lock_test.go` の読みで特定する（テストの作りか、`FLUSH TABLES WITH READ LOCK` の取得の実装か）
-  - [ ] 原因がテストの作りなら、時間への依存を減らして直す。実装なら、失敗するテストを先に書いて直す
-  - [ ] `TestLockTimeout` を `-count=20` で、8.0 と 8.4 の両方で繰り返して全て通る
-
 ## B-095 [todo|P2] MySQL 5.6 に対応する
 - 依存: B-079
 - 概要: B-079 の調査結果（設計書 11 節）に基づき、`dialectFor` の「5.7 以上が必要」の拒否を 5.6 まで緩め、5.6 は 5.7 向けの `dialect`（`mysql57`）をそのまま使う。`dialect` の中身は変えない。確認した版は 5.6.51 だけ。5.5 以前は対象外のまま拒否する（B-080 の結果を見てから別項目にする）。TLS の下限を下げる件は B-082。
@@ -392,6 +385,14 @@
   - [ ] 指定の形（B-081 の `SPEC` の拡張）と、検出の限界（UTF-8 との見分け）を書く
 
 # Done
+
+## B-094 [done|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
+- 概要: B-069 の PR（#43）の CI で、MySQL 8.0 の `TestLockTimeout/jobs=2`（`internal/source/lock_test.go`）が `lock_test.go:114: Open succeeded although the lock could not be taken within the timeout` で失敗した。同じコードの 1 回目の run は 8.0 / 8.4 とも通り、2 回目は 8.4 が通って 8.0 だけが失敗した。6 秒の `SLEEP` の文と 1 秒の `--lock-timeout` を、時間で競わせる作りが原因と推測している（未確認）。原因を調べ、再現させてから、安定させる。
+- 結果: 原因はテストの作りで、実装（`lockGlobal`）は正しい。元の失敗は手元では再現できず（修正前に 8.0 / 8.4 で `-count=20` ずつ）、読みで特定した。別の失敗を 8.4 の `jobs=2` で 1 回再現した（`1 session(s) of ... are left on the server after the failed Open`）。(1) `Open` 失敗時の `sdb.Close` はクライアントのソケットを閉じるだけで、サーバーのセッション削除は非同期なのに、直後に `PROCESSLIST` を数えていた。(2) `waitFor` は `PROCESSLIST` に行が出れば進むが、その時点では文がテーブルを開いておらず、読み取りを止めない `FLUSH TABLES WITH READ LOCK` が先に取れて `Open` が成功しうる（元の失敗はこれと、6 秒対 1 秒の固定の競争と推測。再現はしていない）。直し方: 長い文を `SELECT id, SLEEP(60)` にして `KILL QUERY` で止め、`STATE = 'User sleep'` を待ってから `Open` し、残りセッションは期限つきでポーリングする。20 回の実行は 245 秒から 47 秒に縮んだ。
+- 受け入れ条件:
+  - [x] 失敗の原因を、再現するか、ログと `lock_test.go` の読みで特定する（テストの作りか、`FLUSH TABLES WITH READ LOCK` の取得の実装か）
+  - [x] 原因がテストの作りなら、時間への依存を減らして直す。実装なら、失敗するテストを先に書いて直す
+  - [x] `TestLockTimeout` を `-count=20` で、8.0 と 8.4 の両方で繰り返して全て通る
 
 ## B-067 [done|P2] README に互換性の表（読み出し元 × 出力形式 × 復元先）を書く
 - 概要: 対応状況が README の冒頭、MariaDB 節、5.7 節、Limitations に散っていて、「どのサーバーのダンプをどの版に復元できるか」がどこにもまとまっていない。今ある知見だけで表を書く。コードは変えない。表は 2 つ: (1) 読み出し元（MySQL 5.7.44 / 8.0 / 8.4 / MariaDB 10.11 / 11.4。5.6 と 5.5 は未確認の行として入れ、B-079 と B-080 の結果で更新する）× `--target`（mysql / sqlite / postgres）、(2) 出力 × 復元先の版（MySQL 系の復元先、PostgreSQL 17、SQLite は `modernc.org/sqlite` 内蔵の版）。凡例は「テスト済み / 条件つき / 失敗を確認 / 未確認」の 4 段階にし、テストの裏が取れていないマスを「テスト済み」にしない。

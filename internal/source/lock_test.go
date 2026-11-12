@@ -13,6 +13,10 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
+// errQueryInterrupted is MySQL error 1317 (ER_QUERY_INTERRUPTED), what a
+// statement killed with KILL QUERY may report.
+const errQueryInterrupted = 1317
+
 // writeBlocked reports whether an INSERT into table on conn is held up by a
 // lock. conn must have lock_wait_timeout set low (see fastLockTimeout).
 func writeBlocked(t *testing.T, conn *sql.Conn, table string) bool {
@@ -83,16 +87,36 @@ func TestLockTimeout(t *testing.T) {
 				"INSERT INTO m VALUES (1)",
 			)
 
+			// The statement must outlive Open whatever the speed of the machine, so
+			// it sleeps far longer than any timeout here and is killed at cleanup
+			// instead of being waited for. A fixed short SLEEP raced with a slow
+			// runner (B-094).
 			long := pinnedConn(t, dsn)
+			var longID int64
+			if err := long.QueryRowContext(context.Background(), "SELECT CONNECTION_ID()").Scan(&longID); err != nil {
+				t.Fatal(err)
+			}
 			longDone := make(chan struct{})
 			go func() {
 				defer close(longDone)
-				if _, err := long.ExecContext(context.Background(), "SELECT COUNT(*), SLEEP(6) FROM `"+db+"`.m"); err != nil {
+				_, err := long.ExecContext(context.Background(), "SELECT id, SLEEP(60) FROM `"+db+"`.m")
+				var me *mysql.MySQLError
+				if err != nil && (!errors.As(err, &me) || me.Number != errQueryInterrupted) {
 					t.Errorf("long statement: %v", err)
 				}
 			}()
-			t.Cleanup(func() { <-longDone })
-			waitFor(t, conn, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE INFO LIKE 'SELECT COUNT(*), SLEEP(6)%'")
+			t.Cleanup(func() {
+				// Not mustExec: whatever happens, <-longDone must be reached so the
+				// goroutine cannot report after the test has ended.
+				if _, err := conn.ExecContext(context.Background(), fmt.Sprintf("KILL QUERY %d", longID)); err != nil {
+					t.Errorf("KILL QUERY %d: %v", longID, err)
+				}
+				<-longDone
+			})
+			// 'User sleep' means the statement has opened and read-locked the table:
+			// a row in the process list alone can still be before that, and then
+			// FLUSH TABLES WITH READ LOCK, which does not stop reads, gets through.
+			waitFor(t, conn, fmt.Sprintf("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID = %d AND STATE = 'User sleep'", longID))
 
 			// An account of its own, so that its sessions can be told from the ones
 			// other tests open on the same server.
@@ -113,8 +137,8 @@ func TestLockTimeout(t *testing.T) {
 				_ = s.Close()
 				t.Fatal("Open succeeded although the lock could not be taken within the timeout")
 			}
-			if waited > 4*time.Second {
-				t.Errorf("Open took %v, want about the 1 s timeout, not the 6 s statement", waited)
+			if waited > 10*time.Second {
+				t.Errorf("Open took %v, want about the 1 s timeout, not the 60 s statement", waited)
 			}
 			var me *mysql.MySQLError
 			if !errors.As(err, &me) || me.Number != errLockWaitTimeout {
@@ -129,11 +153,18 @@ func TestLockTimeout(t *testing.T) {
 			// The statement is still running, and the lock request must be gone: no
 			// session of this test's account is left on the server, queued or not. (A
 			// write probe would also see the global locks other tests take on the same
-			// server, so it cannot tell the two apart.)
+			// server, so it cannot tell the two apart.) The server drops a closed
+			// connection's session a moment later, so wait for that; a queued request
+			// would stay until the 60 s statement ends, far beyond the wait.
 			var left int
 			q := "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE USER = ?"
-			if err := conn.QueryRowContext(context.Background(), q, user).Scan(&left); err != nil {
-				t.Fatal(err)
+			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+				if err := conn.QueryRowContext(context.Background(), q, user).Scan(&left); err != nil {
+					t.Fatal(err)
+				}
+				if left == 0 || time.Now().After(deadline) {
+					break
+				}
 			}
 			if left != 0 {
 				t.Errorf("%d session(s) of %s are left on the server after the failed Open", left, user)
