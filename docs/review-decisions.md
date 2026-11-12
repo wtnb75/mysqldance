@@ -1154,13 +1154,6 @@
 - 初出: B-028
 - 再出: 0
 
-## R-160 branch.yml の `image` ジョブに `packages: write` を渡している
-- 対象: .github/workflows/branch.yml の image ジョブ
-- 指摘: push しないジョブに書き込み権限を渡すのは最小権限に反する。
-- 却下の理由: 再利用 workflow のジョブが `packages: write` を宣言するので、呼び出し側も同じ権限を渡す必要がある（`permissions` に式は使えない）。push の step は `inputs.push` で守られ、ブランチでは動かない。このリポジトリの push イベントは fork から来ず、PR では動かない。
-- 初出: B-028
-- 再出: 0
-
 ## R-161 tag.yml のイメージに smoke test が無い
 - 対象: .github/workflows/tag.yml
 - 指摘: タグのリリースで push するイメージを、実行して確かめていない。

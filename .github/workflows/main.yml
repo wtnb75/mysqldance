@@ -20,6 +20,8 @@ jobs:
     uses: ./.github/workflows/integration.yml
 
   image:
+    # Publish only commits that passed the tests.
+    needs: [test, integration]
     uses: ./.github/workflows/image.yml
     with:
       push: true
