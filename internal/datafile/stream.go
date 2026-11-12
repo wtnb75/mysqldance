@@ -2,7 +2,6 @@ package datafile
 
 import (
 	"bufio"
-	"hash/fnv"
 	"io"
 	"strings"
 )
@@ -138,14 +137,25 @@ func (f *fileStream) add(row []string) error {
 		f.size = len(f.head)
 		f.open = true
 	}
-	text := "(" + strings.Join(row, ",") + ")"
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(text))
-	f.size += len(text) + 2
-	if _, err := f.bw.WriteString(text); err != nil {
+	// Write the row field by field and hash the same bytes as
+	// "(" + strings.Join(row, ",") + ")", with no joined string or hasher
+	// allocated. bufio.Writer keeps its first error, so it is checked once.
+	h, n := fnvAdd(fnvOffset32, "("), 2 // n: the bytes of the row text
+	_, _ = f.bw.WriteString("(")
+	for i, v := range row {
+		if i > 0 {
+			h, n = fnvAdd(h, ","), n+1
+			_, _ = f.bw.WriteString(",")
+		}
+		h, n = fnvAdd(h, v), n+len(v)
+		_, _ = f.bw.WriteString(v)
+	}
+	h = fnvAdd(h, ")")
+	if _, err := f.bw.WriteString(")"); err != nil {
 		return err
 	}
-	if h.Sum32()%f.opt.RowsPerInsert == 0 || f.size >= f.opt.MaxInsertBytes {
+	f.size += n + 2 // n is the row text; 2 is the ",\n" or ";\n" after it (as before B-017, R-143)
+	if h%f.opt.RowsPerInsert == 0 || f.size >= f.opt.MaxInsertBytes {
 		f.pending, f.open = ";\n", false
 	} else {
 		f.pending = ",\n"

@@ -1,11 +1,5 @@
 # Backlog
 
-## B-017 [todo|P3] 行の整形とハッシュの割り当てを減らす
-- 概要: 行ごとに `strings.Join` を 2 回する（キーなしテーブルのソート用に `source.Rows` で 1 回、`datafile.Write` で 1 回）。`datafile.Write` は行ごとに `fnv.New32a()` と `[]byte(text)` を割り当て、`text + sep` も連結して新しい文字列を作る。B-044 のストリーム化で `Rows` の形が変わるなら、そちらに合わせて一緒に直す。
-- 受け入れ条件:
-  - [ ] ベンチマーク（10 万行程度）を追加し、改善前後の割り当て数と時間を記録する
-  - [ ] 出力はバイト単位で変わらない（既存のテストが通る）
-
 ## B-018 [todo|P3] 文字列キーの ORDER BY がインデックスを使えない影響を測る
 - 概要: 文字列キー（`char` / `varchar` / `text` 系）は `ORDER BY CAST(col AS BINARY)` で並べる。列に式を掛けるので、インデックス順では返せず filesort になる可能性がある（`EXPLAIN` で未確認）。想定規模では問題ないが、B-044 の前に影響を把握しておく。
 - 受け入れ条件:
@@ -361,6 +355,20 @@
   - [ ] `--connect-timeout` と README の記述が、全ての接続に効くことに合っている
 
 # Done
+
+## B-017 [done|P3] 行の整形とハッシュの割り当てを減らす
+- 概要: 行ごとに `strings.Join` を 2 回する（キーなしテーブルのソート用に `source.Rows` で 1 回、`datafile.Write` で 1 回）。`datafile.Write` は行ごとに `fnv.New32a()` と `[]byte(text)` を割り当て、`text + sep` も連結して新しい文字列を作る。B-044 のストリーム化で `Rows` の形が変わるなら、そちらに合わせて一緒に直す。
+- 前提: `source.Rows` のキーなしテーブルのソート用の `strings.Join` は、B-045 がメモリ内ソートごと置き換えるので触らない（レビュー台帳 R-045）。この項目は `datafile` の行ごとの割り当てを対象にする。
+- 結果: `fileStream.add` が行を 1 フィールドずつ書きながら FNV-1a を更新するようにし、`strings.Join`・`fnv.New32a()`・`[]byte` の割り当てをなくした。`keyHash` も同じ関数 `fnvAdd` を使う。ハッシュの対象のバイト列は変わらないので、出力もバイト単位で同じ（`legacy*` との比較テストが通る）。10 万行（5 列）、`go test ./internal/datafile -bench . -benchtime 20x〜40x -count 3〜5`（中央付近の値）、linux/arm64。「前」は `origin/main`（3346727）に `bench_test.go` だけを足して測った（旧実装は残していない）:
+
+  | ベンチマーク | 前 | 後 |
+  |---|---|---|
+  | `WriteStatements` | 14.9 ms、12.8 MB、200,010 allocs | 8.4 ms、4.6 KB、10 allocs |
+  | `StreamSplit`（キーあり、1 万行ごとに分割） | 15.1 ms、12.8 MB、200,054 allocs | 8.9 ms、51.6 KB、53 allocs |
+  | `StreamSplitNoKey`（キーなし、行全体をハッシュ） | 26.2 ms、19.2 MB、300,045 allocs | 13.0 ms、43 KB、45 allocs |
+- 受け入れ条件:
+  - [x] ベンチマーク（10 万行程度）を追加し、改善前後の割り当て数と時間を記録する
+  - [x] 出力はバイト単位で変わらない（既存のテストが通る）
 
 ## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
 - 概要: `task test:integration:mysql57` で、`internal/source` の `TestTriggers` と `internal/dump` の `TestTriggersRoundTrip` が失敗する（B-095 の作業中に、`origin/main`（117d4c7）でも同じ失敗を確認した既存の失敗）。5.7 の `SHOW CREATE TRIGGER` は、書いたとおりの名前を返し、`CREATE DEFINER=`root`@`%` TRIGGER z_first ...` のように名前が逆引用符で囲まれない。そのため、作成順を確かめる判定（`` CREATE TRIGGER `z_first` `` を探す）に合わない。テストが 5.7 の形を想定していないのか、5.7 でのトリガーの出力が実際に正しくないのかを確かめて直す。
