@@ -206,7 +206,7 @@ MySQL ドライバ・CLI ライブラリの選定、パッケージ構成、フ�
     - `COLUMN_DEFAULT`: 既定値が `NULL` の列（`DEFAULT NULL`）は、MySQL では SQL の `NULL` だが、MariaDB では**文字列 `"NULL"`**（`COLUMN_DEFAULT IS NULL` が 0）。既定値なしの `NOT NULL` 列は SQL の `NULL`。文字列の既定値は MySQL では `x`、MariaDB では**引用符つき** `'x'`（`a'b` は `'a''b'`）。式の既定値は `current_timestamp()`、`` (`id` + 1) ``、`uuid()` のように**式のテキストがそのまま**入り、`EXTRA` に `DEFAULT_GENERATED` が付かない（MySQL は `EXTRA = DEFAULT_GENERATED`）。ビューの列には `0` のような既定値が付くことがある。今の `defColumns`（`internal/source/def.go`）は `Valid` なら既定値とみなし、`DefaultExpr` を `EXTRA` の `default_generated` で決めるので、MariaDB では `NULL` 既定値を文字列 `NULL` として、式を文字列として扱い、SQLite / PostgreSQL 向けの出力を誤る。方言ごとに既定値の読み方を持つ必要がある。
     - `EXTRA`: `on update current_timestamp()`（MariaDB）と `on update CURRENT_TIMESTAMP`（MySQL）。現在のコードは小文字に直して比べるので影響しない。`VIRTUAL GENERATED` / `STORED GENERATED` / `INVISIBLE` は同じ。
     - `COLUMN_TYPE`: 整数に表示幅がつく（MariaDB `int(11)`、MySQL 8.0.19 以降 `int`）。`DATA_TYPE` は同じ（`int`）。`COLUMN_TYPE` を使う処理は表示幅を考える必要がある。
-    - `TABLE_TYPE`: 通常のテーブルとビューのほかに、**`SEQUENCE`** と **`SYSTEM VERSIONED`**（システムバージョニングのテーブル）がある。今のコードは `BASE TABLE` と `VIEW` だけを拾う（`source.go`、`def.go`）ので、この 2 種は**黙って出力から落ちる**。「黙って落とさない」に反するので、B-038 でエラーにするか出力するかを決める。
+    - `TABLE_TYPE`: 通常のテーブルとビューのほかに、**`SEQUENCE`** と **`SYSTEM VERSIONED`**（システムバージョニングのテーブル）がある。今のコードは `BASE TABLE` と `VIEW` だけを拾う（`catalog.go`、`def.go`）ので、この 2 種は**黙って出力から落ちる**。「黙って落とさない」に反するので、B-038 でエラーにするか出力するかを決める。
   - `SHOW CREATE` の書式（コードは `SHOW CREATE TABLE` の本文を `schemafile` で正規化して使う）:
     - 既定値: `DEFAULT current_timestamp()`（小文字と括弧）、`ON UPDATE current_timestamp()`、`DEFAULT uuid()`、`DEFAULT (` `` `id` + 1 `` `)`。MySQL は `DEFAULT CURRENT_TIMESTAMP`、`DEFAULT (uuid())`、`DEFAULT ((` `` `id` + 1 `` `))`（二重括弧）。数値の既定値も MariaDB は `DEFAULT 0`、MySQL は `DEFAULT '0'`。バイナリの既定値は `SHOW CREATE TABLE` では両方 `DEFAULT 'AB'` だが、`COLUMN_DEFAULT` は MariaDB が `'AB'`、MySQL が `0x4142`。
     - 整数の表示幅（`int(11)`）、`CHECK (` `` `n` >= 0 `` `)`（MySQL は二重括弧 `((` `` `n` >= 0 `` `))`）、生成列 `GENERATED ALWAYS AS (` `` `n` + 1 `` `)`（MySQL は二重括弧）。
@@ -335,7 +335,7 @@ MySQL ドライバ・CLI ライブラリの選定、パッケージ構成、フ�
   - `USER_PRIVILEGES` は、8.4 では**他のユーザーの行も返す**（`GRANTEE` で自分に絞る必要がある）。
   - `SHOW GRANTS` の書式は版で違う: 5.6 と 5.7.44 は `GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' ...`（単引用符）、8.4 と MariaDB は `` `root`@`%` ``（逆引用符）。5.6 と MariaDB の `IDENTIFIED BY PASSWORD '*...'`（ハッシュ）が行に入る。MariaDB は `GRANT PROXY ...` の行も返す。**行の全文をログに出してはならない**（ハッシュが入る）。権限名だけを取り出す。
   - 列単位の権限は、`information_schema.COLUMN_PRIVILEGES`（8.4）と `SHOW GRANTS` の `GRANT SELECT (`id`) ON `probe`.`inno` ...` に出る。このとき `SHOW CREATE TABLE` は全列を出す一方で、`information_schema.COLUMNS` は権限のある列だけ（既存の `checkAllColumnsVisible` が使う差）。
-- **`FLUSH TABLES WITH READ LOCK`（FTWRL）の権限**: 8.4 で、`RELOAD` を持たず `FLUSH_TABLES`（動的権限）だけを持つユーザーで FTWRL が**通った**。`BACKUP_ADMIN` だけでは通らず、`Error 1227: Access denied; you need (at least one of) the RELOAD or FLUSH_TABLES privilege(s) for this operation` になった。現在のエラー文言（`source.go` の「requires the RELOAD privilege」）と README の「Required privilege: RELOAD」は `FLUSH_TABLES` を言っていない（8.0 は未確認）。FTWRL は他のセッションの書き込みを止めるので、**権限を調べるためにロックを取ってはならない**。権限は `SHOW GRANTS` から読む。
+- **`FLUSH TABLES WITH READ LOCK`（FTWRL）の権限**: 8.4 で、`RELOAD` を持たず `FLUSH_TABLES`（動的権限）だけを持つユーザーで FTWRL が**通った**。`BACKUP_ADMIN` だけでは通らず、`Error 1227: Access denied; you need (at least one of) the RELOAD or FLUSH_TABLES privilege(s) for this operation` になった。現在のエラー文言（`connect.go` の「requires the RELOAD privilege」）と README の「Required privilege: RELOAD」は `FLUSH_TABLES` を言っていない（8.0 は未確認）。FTWRL は他のセッションの書き込みを止めるので、**権限を調べるためにロックを取ってはならない**。権限は `SHOW GRANTS` から読む。
 - **`SHOW VIEW`**: 8.4 で、`SELECT` だけを持つユーザーは `information_schema.VIEWS.VIEW_DEFINITION` が空（長さ 0。`NULL` ではない）で、`SHOW CREATE VIEW` は `Error 1142: SHOW VIEW command denied` になる。既存の `viewDefinitions`（5.7 と MariaDB）は空の定義をエラーにする。8.x の `viewTableUsage` は定義を読まないので、**`SHOW CREATE VIEW` の段で初めて失敗する**。検査は全ビューに `SHOW CREATE VIEW` を実行して、失敗したビューを列挙する。
 - **サーバーの変数**（`@@GLOBAL.`。読めない変数は `Error 1193: Unknown system variable` になる）:
 
@@ -440,15 +440,15 @@ mysqldance check [接続フラグ] [--target mysql|sqlite|postgres] [--format ta
 | 項目 | 今ある判定の場所 | 共有のしかた |
 | --- | --- | --- |
 | C01 | `dialect.go` の `dialectFor` | そのまま呼ぶ |
-| 検査の接続の設定 | `source.go` の `pinSession`、`dialect.session` | 検査の接続も同じ設定を使う（読む値の見え方がダンプと同じになる） |
-| C03 | `source.go` の `lockGlobal` のメッセージ（`RELOAD`）、`startParallel` の文言 | 権限の説明を定数にして、検査とダンプで同じ文を使う。`FLUSH_TABLES`（13.2）は別件（13.9） |
+| 検査の接続の設定 | `connect.go` の `pinSession`、`dialect.session` | 検査の接続も同じ設定を使う（読む値の見え方がダンプと同じになる） |
+| C03 | `connect.go` の `lockGlobal` のメッセージ（`RELOAD`）、`startParallel` の文言 | 権限の説明を定数にして、検査とダンプで同じ文を使う。`FLUSH_TABLES`（13.2）は別件（13.9） |
 | C04 | `dialect.go` の `viewDefinitions`（空の定義）、`SHOW CREATE VIEW` | 全ビューを集める版を足し、ダンプは最初の 1 つを返す |
-| C05 | `source.go` の `checkAllColumnsVisible`、`triggers.go` | 同上 |
-| C06 | `source.go` の `firstNonInnoDB`、`Tables` の警告 | 「最初の 1 つ」を「全部」にした版を足す |
-| C07 | `source.go` の `checkTableType` | 同上 |
+| C05 | `catalog.go` の `checkAllColumnsVisible`、`triggers.go` | 同上 |
+| C06 | `connect.go` の `firstNonInnoDB`、`catalog.go` の `Tables` の警告 | 「最初の 1 つ」を「全部」にした版を足す |
+| C07 | `catalog.go` の `checkTableType` | 同上 |
 | C10、C15 | `dump.go` のファイル名の長さと衝突の判定、`naming` | 検査から呼べる関数に出す（`-o` なしでもファイル名の判定だけ走らせる） |
 | C11 | `sqlvalue.PostgresLiteral`、`writer/postgres.go` の名前と型の判定 | **行を読んで、ダンプと同じライタの変換に通す**（出力は捨てる）。SQL の述語（13.2 で確かめた `LOCATE(CHAR(0), ...)` など）は、速くするための前段として足せるが、判定の正はライタ |
-| C13、C14 | `source.go` の `largeTableRows`、`checkNotSystem`、`checkDatabases` | そのまま呼ぶ |
+| C13、C14 | `catalog.go` の `largeTableRows`、`connect.go` の `checkNotSystem`、`checkDatabases` | そのまま呼ぶ |
 | C02 | `tls.go` の `ValidateSSL`、`tlsConfig` | 同じ関数でフラグを検査する |
 
 C11 を「ライタの変換に通す」方式にすると、検査の遅さの原因（全行を読む）と引き換えに、**ダンプが止まる値と検査が示す値が必ず一致する**。もう 1 つの案は、ダンプの `dump.Run` に `DryRun`（ファイルを書かない）を足して、検査の値の部分を「`DryRun` で `--target` を走らせる」にすることである。ダンプの全経路（書き出しの前の検査を含む）が検査に入るので判定は最も揃うが、`dump` の調停に「書かない」分岐が増える。**推奨は、前者（ライタの変換だけを呼ぶ）。** 後者は、C15 の判定をダンプと揃える必要が出た段階で足す。
