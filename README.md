@@ -380,6 +380,18 @@ With one connection and only InnoDB tables, or with `--no-lock`, no lock is take
 
 With `--no-lock`, tables that are not InnoDB (MyISAM and so on) cannot guarantee snapshot consistency, so a warning is printed and the dump continues. A table without a primary key or NOT NULL unique key whose estimated row count (`information_schema.TABLES.TABLE_ROWS`) exceeds 500,000 gets a warning that it is far beyond the intended scale and that its rows will be sorted through temporary files, which is slow. A table with a key gets none: its rows are streamed.
 
+### Progress
+
+Besides the snapshot records, each database and each table is reported as `INFO` records (hidden by `--log-level warn`). A record never carries a row value, the password or a connection string, and none changes the output files.
+
+| Message | Attributes | When |
+| --- | --- | --- |
+| `dumping database` | `database` | before the first table of the database is read |
+| `table dumped` | `database`, `table`, `rows`, `bytes`, `files`, `duration` | when the data files of the table are written |
+| `database dumped` | `database`, `tables`, `rows`, `bytes`, `files`, `duration` | when every file of the database is written (not on a failed run) |
+
+`rows` is the number of rows written, `bytes` and `files` are those of the data files of the table (or, in the database record, of all its tables; the schema, routines, triggers, events and constraints files are not counted), and `duration` is the time from the start of the table (or database) to its end (the time of a database also covers reading its schema, routines, triggers and events, and the tables overlap with `--jobs` above 1, so it is not the sum of theirs). With `--jobs` above 1 the tables are written at the same time, so the `table dumped` records come in the order the tables finish, not in table order. The files are written under temporary names first and renamed into place after the last database, so `table dumped` and `database dumped` do not yet mean the files are in place: a run can still fail after them, and then nothing is replaced (see "Failure handling").
+
 ## Re-dumping and removing stale files
 
 Re-dumping into the same output directory replaces **each dumped database's files** (`<db>.00-schema.sql`, `<db>.10-data.*.sql`, `<db>.15-routines.sql`, `<db>.20-triggers.sql`, `<db>.25-events.sql` and, for `--target postgres`, `<db>.90-constraints.sql`) once every database has been written, and deletes the files of that database from last time that were not written again. Data files of tables that existed last time but are gone now therefore do not remain. Files of other databases and unrelated files such as `README.txt` are left alone. New files are always created fresh under temporary names (existing paths are never followed).

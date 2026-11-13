@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -75,7 +76,7 @@ func TestWriteTableReadFailureLeavesNothing(t *testing.T) {
 	for _, rowsPerFile := range []uint32{0, 20} {
 		t.Run(fmt.Sprint("rowsPerFile=", rowsPerFile), func(t *testing.T) {
 			dir := t.TempDir()
-			opt := Options{OutDir: dir, Writer: writer.NewMySQL(datafile.Options{RowsPerFile: rowsPerFile})}
+			opt := Options{OutDir: dir, Log: testLogger(io.Discard), Writer: writer.NewMySQL(datafile.Options{RowsPerFile: rowsPerFile})}
 			st := &stage{dir: dir}
 			_, err := writeTable(context.Background(), opt, fakeRows{n: 500, failAt: 300, err: boom}, naming.NewPlan("d", []string{"t"}), "d", streamTable, st)
 			if !errors.Is(err, boom) || !strings.Contains(err.Error(), `table "t"`) {
@@ -100,12 +101,13 @@ func TestWriteTableNamesFilesAfterTheirCount(t *testing.T) {
 		multi       bool
 	}{{0, false}, {50, true}, {100000, false}} {
 		dir := t.TempDir()
-		opt := Options{OutDir: dir, Writer: writer.NewMySQL(datafile.Options{RowsPerFile: c.rowsPerFile})}
+		opt := Options{OutDir: dir, Log: testLogger(io.Discard), Writer: writer.NewMySQL(datafile.Options{RowsPerFile: c.rowsPerFile})}
 		st := &stage{dir: dir}
-		names, err := writeTable(context.Background(), opt, fakeRows{n: 1000}, naming.NewPlan("d", []string{"t"}), "d", streamTable, st)
+		res, err := writeTable(context.Background(), opt, fakeRows{n: 1000}, naming.NewPlan("d", []string{"t"}), "d", streamTable, st)
 		if err != nil {
 			t.Fatal(err)
 		}
+		names := res.names
 		if (len(names) > 1) != c.multi {
 			t.Fatalf("rowsPerFile=%d: %d files, multi=%v", c.rowsPerFile, len(names), c.multi)
 		}
@@ -132,6 +134,39 @@ func TestWriteTableNamesFilesAfterTheirCount(t *testing.T) {
 	}
 }
 
+// The result of writeTable counts what was written (B-053): the rows, and the
+// bytes of the data files, which are the sizes of the files on disk.
+func TestWriteTableCountsRowsAndBytes(t *testing.T) {
+	for _, rowsPerFile := range []uint32{0, 50} {
+		t.Run(fmt.Sprint("rowsPerFile=", rowsPerFile), func(t *testing.T) {
+			dir := t.TempDir()
+			opt := Options{OutDir: dir, Log: testLogger(io.Discard), Writer: writer.NewMySQL(datafile.Options{RowsPerFile: rowsPerFile})}
+			st := &stage{dir: dir}
+			res, err := writeTable(context.Background(), opt, fakeRows{n: 1000}, naming.NewPlan("d", []string{"t"}), "d", streamTable, st)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.commit(); err != nil {
+				t.Fatal(err)
+			}
+			var size int64
+			for _, n := range res.names {
+				fi, err := os.Stat(filepath.Join(dir, n))
+				if err != nil {
+					t.Fatal(err)
+				}
+				size += fi.Size()
+			}
+			if res.rows != 1000 {
+				t.Errorf("rows = %d, want 1000", res.rows)
+			}
+			if res.bytes != size {
+				t.Errorf("bytes = %d, want %d (the size of %v)", res.bytes, size, res.names)
+			}
+		})
+	}
+}
+
 // With a key, memory must not grow with the number of rows: one million rows
 // go through the writer and the staged file while the live heap stays within a
 // fixed bound (holding them would take well over 100 MB).
@@ -142,7 +177,7 @@ func TestWriteTableMemoryDoesNotGrowWithRows(t *testing.T) {
 	const rows = 1_000_000
 	const bound = 16 << 20
 	dir := t.TempDir()
-	opt := Options{OutDir: dir, Writer: writer.NewMySQL(datafile.Options{})}
+	opt := Options{OutDir: dir, Log: testLogger(io.Discard), Writer: writer.NewMySQL(datafile.Options{})}
 	st := &stage{dir: dir}
 
 	var base, peak uint64

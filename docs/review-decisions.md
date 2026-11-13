@@ -1245,3 +1245,31 @@
 - 却下の理由: 削除の経路は `removeStale` の 1 つで、`Plan.IsOwned` が短縮の有無どちらの形も認識する（`TestPlanShortensLongDatabaseForAllFiles`）。イベントのファイルは `TestEventsFile` と `TestNoEventsNoFileAndStaleFileRemoved`（統合）で確かめている。`isOwned` を通らない経路は無い。
 - 初出: B-048
 - 再出: 0
+
+## R-174 `table dumped` が、後続の検査が終わる前に出る
+- 対象: internal/dump/dump.go の writeTable（`table dumped`）
+- 指摘: 部品の名前の衝突や他のテーブルの失敗で、そのあと実行が失敗しても、`table dumped` は出てしまう。
+- 却下の理由: 確定した仕様（B-053 の前提）。`table dumped` は進捗で、書き終えた順に出る。仮の名前で書いた時点を指し、入れ替えの前であることは README の「Progress」節に書いた。失敗した実行には `database dumped` が出ない（`TestProgressLogNotDoneOnFailure`）ので、完了の印にはならない。
+- 初出: B-053
+- 再出: 0
+
+## R-175 `dumpDB` が集計を出力引数で返している
+- 対象: internal/dump/dump.go の dumpDB（`tot *dbTotals`）
+- 指摘: 戻り値で返すほうが、契約が明示的になる。
+- 却下の理由: 好みの問題。呼び出し側は成功したときだけ読み、`dumpDB` は `seen`・`plans` を既に出力引数で渡している。`return err` が 30 近くあり、戻り値に変えると本項目と関係のない差分が膨らむ（段階ごとの関数に分ける B-050 で扱う）。
+- 初出: B-053
+- 再出: 0
+
+## R-176 DB の `duration` が、テーブルの `duration` の合計と一致しない
+- 対象: internal/dump/dump.go の Run（`database dumped`）
+- 指摘: DB の所要時間にスキーマ・ルーチンなどの読み出しが入るので、テーブルの合計と比べられない。
+- 却下の理由: 仕様どおり（DB の開始から終了まで）。並列のテーブルの時間は重なるので、合計と一致する必要はない。README の「Progress」節に、DB の `duration` にスキーマの読み出しが含まれることを書いた。
+- 初出: B-053
+- 再出: 0
+
+## R-177 `countingFile` が、元のライタの他のメソッドを隠す
+- 対象: internal/dump/dump.go の countingFile
+- 指摘: 将来、書き出し側が `io.StringWriter` などの任意のインターフェースへ型アサーションすると、黙って遅い経路になる。
+- 却下の理由: 失敗のシナリオを示せない（推測）。`NewRowWriter` が受け取るのは `io.WriteCloser` で、`internal/writer`・`internal/datafile`・`internal/dump` に型アサーションは無い（`rg` で確認した）。
+- 初出: B-053
+- 再出: 0

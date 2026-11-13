@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/extsort"
@@ -46,7 +47,8 @@ type Options struct {
 	// files in OutDir. With Source.Jobs above 1, that many tables are sorted at
 	// once. 0 means DefaultSortMemory.
 	SortMemory int64
-	// Log receives warnings (at the Warn level); nil discards them.
+	// Log receives the progress (Info) and the warnings (Warn); nil discards
+	// them. A record never carries a row value or a connection string.
 	Log *slog.Logger
 }
 
@@ -121,9 +123,15 @@ func Run(ctx context.Context, opt Options) (err error) {
 				return fmt.Errorf("database %q: %w", db, err)
 			}
 		}
-		if err := dumpDB(ctx, opt, snap, db, seen, st, plans); err != nil {
+		opt.Log.Info("dumping database", "database", db)
+		start := time.Now()
+		var tot dbTotals
+		if err := dumpDB(ctx, opt, snap, db, seen, st, plans, &tot); err != nil {
 			return fmt.Errorf("database %q: %w", db, err)
 		}
+		// The files are staged, not yet in place: that is the last step of the run.
+		opt.Log.Info("database dumped", "database", db, "tables", tot.tables,
+			"rows", tot.rows, "bytes", tot.bytes, "files", tot.files, "duration", time.Since(start))
 	}
 	// Everything was read and written. From here on the output directory
 	// changes, so stop only for a cancel that arrived before this point.
@@ -181,8 +189,15 @@ func prepareOutDir(dir string, mode os.FileMode) error {
 	return os.Chmod(dir, mode)
 }
 
-// dumpDB stages the files of db and records its file names in plans.
-func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, seen map[string]string, st *stage, plans map[string]*naming.Plan) error {
+// dbTotals is what the data files of one database hold.
+type dbTotals struct {
+	tables, files int
+	rows, bytes   int64
+}
+
+// dumpDB stages the files of db and records its file names in plans. Once every
+// table is written it sets tot to the totals of the data files.
+func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, seen map[string]string, st *stage, plans map[string]*naming.Plan, tot *dbTotals) error {
 	createDB, err := snap.CreateDatabase(ctx)
 	if err != nil {
 		return err
@@ -322,10 +337,10 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	// The tables are read and written in parallel, one per reader. Whatever
 	// order they finish in, the output is the same: file contents depend on the
 	// table alone, and the checks below run in table order.
-	partNames := make([][]string, len(tables))
+	results := make([]tableResult, len(tables))
 	errs := eachTable(ctx, snap.Readers(), len(tables), func(ctx context.Context, r *source.Snapshot, i int) error {
 		var err error
-		partNames[i], err = writeTable(ctx, opt, r, plan, db, tables[i], st)
+		results[i], err = writeTable(ctx, opt, r, plan, db, tables[i], st)
 		return err
 	})
 	if err := firstError(ctx, errs); err != nil {
@@ -335,18 +350,23 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	*tot = dbTotals{tables: len(tables)}
 	for i, t := range tables {
+		names := results[i].names
+		tot.files += len(names)
+		tot.rows += results[i].rows
+		tot.bytes += results[i].bytes
 		// The final names are known only now; say what is shortened for the
 		// files that are written (a part number can shorten the table part
 		// further than it is for a single file).
-		if plan.TableShortened(t.Name, len(partNames[i])) {
-			warnTableShortened(opt.Log, db, t.Name, plan.TableComponent(t.Name, len(partNames[i])))
+		if plan.TableShortened(t.Name, len(names)) {
+			warnTableShortened(opt.Log, db, t.Name, plan.TableComponent(t.Name, len(names)))
 		}
-		if len(partNames[i]) <= 1 {
+		if len(names) <= 1 {
 			continue
 		}
 		// Claim the part names like the others, before anything is committed.
-		for _, n := range partNames[i] {
+		for _, n := range names {
 			if err := claim(seen, n, fmt.Sprintf("table %q of database %q", t.Name, db)); err != nil {
 				return err
 			}
@@ -387,51 +407,82 @@ type rowSource interface {
 	EachRow(ctx context.Context, t source.TableInfo, fn func(row []sqlvalue.Value) error) error
 }
 
+// tableResult is what writeTable wrote for a table: the final names of its data
+// files (without the directory), the rows, and the bytes of the files.
+type tableResult struct {
+	names []string
+	rows  int64
+	bytes int64
+}
+
+// countingFile counts the bytes written to a staged data file into *n. Only
+// Write and Close are passed on: the writers take an io.WriteCloser and use
+// nothing else (R-177).
+type countingFile struct {
+	io.WriteCloser
+	n *int64
+}
+
+func (c countingFile) Write(p []byte) (int, error) {
+	n, err := c.WriteCloser.Write(p)
+	*c.n += int64(n)
+	return n, err
+}
+
 // writeTable streams the rows of t from r into the writer, stages the data
-// files, and returns their final names (without the directory). No row is held:
-// each one is written as it is read. The number of files is known only at the
-// end, and the names depend on it, so the files are renamed to their final
-// names then.
-func writeTable(ctx context.Context, opt Options, r rowSource, plan *naming.Plan, db string, t source.TableInfo, st *stage) ([]string, error) {
+// files, and logs the table as dumped (Info: rows, bytes, files, duration; never
+// a value). No row is held: each one is written as it is read. The number of
+// files is known only at the end, and the names depend on it, so the files are
+// renamed to their final names then.
+func writeTable(ctx context.Context, opt Options, r rowSource, plan *naming.Plan, db string, t source.TableInfo, st *stage) (tableResult, error) {
+	start := time.Now()
 	// Hooks and error messages see this path for every file of the table.
 	provisional := filepath.Join(opt.OutDir, plan.DataFile(t.Name))
 	var staged []int
+	var res tableResult
 	open := func() (io.WriteCloser, error) {
 		tf, err := st.open(provisional)
 		if err != nil {
 			return nil, err
 		}
 		staged = append(staged, tf.idx)
-		return tf, nil
+		return countingFile{tf, &res.bytes}, nil
 	}
 	rw, err := opt.Writer.NewRowWriter(db, t, open)
 	if err != nil {
-		return nil, err
+		return tableResult{}, err
 	}
 	// A failure of the writer is reported as it is; a failure of the read is
 	// worded with the table.
 	var writeErr error
 	readErr := r.EachRow(ctx, t, func(row []sqlvalue.Value) error {
-		writeErr = rw.Write(row)
+		if writeErr = rw.Write(row); writeErr == nil {
+			res.rows++
+		}
 		return writeErr
 	})
 	closeErr := rw.Close()
 	switch {
 	case writeErr != nil:
-		return nil, writeErr
+		return tableResult{}, writeErr
 	case readErr != nil:
-		return nil, fmt.Errorf("table %q: %w", t.Name, readErr)
+		return tableResult{}, fmt.Errorf("table %q: %w", t.Name, readErr)
 	case closeErr != nil:
-		return nil, closeErr
+		return tableResult{}, closeErr
 	}
 	names, err := dataFileNames(plan, t.Name, len(staged))
 	if err != nil {
-		return nil, err
+		return tableResult{}, err
 	}
 	for i, idx := range staged {
 		st.setFinal(idx, filepath.Join(opt.OutDir, names[i]))
 	}
-	return names, nil
+	res.names = names
+	// Progress, not a result: the files are staged and the run can still fail
+	// before the commit (R-174).
+	opt.Log.Info("table dumped", "database", db, "table", t.Name,
+		"rows", res.rows, "bytes", res.bytes, "files", len(names), "duration", time.Since(start))
+	return res, nil
 }
 
 // dataFileNames returns the final names of the n data files of a table. A
