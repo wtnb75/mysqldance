@@ -626,7 +626,7 @@
 - 指摘: 作成時の接続の文字コードを残さないと、復元したトリガーの属性が変わり、照合順序に敏感な比較の挙動が変わりうる。
 - 却下の理由: B-046 で確定した仕様（設計書 12 節の B-046、README の Triggers 節）。全ファイルは固定ヘッダーの `SET NAMES utf8mb4` で流し、本体のテキストは `utf8mb4` で読み書きするので、本体は変わらない。属性まで残すと、サーバーや接続の設定でダンプが変わり、「環境依存の値を出力に混ぜない」（決定性）に反する。`sql_mode` は本体の解釈を変えるので残す。
 - 初出: B-046
-- 再出: 0
+- 再出: 1（B-048: イベントの `character_set_client` / `collation_connection` / `Database Collation` でも同じ指摘。理由は同じで、`schemafile.WriteEvents` にコメントを足した）
 
 ## R-088 ダンプしたテーブルに属さないトリガーも出力される
 - 対象: internal/dump/dump.go の dumpDB（snap.Triggers）
@@ -647,7 +647,7 @@
 - 指摘: 特殊な DEFINER の書き方だと正規表現に一致せず、DEFINER が残る。
 - 却下の理由: `SHOW CREATE TRIGGER` の DEFINER は `SHOW CREATE VIEW` と同じく常にバッククォートで引用された `` `u`@`h` `` で出る。正規表現の `ident` はこの形を扱い、`TestStripDefinerQuotedUsers` が特殊な文字を含むユーザー名を確かめている。トリガーの出力でも `DEFINER` が残らないことは統合テストで確認した。
 - 初出: B-046
-- 再出: 0
+- 再出: 1（B-048: イベントの `StripDefiner` でも同じ指摘。`SHOW CREATE EVENT` も同じ引用形で、`TestStripDefinerEvent` と統合テスト `TestEventsRoundTrip` が `DEFINER` が残らないことを確かめている）
 
 ## R-091 テストの `clientStatements` が mysql クライアントの近似でしかない
 - 対象: internal/dump/dump_test.go の clientStatements
@@ -1215,4 +1215,32 @@
 - 指摘: コメントが長くなり、`showCreateTrigger` のコメントから「列は名前で選ぶ」の説明が消えた。
 - 却下の理由: 好みの問題で、`CLAUDE.md` や linter の規約にない（`golangci-lint` は通っている）。列の説明は共通の `showCreateStatement` のコメントに残っている。
 - 初出: B-047
+- 再出: 0
+
+## R-170 イベントの `SET TIME_ZONE` を、最後に `+00:00` へ戻さない
+- 対象: internal/schemafile/events.go の WriteEvents
+- 指摘: 最後のイベントのタイムゾーンがセッションに残り、後続の文が非 UTC で動く。名前のゾーンは復元先にゾーン表がないと失敗する。
+- 却下の理由: 失敗のシナリオを示せない。後続の文は無い（ファイルの末尾は `DELIMITER ;` だけ）。他のファイルは各自のヘッダーで `SET TIME_ZONE='+00:00'` を先頭に流すので、続けて復元しても持ち越されない。`sql_mode` もルーチン・トリガーで戻していない。名前のゾーンの前提は README の Events 節に書いてある。
+- 初出: B-048
+- 再出: 0
+
+## R-171 `dumpDB` が、ライタがイベントを書けるかを見る前にイベントを読む
+- 対象: internal/dump/dump.go の dumpDB（snap.Events）
+- 指摘: `EventWriter` でないライタでも `SHOW CREATE EVENT` を 1 件ずつ実行し、読めないイベントがあると警告ではなくエラーで止まる。
+- 却下の理由: トリガーとルーチンの処理と同じ並びで、台帳 R-166 と同じ理由（種類ごとの共通化は B-050 で扱う）。読めないものを警告に落とさず止めるのは、「黙って落とさない」の安全側の挙動。
+- 初出: B-048
+- 再出: 0
+
+## R-172 `showCreateColumns` が NULL と空文字を区別しない
+- 対象: internal/source/triggers.go の showCreateColumns
+- 指摘: `time_zone` が NULL でも空文字になり、原因が分かりにくい。
+- 却下の理由: 失敗のシナリオを示せない。NULL の `time_zone` は空文字になり、`WriteEvents` が「time zone がない」というエラーで止める（`TestWriteEventsRefusesNoTimeZone`）。黙って落ちない。文の列だけが NULL を権限の不足として扱うのは、その列だけが権限で NULL になるため。
+- 初出: B-048
+- 再出: 0
+
+## R-173 イベントのファイルの古いものが、名前の短縮で残る
+- 対象: internal/dump/dump.go のイベントファイルの出力と古いファイルの削除
+- 指摘: データベース名が短縮される場合、`isOwned` を通らない削除経路で前回のイベントのファイルが残り、削除したイベントが復元で戻る。
+- 却下の理由: 削除の経路は `removeStale` の 1 つで、`Plan.IsOwned` が短縮の有無どちらの形も認識する（`TestPlanShortensLongDatabaseForAllFiles`）。イベントのファイルは `TestEventsFile` と `TestNoEventsNoFileAndStaleFileRemoved`（統合）で確かめている。`isOwned` を通らない経路は無い。
+- 初出: B-048
 - 再出: 0

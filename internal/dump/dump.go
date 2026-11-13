@@ -225,6 +225,18 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		}
 		routines = nil
 	}
+	events, err := snap.Events(ctx)
+	if err != nil {
+		return err
+	}
+	ew, hasEvents := opt.Writer.(writer.EventWriter)
+	if !hasEvents {
+		for _, ev := range events {
+			opt.Log.Warn(fmt.Sprintf("event %s is not output", sqlvalue.QuoteIdent(ev.Name)),
+				"database", db, "event", ev.Name)
+		}
+		events = nil
+	}
 	var defs map[string]source.TableDef
 	if opt.Writer.NeedsDefs() {
 		if defs, err = snap.Defs(ctx); err != nil {
@@ -237,7 +249,7 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		}
 	}
 	schema := writer.Schema{
-		DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps, Triggers: triggers, Routines: routines, Defs: defs,
+		DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps, Triggers: triggers, Routines: routines, Events: events, Defs: defs,
 		Warn: func(msg string) { opt.Log.Warn(msg, "database", db) },
 	}
 
@@ -270,6 +282,13 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	writeTriggers := len(triggers) > 0
 	if writeTriggers {
 		if err := claim(seen, plan.TriggersFile(), fmt.Sprintf("the triggers of database %q", db)); err != nil {
+			return err
+		}
+	}
+	// Likewise for events; events is nil for a writer that cannot write them.
+	writeEvents := len(events) > 0
+	if writeEvents {
+		if err := claim(seen, plan.EventsFile(), fmt.Sprintf("the events of database %q", db)); err != nil {
 			return err
 		}
 	}
@@ -343,6 +362,13 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	if writeTriggers {
 		if err := st.create(filepath.Join(opt.OutDir, plan.TriggersFile()), func(w io.Writer) error {
 			return tw.WriteTriggers(w, schema)
+		}); err != nil {
+			return err
+		}
+	}
+	if writeEvents {
+		if err := st.create(filepath.Join(opt.OutDir, plan.EventsFile()), func(w io.Writer) error {
+			return ew.WriteEvents(w, schema)
 		}); err != nil {
 			return err
 		}
