@@ -120,6 +120,33 @@ func TestRoutinesFile(t *testing.T) {
 	}
 }
 
+func TestEventsFile(t *testing.T) {
+	if got := EventsFile("my db"); got != "my%20db.25-events.sql" {
+		t.Errorf("EventsFile = %q", got)
+	}
+	if !IsOwnedBy("a.25-events.sql", "a") || IsOwnedBy("a-b.25-events.sql", "a") {
+		t.Error("IsOwnedBy does not recognize exactly the events file of its database")
+	}
+	// Restoring runs the files in name order: the events go in after every data
+	// file, the routines and the triggers (an event body may call or fire them),
+	// and before the constraints.
+	for _, db := range []string{"a", "a-b", "a_b", "a.b"} {
+		for _, tbl := range []string{"t", "0", "-", "A", "a.b", "~"} {
+			for _, d := range DataFileParts(db, tbl, 12345) {
+				if e := EventsFile(db); e <= d {
+					t.Errorf("EventsFile(%q)=%q not > data file %q", db, e, d)
+				}
+			}
+		}
+		if EventsFile(db) <= RoutinesFile(db) || EventsFile(db) <= TriggersFile(db) {
+			t.Errorf("EventsFile(%q) is not after the routines and triggers files", db)
+		}
+		if EventsFile(db) >= ConstraintsFile(db) {
+			t.Errorf("EventsFile(%q) is not before the constraints file", db)
+		}
+	}
+}
+
 func TestConstraintsFile(t *testing.T) {
 	if got := ConstraintsFile("my db"); got != "my%20db.90-constraints.sql" {
 		t.Errorf("ConstraintsFile = %q", got)

@@ -114,6 +114,10 @@ func (p *Plan) SchemaFile() string { return p.dbComp + schemaSuffix }
 // database (see RoutinesFile).
 func (p *Plan) RoutinesFile() string { return p.dbComp + routinesSuffix }
 
+// EventsFile returns the name of the file that holds the events of the
+// database (see EventsFile).
+func (p *Plan) EventsFile() string { return p.dbComp + eventsSuffix }
+
 // TriggersFile returns the name of the file that holds the triggers of the
 // database (see TriggersFile).
 func (p *Plan) TriggersFile() string { return p.dbComp + triggersSuffix }
@@ -131,8 +135,9 @@ func (p *Plan) DataFileParts(table string, n int) []string {
 	return dataFileParts(p.dbComp, p.TableComponent(table, n), n)
 }
 
-// IsOwned reports whether file is the schema file, the routines file, the triggers file, the
-// constraints file or a data file of the database. Both forms of the database
+// IsOwned reports whether file is the schema file, the routines file, the
+// triggers file, the events file, the constraints file or a data file of the
+// database. Both forms of the database
 // part count, shortened or not, whatever this run uses: whether it is
 // shortened depends on the tables, so the files of an earlier dump may have the
 // other form (the tables have changed since) and must not be left behind.
@@ -141,7 +146,7 @@ func (p *Plan) IsOwned(file string) bool {
 }
 
 func isOwned(file, dbComp string) bool {
-	if file == dbComp+schemaSuffix || file == dbComp+routinesSuffix || file == dbComp+triggersSuffix || file == dbComp+constraintsSuffix {
+	if file == dbComp+schemaSuffix || file == dbComp+routinesSuffix || file == dbComp+triggersSuffix || file == dbComp+eventsSuffix || file == dbComp+constraintsSuffix {
 		return true
 	}
 	return strings.HasPrefix(file, dbComp+dataInfix) && strings.HasSuffix(file, sqlExt)

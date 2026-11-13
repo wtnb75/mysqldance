@@ -11,6 +11,7 @@ const (
 	dataInfix         = ".10-data."
 	routinesSuffix    = ".15-routines.sql"
 	triggersSuffix    = ".20-triggers.sql"
+	eventsSuffix      = ".25-events.sql"
 	constraintsSuffix = ".90-constraints.sql"
 	sqlExt            = ".sql"
 )
@@ -56,6 +57,14 @@ func TriggersFile(db string) string {
 	return NewPlan(db, nil).TriggersFile()
 }
 
+// EventsFile returns the name of the file that holds the events of a database.
+// "25" sorts after every data file (they continue with ".10-data."), the
+// routines and the triggers (an event body may call or fire them), and before
+// the constraints file.
+func EventsFile(db string) string {
+	return NewPlan(db, nil).EventsFile()
+}
+
 // ConstraintsFile returns the name of the file a writer may add after all data
 // files of a database (foreign keys, applied once the rows are in). "90" sorts
 // after "10", and no escaped table name can make a data file sort past it:
@@ -99,8 +108,8 @@ func dataFileParts(dbComp, tableComp string, n int) []string {
 }
 
 // IsOwnedBy reports whether file is the schema file, the routines file, the
-// triggers file, the constraints file or a data file of db, by its unshortened name (see
-// Plan.IsOwned for the names of a run).
+// triggers file, the events file, the constraints file or a data file of db, by
+// its unshortened name (see Plan.IsOwned for the names of a run).
 func IsOwnedBy(file, db string) bool {
 	return isOwned(file, EscapeName(db))
 }

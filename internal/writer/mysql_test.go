@@ -141,6 +141,43 @@ func TestOnlyMySQLWritesRoutines(t *testing.T) {
 	}
 }
 
+// Event bodies are MySQL syntax too: only the MySQL writer carries them.
+var _ EventWriter = (*MySQL)(nil)
+
+func TestOnlyMySQLWritesEvents(t *testing.T) {
+	for name, w := range map[string]Writer{"postgres": NewPostgres(datafile.Options{}), "sqlite": NewSQLite(datafile.Options{})} {
+		if _, ok := w.(EventWriter); ok {
+			t.Errorf("%s writer implements EventWriter", name)
+		}
+	}
+}
+
+func TestMySQLEventsWithoutDefiner(t *testing.T) {
+	w := NewMySQL(datafile.Options{})
+	events := []schemafile.Event{
+		{Name: "e", SQLMode: "ANSI_QUOTES", TimeZone: "+09:00",
+			Create: "CREATE DEFINER=`x`@`%` EVENT `e` ON SCHEDULE EVERY 1 DAY DO SELECT 1"},
+	}
+	var got bytes.Buffer
+	if err := w.WriteEvents(&got, Schema{DB: "d", Events: events}); err != nil {
+		t.Fatal(err)
+	}
+	var want bytes.Buffer
+	err := schemafile.WriteEvents(&want, "d", []schemafile.Event{
+		{Name: "e", SQLMode: "ANSI_QUOTES", TimeZone: "+09:00",
+			Create: "CREATE EVENT `e` ON SCHEDULE EVERY 1 DAY DO SELECT 1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != want.String() {
+		t.Errorf("events differ:\n got: %q\nwant: %q", got.String(), want.String())
+	}
+	if strings.Contains(got.String(), "DEFINER") {
+		t.Errorf("DEFINER left in %q", got.String())
+	}
+}
+
 func TestMySQLRoutinesWithoutDefiner(t *testing.T) {
 	w := NewMySQL(datafile.Options{})
 	routines := []schemafile.Routine{

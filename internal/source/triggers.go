@@ -79,25 +79,36 @@ func (s *Snapshot) showCreateTrigger(ctx context.Context, name string) (mode, cr
 }
 
 // showCreateStatement returns the sql_mode and the statement of SHOW CREATE
-// <kind> for a trigger or a routine. The columns are picked by name: the
-// statement is the third one here, not the second as for tables and views.
-// needs names what the account must have, for the error when the statement is
-// NULL. kind is joined into the SQL, so callers pass a constant (R-168).
+// <kind> for a trigger or a routine (see showCreateColumns).
 func (s *Snapshot) showCreateStatement(ctx context.Context, kind, name, stmtCol, needs string) (mode, create string, err error) {
-	rows, err := s.conn.QueryContext(ctx, "SHOW CREATE "+kind+" "+s.qualified(name))
+	cols, err := s.showCreateColumns(ctx, kind, name, stmtCol, needs)
 	if err != nil {
 		return "", "", err
+	}
+	return cols["sql_mode"], cols[stmtCol], nil
+}
+
+// showCreateColumns returns the columns of the one row of SHOW CREATE <kind>
+// by name: the statement is the third one for a trigger, not the second as for
+// tables and views, and an event has a time_zone column between them. The
+// sql_mode column and stmtCol must be there. needs names what the account must
+// have, for the error when the statement is NULL. kind is joined into the SQL,
+// so callers pass a constant (R-168).
+func (s *Snapshot) showCreateColumns(ctx context.Context, kind, name, stmtCol, needs string) (map[string]string, error) {
+	rows, err := s.conn.QueryContext(ctx, "SHOW CREATE "+kind+" "+s.qualified(name))
+	if err != nil {
+		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	cols, err := rows.Columns()
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	if !rows.Next() {
 		if err := rows.Err(); err != nil {
-			return "", "", err
+			return nil, err
 		}
-		return "", "", fmt.Errorf("SHOW CREATE %s %s returned no rows", kind, sqlvalue.QuoteIdent(name))
+		return nil, fmt.Errorf("SHOW CREATE %s %s returned no rows", kind, sqlvalue.QuoteIdent(name))
 	}
 	vals := make([]sql.RawBytes, len(cols))
 	dest := make([]any, len(cols))
@@ -105,25 +116,27 @@ func (s *Snapshot) showCreateStatement(ctx context.Context, kind, name, stmtCol,
 		dest[i] = &vals[i]
 	}
 	if err := rows.Scan(dest...); err != nil {
-		return "", "", err
+		return nil, err
 	}
-	modeIdx, stmtIdx := -1, -1
+	out := make(map[string]string, len(cols))
+	stmtIdx, hasMode := -1, false
 	for i, c := range cols {
+		out[c] = string(vals[i])
 		switch c {
 		case "sql_mode":
-			modeIdx = i
+			hasMode = true
 		case stmtCol:
 			stmtIdx = i
 		}
 	}
-	if modeIdx < 0 || stmtIdx < 0 {
-		return "", "", fmt.Errorf("SHOW CREATE %s %s has the columns %q, not the expected sql_mode and %s",
+	if !hasMode || stmtIdx < 0 {
+		return nil, fmt.Errorf("SHOW CREATE %s %s has the columns %q, not the expected sql_mode and %s",
 			kind, sqlvalue.QuoteIdent(name), cols, stmtCol)
 	}
 	// The statement is NULL when the account may not see the body.
 	if vals[stmtIdx] == nil {
-		return "", "", fmt.Errorf("SHOW CREATE %s %s returned no statement; the account needs %s",
+		return nil, fmt.Errorf("SHOW CREATE %s %s returned no statement; the account needs %s",
 			kind, sqlvalue.QuoteIdent(name), needs)
 	}
-	return string(vals[modeIdx]), string(vals[stmtIdx]), rows.Err()
+	return out, rows.Err()
 }

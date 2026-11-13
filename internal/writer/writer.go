@@ -31,6 +31,9 @@ type Schema struct {
 	// Routines are the stored procedures and functions of the database, in the
 	// order to create them in. They are MySQL SHOW CREATE text as well.
 	Routines []schemafile.Routine
+	// Events are the events of the database, in the order to create them in.
+	// They are MySQL SHOW CREATE text as well.
+	Events []schemafile.Event
 	// Defs is the structure of each table by name. It is set only for a writer
 	// whose NeedsDefs is true.
 	Defs map[string]source.TableDef
@@ -107,6 +110,16 @@ func outputColumns(t source.TableInfo, def source.TableDef, warn func(format str
 		}
 	}
 	return cols, nil
+}
+
+// EventWriter is implemented by a writer that can carry events over to its
+// target. dump writes the result to the database's events file
+// (naming.EventsFile), which sorts after every data file, the routines file and
+// the triggers file. For a writer without it, dump warns about each event
+// instead of dropping it silently.
+type EventWriter interface {
+	// WriteEvents writes the events file of one database.
+	WriteEvents(w io.Writer, s Schema) error
 }
 
 // RoutineWriter is implemented by a writer that can carry stored procedures and

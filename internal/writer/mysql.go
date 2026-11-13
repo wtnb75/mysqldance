@@ -62,6 +62,17 @@ func (m *MySQL) WriteRoutines(w io.Writer, s Schema) error {
 	return schemafile.WriteRoutines(w, s.DB, routines)
 }
 
+// WriteEvents implements EventWriter. The DEFINER clause is removed, as for
+// views, triggers and routines, so the events belong to the restoring user.
+func (m *MySQL) WriteEvents(w io.Writer, s Schema) error {
+	events := make([]schemafile.Event, len(s.Events))
+	for i, e := range s.Events {
+		e.Create = schemafile.StripDefiner(e.Create)
+		events[i] = e
+	}
+	return schemafile.WriteEvents(w, s.DB, events)
+}
+
 // WriteTriggers implements TriggerWriter. The DEFINER clause is removed, as for
 // views, so the triggers belong to the restoring user and the name of the
 // dumping user stays out of the output.
