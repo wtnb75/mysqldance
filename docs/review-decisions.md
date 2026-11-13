@@ -1315,3 +1315,32 @@
 - 却下の理由: 事実と違う。`stream.go` の `mix32(h)` を `h` に戻して実行すると、末尾が `'x'` の行は N=2〜128 の全てで文の数が期待の約 2 倍になり、末尾が `'y'` の行は全てで 1 文になって、12 通りすべてが落ちる（B-058 で確認した）。`mix32` の出力は `TestMix32KnownValues` が固定値で縛る。
 - 初出: B-058
 - 再出: 0
+
+## R-184 `--version` の commit が 40 桁で、ldflags のビルド（短縮形）と形が揃わない
+- 対象: cmd/mysqldance/buildinfo.go の resolveBuildInfo
+- 指摘: `vcs.revision` は 40 桁の全体なのに、Taskfile と goreleaser は短縮形を渡す。7 桁に切り詰めて揃えるべき。
+- 却下の理由: 失敗のシナリオがなく、見た目の好み。全体のハッシュは曖昧さがなく、`git show` にそのまま渡せる。短縮の桁数は git の設定で変わるので、固定の桁に切ると衝突しうる。README に「VCS の revision」と書いてある。
+- 初出: B-061
+- 再出: 0
+
+## R-185 build info 由来の version（`+dirty` の疑似バージョン）と commit の `-dirty` が二重に出る
+- 対象: cmd/mysqldance/buildinfo.go の resolveBuildInfo
+- 指摘: 変更のある checkout を `go build` すると、`Main.Version` が `...+dirty` の疑似バージョンになり、commit にも `-dirty` が付いて、二重に表示される。
+- 却下の理由: 表示が冗長なだけで、誤りや欠落はない。version と commit は別の情報源（モジュールの版と VCS の状態）で、それぞれ Go が記録した値をそのまま出す方針（受け入れ条件はコミットの表示のみ）。どちらかを消すと、ldflags の片方だけ渡したときに `-dirty` の情報が落ちる。
+- 初出: B-061
+- 再出: 0
+
+## R-186 `--version` の配線（`run` → `buildVersion`）を既定値で通すテストが無い
+- 対象: cmd/mysqldance/main_test.go の TestRunVersion
+- 指摘: `TestRunVersion` は ldflags 相当の値を固定するので、`run` が生の変数を出す退行を検出できない。
+- 却下の理由: 既定値のとき出力はテストバイナリの build info に依存し、決定的に検証できない（`go test` のバイナリは VCS 情報を持たない）。判断のロジックは `resolveBuildInfo` の表で網羅済みで、`buildVersion` は `debug.ReadBuildInfo` を渡すだけの 2 行。
+- 初出: B-061
+- 再出: 0
+
+## R-187 ldflags に `dev` / `unknown` をそのまま渡すと、未指定と区別できない
+- 対象: cmd/mysqldance/buildinfo.go の resolveBuildInfo、Taskfile.yml の build
+- 指摘: 既定値と同じ文字列を比べて未指定と判断するので、`-X main.version=dev` の明示指定が build info に置き換わりうる。
+- 却下の理由: Taskfile の代替値 `dev` / `unknown` は「情報が無い」ことを表す既定値そのもので、build info があればそちらを出すのが B-061 の意図。意味のある値を渡す goreleaser のビルドには影響しない。空文字を未指定にする案は、`-X main.version=` の誤指定を拾うだけで利点がない。
+- 初出: B-061
+- 再出: 0
+
