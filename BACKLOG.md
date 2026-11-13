@@ -315,6 +315,24 @@
   - [ ] 列挙されない場合、黙って落とさずにエラーまたは警告にする（再現テストを書く）
   - [ ] README の記述が挙動に合っている
 
+## B-111 [todo|P3] `--definer=strip|keep` でビュー・トリガー・ルーチンの DEFINER を選べるようにする
+- 概要: 今は `schemafile.StripDefiner` でビュー・トリガー・ルーチンの `DEFINER=...` を常に除く（復元先にダンプ元のユーザーがいなくても作れ、ユーザー名が出力に入らないため）。元の `DEFINER` を残したい利用者向けに、`--definer=strip`（既定）と `--definer=keep` を選べるようにする。3 種類は `internal/writer/mysql.go` の同じ仕組み（`StripDefiner`）を通るので、1 つのフラグで扱う。`keep` のときの復元は、`DEFINER` のユーザーが復元先にいることが前提（いないと `CREATE` がエラー 1449 で失敗する）。
+- 受け入れ条件:
+  - [ ] `--definer=strip`（既定）は今と同じ出力で、`--definer=keep` はビュー・トリガー・ルーチンの `DEFINER=...` を `SHOW CREATE` のまま残す
+  - [ ] 不正な値は使い方のエラー
+  - [ ] `--target sqlite` / `postgres` ではビュー・トリガー・ルーチンを出さないので、`--definer` は何もしない（README に書く）
+  - [ ] `keep` の出力も決定的で、`DEFINER` のユーザーがいる復元先で復元できる（統合テスト）
+  - [ ] README の使い方と、`DEFINER` の記述（「Stored routines」「Triggers」「Limitations」）をフラグに合わせる
+
+## B-112 [todo|P3] `--sql-security=keep|invoker` でビュー・ルーチンの `SQL SECURITY` を書き換えられるようにする
+- 概要: `DEFINER` を除くと、`SQL SECURITY DEFINER`（既定）のビューとルーチンは、復元したユーザーの権限で動く。復元するのが管理者だと、元の定義者より高い権限で動く。オプトインで `SQL SECURITY INVOKER` に書き換えられるようにする（`--sql-security=keep`（既定）と `--sql-security=invoker`）。書き換えるとビューの見え方など定義の意味が変わるので、既定は書き換えない。トリガーには `SQL SECURITY` がないので対象外。
+- 受け入れ条件:
+  - [ ] `--sql-security=keep`（既定）は今と同じ出力で、`invoker` はビューとルーチンの `SQL SECURITY DEFINER`（明示した場合と、書かれていない既定の場合）を `SQL SECURITY INVOKER` にする
+  - [ ] 本体や文字列の中の `SQL SECURITY DEFINER` という文字列は書き換えない（ヘッダーと特性だけを書き換える）
+  - [ ] 不正な値は使い方のエラー。`--target sqlite` / `postgres` では何もしない（README に書く）
+  - [ ] `invoker` の出力が決定的で、復元して `SECURITY_TYPE` が `INVOKER` になる（統合テスト）
+  - [ ] README に、意味が変わること（ビューの見え方、権限）を書く
+
 # Done
 
 ## B-047 [done|P3] ストアドルーチンをダンプする
