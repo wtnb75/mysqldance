@@ -46,7 +46,7 @@ func legacyWriteStatements(w io.Writer, header, footer string, quote func(string
 		h := fnv.New32a()
 		_, _ = h.Write([]byte(text))
 		size += len(text) + 2
-		closeNow := i == len(rows)-1 || h.Sum32()%opt.RowsPerInsert == 0 || size >= opt.MaxInsertBytes
+		closeNow := i == len(rows)-1 || mix32(h.Sum32())%opt.RowsPerInsert == 0 || size >= opt.MaxInsertBytes
 		sep := ",\n"
 		if closeNow {
 			sep = ";\n"

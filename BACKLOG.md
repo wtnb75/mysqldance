@@ -14,12 +14,6 @@
   - [ ] 手動実行で PR が作られ、PR 上で CI が通る
   - [ ] 統合テストが必要な更新でも、B-026 の CI で検証される
 
-## B-058 [todo|P3] INSERT の区切りのハッシュを混ぜて、偶数の RowsPerInsert でも偏らないようにする
-- 概要: `datafile.Write` の区切りは FNV-1a 32 ビットの生の値を `RowsPerInsert` で割った余りで決める。FNV-1a の下位ビットは入力の下位ビットにしか依存しないため、行が同じ末尾（`')` など）を持つと、偶数の値（50、100 など）で余りが 0 になる行が極端に少なくなりうる（B-009 で `--rows-per-file` の実装中に、末尾が共通のキーで 0 件になることを確認した。B-009 の `Split` はハッシュを混ぜて解決した）。その場合は `MaxInsertBytes` でしか区切られない。ただし、出力を変えると既存のダンプの差分が一度だけ大きく出る。
-- 受け入れ条件:
-  - [ ] `RowsPerInsert` が偶数のときも、区切りの間隔が平均 `RowsPerInsert` 行に近いことを、末尾が共通の行でテストする
-  - [ ] 出力が変わることを README に書く
-
 ## B-061 [todo|P3] `go install` でも `--version` が意味のある値を出すようにする
 - 概要: `--version` の `version` / `commit` は ldflags でしか入らず、`go install ...@vX.Y.Z` や `go build` で作ったバイナリは `dev (commit unknown)` と出る。ldflags が空のときに限り、`runtime/debug.ReadBuildInfo()` の `Main.Version` と `vcs.revision` に切り替える。B-032 のレビューで指摘された。
 - 受け入れ条件:
@@ -297,6 +291,14 @@
   - [ ] README に、意味が変わること（ビューの見え方、権限）を書く
 
 # Done
+
+## B-058 [done|P3] INSERT の区切りのハッシュを混ぜて、偶数の RowsPerInsert でも偏らないようにする
+- 概要: `datafile.Write` の区切りは FNV-1a 32 ビットの生の値を `RowsPerInsert` で割った余りで決める。FNV-1a の下位ビットは入力の下位ビットにしか依存しないため、行が同じ末尾（`')` など）を持つと、偶数の値（50、100 など）で余りが 0 になる行が極端に少なくなりうる（B-009 で `--rows-per-file` の実装中に、末尾が共通のキーで 0 件になることを確認した。B-009 の `Split` はハッシュを混ぜて解決した）。その場合は `MaxInsertBytes` でしか区切られない。ただし、出力を変えると既存のダンプの差分が一度だけ大きく出る。
+- 前提: `Split` と同じ `mix32`（MurmurHash3 の finalizer）を、`fileStream.add` の判定に使う。
+- 受け入れ条件:
+  - [x] `RowsPerInsert` が偶数のときも、区切りの間隔が平均 `RowsPerInsert` 行に近いことを、末尾が共通の行でテストする
+  - [x] 出力が変わることを README に書く
+- 結果: 区切りの判定を `mix32(h)%RowsPerInsert` にした。テストは、行のパリティが全行で同じ（修正前は全行で区切る、または 1 件も区切らない）行を、`RowsPerInsert` が 2〜128 の偶数で書いて、文の数が行数/N の 0.7〜1.3 倍に収まることを確かめる。README の「Determinism and ordering」に、初回のダンプだけ区切りが変わることを書いた。
 
 ## B-051 [done|P3] テスト用のグローバル変数を `Options` に置き換える
 - 依存: B-049, B-050

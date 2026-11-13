@@ -49,8 +49,8 @@ func HeaderUse(db string) string {
 // Split divides the rows of one table, already in output order, into the
 // groups that become separate data files. A group ends after a row whose
 // key hash modulo rowsPerFile is zero, and after the last row. keyCols are the
-// indexes of the key columns in a row; the hash is the FNV-1a 32-bit hash of
-// those values, so updating a non-key column never moves a boundary. Without
+// indexes of the key columns in a row; the hash is the mixed (mix32) FNV-1a
+// 32-bit hash of those values, so updating a non-key column never moves a boundary. Without
 // key columns (a table without a usable key) the whole row is hashed instead.
 // Content-defined cuts make the sizes vary (rowsPerFile is only an average)
 // and a table may turn from one group into several as it grows; both are
@@ -125,9 +125,9 @@ func mix32(h uint32) uint32 {
 // Write writes the header and the rows of one table as INSERT statements.
 //
 // Statement boundaries are content-defined: a statement is closed after a row
-// whose FNV-1a 32-bit hash modulo RowsPerInsert is zero, after the row that
-// makes the statement reach MaxInsertBytes, and after the last row. Removing
-// one row therefore only affects boundaries next to it.
+// whose FNV-1a 32-bit hash, mixed by mix32, modulo RowsPerInsert is zero,
+// after the row that makes the statement reach MaxInsertBytes, and after the
+// last row. Removing one row therefore only affects boundaries next to it.
 func Write(w io.Writer, db, table string, columns []string, listColumns bool, rows [][]string, opt Options) error {
 	return WriteStatements(w, Header(db), "", sqlvalue.QuoteIdent, table, columns, listColumns, rows, opt)
 }
