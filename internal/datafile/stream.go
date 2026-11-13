@@ -155,7 +155,7 @@ func (f *fileStream) add(row []string) error {
 		return err
 	}
 	f.size += n + 2 // n is the row text; 2 is the ",\n" or ";\n" after it (as before B-017, R-143)
-	if h%f.opt.RowsPerInsert == 0 || f.size >= f.opt.MaxInsertBytes {
+	if mix32(h)%f.opt.RowsPerInsert == 0 || f.size >= f.opt.MaxInsertBytes {
 		f.pending, f.open = ";\n", false
 	} else {
 		f.pending = ",\n"

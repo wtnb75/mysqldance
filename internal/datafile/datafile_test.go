@@ -217,6 +217,40 @@ func TestSplitWithoutKeyHashesTheRow(t *testing.T) {
 	}
 }
 
+// The low bits of FNV-1a depend only on the low bits of the input bytes, so
+// rows with a common tail used to hit "hash % N == 0" far too rarely (or
+// never) for an even N. The statement count must stay near rows/N.
+func TestWriteEvenRowsPerInsertIsNotSkewed(t *testing.T) {
+	const n = 26 * 26 * 26
+	for _, tail := range []string{"'x'", "'y'"} {
+		rows := make([][]string, 0, n)
+		for i := range n {
+			// Every byte of the varying part is doubled, so the parity of
+			// the row text (the lowest hash bit) is the same for all rows.
+			a, b, c := 'a'+rune(i%26), 'a'+rune(i/26%26), 'a'+rune(i/676)
+			rows = append(rows, []string{fmt.Sprintf("'%c%c%c%c%c%c'", a, a, b, b, c, c), tail})
+		}
+		for _, per := range []uint32{2, 4, 16, 50, 100, 128} {
+			out := write(t, rows, false, Options{RowsPerInsert: per, MaxInsertBytes: 1 << 30})
+			got := strings.Count(out, "INSERT INTO")
+			want := n / int(per)
+			if got < want*7/10 || got > want*13/10 {
+				t.Errorf("tail %s, RowsPerInsert=%d: %d statements, want about %d", tail, per, got, want)
+			}
+		}
+	}
+}
+
+// mix32 is MurmurHash3's fmix32; pin it so the boundary positions of every
+// dump cannot change silently (the legacy reference in stream_test.go shares it).
+func TestMix32KnownValues(t *testing.T) {
+	for in, want := range map[uint32]uint32{0: 0, 1: 0x514e28b7} {
+		if got := mix32(in); got != want {
+			t.Errorf("mix32(%#x) = %#x, want %#x", in, got, want)
+		}
+	}
+}
+
 func TestSplitIsDeterministic(t *testing.T) {
 	rows := makeRows(3000)
 	if !reflect.DeepEqual(Split(rows, []int{0}, 100), Split(rows, []int{0}, 100)) {
