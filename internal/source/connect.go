@@ -61,6 +61,10 @@ type Config struct {
 	// tables are sorted at once.
 	SortFile   extsort.NewFile
 	SortMemory int64
+	// LargeTableRows is the TABLE_ROWS estimate above which Tables warns about a
+	// table without a key; 0 means DefaultLargeTableRows. A negative value warns
+	// for every such table (a new table's estimate is 0, so tests use it).
+	LargeTableRows int64
 	// Log receives how the snapshot is made: the target, the connections, the
 	// lock and how long it is awaited and held (Info), and the statements that
 	// take the lock and start the snapshots (Debug). Nil discards them. It never
@@ -180,8 +184,12 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 		s, err = start(ctx, sdb, dbs, cfg.NoLock, cfg.Jobs, cfg.LockTimeout, lg)
 	}
 	if err == nil {
+		// Every reader gets the settings, as with the sort ones, so that any of
+		// them can run Tables (R-182).
+		largeRows := largeTableRowsOrDefault(cfg.LargeTableRows)
 		for _, r := range s.Readers() {
 			r.sortMemory, r.sortFile = cfg.SortMemory, cfg.SortFile
+			r.largeTableRows = largeRows
 		}
 	}
 	if err != nil {

@@ -50,6 +50,7 @@ func TestJobsReaderCount(t *testing.T) {
 // TestJobsTablesAndWarningsSameAsSerial: the table list and its warnings are
 // read on the first connection and follow table name order, whatever Jobs is.
 func TestJobsTablesAndWarningsSameAsSerial(t *testing.T) {
+	t.Parallel()
 	cfg, db, conn := testDB(t)
 	mustExec(t, conn,
 		"CREATE TABLE c (n INT)",
@@ -58,9 +59,7 @@ func TestJobsTablesAndWarningsSameAsSerial(t *testing.T) {
 	)
 	// TABLE_ROWS of a new table is usually 0, so lower the threshold below it
 	// (as TestWarningsLargeTable does) to get a warning for every table.
-	orig := largeTableRows
-	largeTableRows = -1
-	t.Cleanup(func() { largeTableRows = orig })
+	cfg.LargeTableRows = -1
 
 	tablesAndWarnings := func(jobs int) ([]TableInfo, []string) {
 		cfg.Jobs = jobs

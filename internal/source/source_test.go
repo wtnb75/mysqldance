@@ -422,6 +422,7 @@ func TestOrderByTypesFromTables(t *testing.T) {
 }
 
 func TestWarningsLargeTable(t *testing.T) {
+	t.Parallel()
 	cfg, db, conn := testDB(t)
 	mustExec(t, conn,
 		"CREATE TABLE keyed (id INT PRIMARY KEY)",
@@ -429,9 +430,7 @@ func TestWarningsLargeTable(t *testing.T) {
 	)
 	// TABLE_ROWS of a new table is usually 0, so lower the threshold below
 	// it instead of loading 500k rows.
-	orig := largeTableRows
-	largeTableRows = -1
-	t.Cleanup(func() { largeTableRows = orig })
+	cfg.LargeTableRows = -1
 	s := openSnapshot(t, cfg, db)
 	w := warningsOf(t, s)
 	// A table with a key is streamed, so its size is no reason to warn.

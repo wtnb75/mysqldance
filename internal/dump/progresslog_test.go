@@ -119,12 +119,13 @@ func TestProgressLog(t *testing.T) {
 
 // A failed run says nothing of the database being done.
 func TestProgressLogNotDoneOnFailure(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	db := e.threeTables(t)
 	var buf bytes.Buffer
 	dir := t.TempDir()
-	failOn(t, filepath.Join(dir, naming.DataFile(db, "b")), nil)
-	opt := Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, Log: connLogger(&buf)}
+	fail := failOn(filepath.Join(dir, naming.DataFile(db, "b")))
+	opt := Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, Log: connLogger(&buf), FileWriter: fail}
 	if err := Run(context.Background(), opt); err == nil {
 		t.Fatal("Run with an injected write failure succeeded")
 	}
