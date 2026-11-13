@@ -1273,3 +1273,31 @@
 - 却下の理由: 失敗のシナリオを示せない（推測）。`NewRowWriter` が受け取るのは `io.WriteCloser` で、`internal/writer`・`internal/datafile`・`internal/dump` に型アサーションは無い（`rg` で確認した）。
 - 初出: B-053
 - 再出: 0
+
+## R-178 `extraFiles` が `planFiles` と `writeExtraFiles` で 2 回評価される
+- 対象: internal/dump/dump.go の extraFiles / planFiles / writeExtraFiles
+- 指摘: 名前の確保と書き出しで別々に評価されるため、将来どちらかだけ条件を変えると、確保していないファイルを書く、または確保して書かないことになる。
+- 却下の理由: 失敗のシナリオを示せない（推測）。`extraFiles` は同じ入力（ライタ、`schema`、`plan`）だけに依存する純粋関数で、両者は同じ値を見る。関数のコメントにその旨を書いた。評価のコストは DB ごとに数個のクロージャで無視できる。
+- 初出: B-050
+- 再出: 0
+
+## R-179 `dumpDB` の分割で `plans[db]` が `planFiles` の成功後にしか入らない
+- 対象: internal/dump/dump.go の dumpDB（`plans[db] = plan`）
+- 指摘: 名前の衝突で失敗したとき、以前は入っていた `plans` の要素が無くなる。
+- 却下の理由: `Run` は `dumpDB` のエラーですぐに返り、`plans` を読むのは全 DB の書き出しが終わった後だけ（`ownedEntries` と `removeStale`）。失敗後に `plans` を使う経路は無く、挙動と出力は変わらない。`dumpDB` にコメントを書いた。
+- 初出: B-050
+- 再出: 0
+
+## R-180 ライタの対応の確認が `readSchema` と `extraFiles` の 2 か所にある
+- 対象: internal/dump/dump.go の readSchema / extraFiles
+- 指摘: 「ライタが対応していて、中身がある」という判断が 2 か所に分かれ、種類を足すと両方を直す必要がある。
+- 却下の理由: 失敗のシナリオを示せない（好みの問題）。`readSchema` の役割は読んだものを落として警告すること、`extraFiles` の役割はファイルの一覧で、問いが違う。分けたままでも、片方を直し忘れたとき、警告が出るのに書かれる（またはその逆）ことは、既存のテストが捕まえる。R-166 と同じ理由で、共通化するとコールバックだらけになる。
+- 初出: B-050
+- 再出: 0
+
+## R-181 `readSchema` / `writeTables` / `writeExtraFiles` が `Options` を丸ごと受け取る
+- 対象: internal/dump/dump.go の readSchema、writeTables、writeExtraFiles
+- 指摘: 必要なのは `Log`、`Writer`、`OutDir` だけで、引数が広く、`writeTables` は 9 個になる。
+- 却下の理由: 保守性の好みで、失敗のシナリオが無い。引数を狭める構造体の導入は B-051（`Options` への置き換え）で触る範囲と重なるので、そこで扱う。この項目は挙動を変えない分割に限る。
+- 初出: B-050
+- 再出: 0

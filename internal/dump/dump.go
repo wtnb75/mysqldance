@@ -196,31 +196,61 @@ type dbTotals struct {
 }
 
 // dumpDB stages the files of db and records its file names in plans. Once every
-// table is written it sets tot to the totals of the data files.
+// table is written it sets tot to the totals of the data files. It runs in
+// stages, in this order: read the objects of the database, validate every
+// output file name, stage the schema file, the data files, and the other files.
 func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, seen map[string]string, st *stage, plans map[string]*naming.Plan, tot *dbTotals) error {
-	createDB, err := snap.CreateDatabase(ctx)
+	schema, err := readSchema(ctx, opt, snap, db)
 	if err != nil {
 		return err
 	}
-	tables, warnings, err := snap.Tables(ctx)
+	plan, err := planFiles(opt, db, schema, seen)
 	if err != nil {
 		return err
+	}
+	// Run reads plans only when every database was staged, so a failed
+	// planFiles needs no entry.
+	plans[db] = plan
+	// Refuse owned entries that are not regular files before writing anything.
+	if _, err := ownedEntries(opt.OutDir, plan); err != nil {
+		return err
+	}
+	if err := st.create(filepath.Join(opt.OutDir, plan.SchemaFile()), func(w io.Writer) error {
+		return opt.Writer.WriteSchema(w, schema)
+	}); err != nil {
+		return err
+	}
+	if err := writeTables(ctx, opt, snap, db, schema.Tables, plan, seen, st, tot); err != nil {
+		return err
+	}
+	return writeExtraFiles(opt, schema, plan, st)
+}
+
+// readSchema reads everything the writer needs to describe db. Objects that
+// the writer cannot output are dropped from the result with a warning, rather
+// than left out silently.
+func readSchema(ctx context.Context, opt Options, snap *source.Snapshot, db string) (writer.Schema, error) {
+	createDB, err := snap.CreateDatabase(ctx)
+	if err != nil {
+		return writer.Schema{}, err
+	}
+	tables, warnings, err := snap.Tables(ctx)
+	if err != nil {
+		return writer.Schema{}, err
 	}
 	for _, w := range warnings {
 		opt.Log.Warn(w, "database", db)
 	}
 	views, deps, err := snap.Views(ctx)
 	if err != nil {
-		return err
+		return writer.Schema{}, err
 	}
 	// Every trigger is on a base table, and Tables returns all of them (R-088).
 	triggers, err := snap.Triggers(ctx)
 	if err != nil {
-		return err
+		return writer.Schema{}, err
 	}
-	tw, hasTriggers := opt.Writer.(writer.TriggerWriter)
-	if !hasTriggers {
-		// Say so rather than leave them out silently.
+	if _, ok := opt.Writer.(writer.TriggerWriter); !ok {
 		for _, t := range triggers {
 			opt.Log.Warn(fmt.Sprintf("trigger %s on table %s is not output",
 				sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(t.Table)),
@@ -230,10 +260,9 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	}
 	routines, err := snap.Routines(ctx)
 	if err != nil {
-		return err
+		return writer.Schema{}, err
 	}
-	rw, hasRoutines := opt.Writer.(writer.RoutineWriter)
-	if !hasRoutines {
+	if _, ok := opt.Writer.(writer.RoutineWriter); !ok {
 		for _, r := range routines {
 			opt.Log.Warn(fmt.Sprintf("%s %s is not output", strings.ToLower(r.Type), sqlvalue.QuoteIdent(r.Name)),
 				"database", db, "routine", r.Name, "type", r.Type)
@@ -242,10 +271,9 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	}
 	events, err := snap.Events(ctx)
 	if err != nil {
-		return err
+		return writer.Schema{}, err
 	}
-	ew, hasEvents := opt.Writer.(writer.EventWriter)
-	if !hasEvents {
+	if _, ok := opt.Writer.(writer.EventWriter); !ok {
 		for _, ev := range events {
 			opt.Log.Warn(fmt.Sprintf("event %s is not output", sqlvalue.QuoteIdent(ev.Name)),
 				"database", db, "event", ev.Name)
@@ -255,7 +283,7 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	var defs map[string]source.TableDef
 	if opt.Writer.NeedsDefs() {
 		if defs, err = snap.Defs(ctx); err != nil {
-			return err
+			return writer.Schema{}, err
 		}
 		for i := range tables {
 			if d, ok := defs[tables[i].Name]; ok {
@@ -263,80 +291,79 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 			}
 		}
 	}
-	schema := writer.Schema{
+	return writer.Schema{
 		DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps, Triggers: triggers, Routines: routines, Events: events, Defs: defs,
 		Warn: func(msg string) { opt.Log.Warn(msg, "database", db) },
-	}
+	}, nil
+}
 
-	// Validate every file name before touching the directory.
-	tableNames := make([]string, len(tables))
-	for i, t := range tables {
+// planFiles decides the output file names of db and claims them in seen, so a
+// name that is already taken is an error before anything is written. A table
+// that is split is claimed again under its part names later (see writeTables).
+func planFiles(opt Options, db string, schema writer.Schema, seen map[string]string) (*naming.Plan, error) {
+	tableNames := make([]string, len(schema.Tables))
+	for i, t := range schema.Tables {
 		tableNames[i] = t.Name
 	}
 	plan := naming.NewPlan(db, tableNames)
-	plans[db] = plan
 	if plan.DBShortened() {
 		opt.Log.Warn("the database part of the output file names is over the length limit and is shortened",
 			"database", db, "original", naming.EscapeName(db), "shortened", plan.DBComponent())
 	}
-	schemaName := plan.SchemaFile()
-	if err := claim(seen, schemaName, fmt.Sprintf("the schema of database %q", db)); err != nil {
-		return err
+	if err := claim(seen, plan.SchemaFile(), fmt.Sprintf("the schema of database %q", db)); err != nil {
+		return nil, err
 	}
-	// Likewise a database without routines has no routines file; routines is
-	// nil for a writer that cannot write them.
-	writeRoutines := len(routines) > 0
-	if writeRoutines {
-		if err := claim(seen, plan.RoutinesFile(), fmt.Sprintf("the routines of database %q", db)); err != nil {
-			return err
+	for _, e := range extraFiles(opt.Writer, schema, plan) {
+		if err := claim(seen, e.name, fmt.Sprintf("the %s of database %q", e.what, db)); err != nil {
+			return nil, err
 		}
 	}
-	// A database without triggers has no triggers file, so the file of an
-	// earlier dump does not outlive its triggers (see removeStale).
-	// triggers is nil for a writer that cannot write them (see above).
-	writeTriggers := len(triggers) > 0
-	if writeTriggers {
-		if err := claim(seen, plan.TriggersFile(), fmt.Sprintf("the triggers of database %q", db)); err != nil {
-			return err
-		}
-	}
-	// Likewise for events; events is nil for a writer that cannot write them.
-	writeEvents := len(events) > 0
-	if writeEvents {
-		if err := claim(seen, plan.EventsFile(), fmt.Sprintf("the events of database %q", db)); err != nil {
-			return err
-		}
-	}
-	cw, hasConstraints := opt.Writer.(writer.ConstraintWriter)
-	if hasConstraints {
-		if err := claim(seen, plan.ConstraintsFile(), fmt.Sprintf("the constraints of database %q", db)); err != nil {
-			return err
-		}
-	}
-	dataNames := make([]string, len(tables))
-	for i, t := range tables {
+	for _, t := range schema.Tables {
 		// This is the name of a single file; a table that is split is claimed
 		// again under its part names (a provisional claim is safe: R-130).
-		dataNames[i] = plan.DataFile(t.Name)
-		if err := claim(seen, dataNames[i], fmt.Sprintf("table %q of database %q", t.Name, db)); err != nil {
-			return err
+		if err := claim(seen, plan.DataFile(t.Name), fmt.Sprintf("table %q of database %q", t.Name, db)); err != nil {
+			return nil, err
 		}
 	}
+	return plan, nil
+}
 
-	// Refuse owned entries that are not regular files before writing anything.
-	if _, err := ownedEntries(opt.OutDir, plan); err != nil {
-		return err
+// extraFile is a file of a database besides its schema and data files.
+type extraFile struct {
+	name  string // the file name, without the directory
+	what  string // what it holds, for the message of a name clash
+	write func(io.Writer) error
+}
+
+// extraFiles lists the routines, triggers, events and constraints files db
+// gets, in the order they are claimed and staged. A database without routines,
+// triggers or events has no such file, so the file of an earlier dump does not
+// outlive them (see removeStale). The lists are nil for a writer that cannot
+// write them (see readSchema). The constraints file is always there for a
+// writer that has one, empty or not. It is a pure function of its inputs, so
+// planFiles (claim) and writeExtraFiles (stage) see the same list.
+func extraFiles(wr writer.Writer, schema writer.Schema, plan *naming.Plan) []extraFile {
+	var files []extraFile
+	if rw, ok := wr.(writer.RoutineWriter); ok && len(schema.Routines) > 0 {
+		files = append(files, extraFile{plan.RoutinesFile(), "routines", func(w io.Writer) error { return rw.WriteRoutines(w, schema) }})
 	}
-
-	if err := st.create(filepath.Join(opt.OutDir, schemaName), func(w io.Writer) error {
-		return opt.Writer.WriteSchema(w, schema)
-	}); err != nil {
-		return err
+	if tw, ok := wr.(writer.TriggerWriter); ok && len(schema.Triggers) > 0 {
+		files = append(files, extraFile{plan.TriggersFile(), "triggers", func(w io.Writer) error { return tw.WriteTriggers(w, schema) }})
 	}
+	if ew, ok := wr.(writer.EventWriter); ok && len(schema.Events) > 0 {
+		files = append(files, extraFile{plan.EventsFile(), "events", func(w io.Writer) error { return ew.WriteEvents(w, schema) }})
+	}
+	if cw, ok := wr.(writer.ConstraintWriter); ok {
+		files = append(files, extraFile{plan.ConstraintsFile(), "constraints", func(w io.Writer) error { return cw.WriteConstraints(w, schema) }})
+	}
+	return files
+}
 
-	// The tables are read and written in parallel, one per reader. Whatever
-	// order they finish in, the output is the same: file contents depend on the
-	// table alone, and the checks below run in table order.
+// writeTables stages the data file(s) of every table and sets tot to their
+// totals. The tables are read and written in parallel, one per reader. Whatever
+// order they finish in, the output is the same: file contents depend on the
+// table alone, and the checks below run in table order.
+func writeTables(ctx context.Context, opt Options, snap *source.Snapshot, db string, tables []source.TableInfo, plan *naming.Plan, seen map[string]string, st *stage, tot *dbTotals) error {
 	results := make([]tableResult, len(tables))
 	errs := eachTable(ctx, snap.Readers(), len(tables), func(ctx context.Context, r *source.Snapshot, i int) error {
 		var err error
@@ -372,31 +399,15 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 			}
 		}
 	}
-	if writeRoutines {
-		if err := st.create(filepath.Join(opt.OutDir, plan.RoutinesFile()), func(w io.Writer) error {
-			return rw.WriteRoutines(w, schema)
-		}); err != nil {
+	return nil
+}
+
+// writeExtraFiles stages the files of extraFiles.
+func writeExtraFiles(opt Options, schema writer.Schema, plan *naming.Plan, st *stage) error {
+	for _, e := range extraFiles(opt.Writer, schema, plan) {
+		if err := st.create(filepath.Join(opt.OutDir, e.name), e.write); err != nil {
 			return err
 		}
-	}
-	if writeTriggers {
-		if err := st.create(filepath.Join(opt.OutDir, plan.TriggersFile()), func(w io.Writer) error {
-			return tw.WriteTriggers(w, schema)
-		}); err != nil {
-			return err
-		}
-	}
-	if writeEvents {
-		if err := st.create(filepath.Join(opt.OutDir, plan.EventsFile()), func(w io.Writer) error {
-			return ew.WriteEvents(w, schema)
-		}); err != nil {
-			return err
-		}
-	}
-	if hasConstraints {
-		return st.create(filepath.Join(opt.OutDir, plan.ConstraintsFile()), func(w io.Writer) error {
-			return cw.WriteConstraints(w, schema)
-		})
 	}
 	return nil
 }
