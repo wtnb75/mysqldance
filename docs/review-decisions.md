@@ -16,6 +16,7 @@
 - ID は `R-NNN`（3桁以上、最大 ID + 1）。
 - 対象のコードが変わって理由が当てはまらなくなったら、項目を見直して更新または削除する。
 - 再出が 1 以上の項目は、指摘された箇所に理由のコメント（英語）が足りていない。コメントを足す。
+- B-049 で `internal/source/source.go` を分けた。「対象」に `source.go` とある項目の関数は、次のファイルにある。接続・ロック・スナップショット（`Open`、`start`、`startParallel`、`lockGlobal`、`pingWithin`、`Use`、`use`、`checkDatabases`、`firstNonInnoDB`、`Close`）は `connect.go`、カタログ（`Tables`、`checkTableType`、`catalogTypeName(s)`、`tableColumns`）は `catalog.go`、行の読み出し（`Rows`、`EachRow`）は `rows.go`、型（`TableInfo`、`Snapshot`）は `source.go`。対象の書き換えはしない。
 
 ## 却下した指摘
 
