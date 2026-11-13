@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 
 	"mysqldance/internal/datafile"
+	"mysqldance/internal/extsort"
 	"mysqldance/internal/naming"
 	"mysqldance/internal/source"
 	"mysqldance/internal/sqlvalue"
@@ -40,8 +41,25 @@ type Options struct {
 	// creates it; 0 means 0755 filtered by the umask. An existing directory
 	// is never changed.
 	DirMode os.FileMode
+	// SortMemory is about how many bytes of rows a table without a key may hold
+	// in memory while it is sorted; past that the sort goes through scratch
+	// files in OutDir. With Source.Jobs above 1, that many tables are sorted at
+	// once. 0 means DefaultSortMemory.
+	SortMemory int64
 	// Log receives warnings (at the Warn level); nil discards them.
 	Log *slog.Logger
+}
+
+// DefaultSortMemory is the SortMemory used when none is set.
+const DefaultSortMemory = 64 << 20
+
+// sortMemoryOrDefault returns DefaultSortMemory for a SortMemory that is not
+// positive: a negative limit would spill after every row.
+func sortMemoryOrDefault(n int64) int64 {
+	if n <= 0 {
+		return DefaultSortMemory
+	}
+	return n
 }
 
 // Run dumps every database in opt.DBs into opt.OutDir, creating the
@@ -73,6 +91,10 @@ func Run(ctx context.Context, opt Options) (err error) {
 	// not even created or swept.
 	cfg := opt.Source
 	cfg.Log = opt.Log
+	// The stage only holds settings until a file is made, so it can exist before
+	// Open; the sort of a table without a key makes its scratch files through it.
+	st := &stage{dir: opt.OutDir, mode: opt.FileMode}
+	cfg.SortFile, cfg.SortMemory = st.newScratch, sortMemoryOrDefault(opt.SortMemory)
 	snap, err := source.Open(ctx, cfg, opt.DBs...)
 	if err != nil {
 		// Open covers every database (system-database check, existence,
@@ -87,7 +109,6 @@ func Run(ctx context.Context, opt Options) (err error) {
 	if err := sweepTemps(opt.OutDir); err != nil {
 		return err
 	}
-	st := &stage{dir: opt.OutDir, mode: opt.FileMode}
 	defer func() { err = errors.Join(err, st.discard()) }()
 	// Lower-cased output file name -> what it was generated for, across the
 	// whole run, so names that differ only in case are rejected.
@@ -494,6 +515,12 @@ const (
 	tmpSuffix = ".tmp"
 )
 
+// isTempName reports whether name is one of the temporary names of a run:
+// those of staged files and of the sort's scratch files.
+func isTempName(name string) bool {
+	return strings.HasPrefix(name, tmpPrefix) && strings.HasSuffix(name, tmpSuffix)
+}
+
 // sweepTemps removes the temporary files an earlier run left behind.
 func sweepTemps(dir string) error {
 	entries, err := os.ReadDir(dir)
@@ -502,7 +529,7 @@ func sweepTemps(dir string) error {
 	}
 	for _, e := range entries {
 		n := e.Name()
-		if e.Type().IsRegular() && strings.HasPrefix(n, tmpPrefix) && strings.HasSuffix(n, tmpSuffix) {
+		if e.Type().IsRegular() && isTempName(n) {
 			if err := os.Remove(filepath.Join(dir, n)); err != nil {
 				return err
 			}
@@ -522,6 +549,9 @@ type stage struct {
 	mu    sync.Mutex
 	n     int
 	files []stagedFile
+	// scratch holds the scratch files of the sort that are not removed yet. They
+	// are never renamed into place: discard removes what is left.
+	scratch map[string]*scratchFile
 }
 
 type stagedFile struct {
@@ -558,28 +588,86 @@ type tempFile struct {
 // renamed to unless setFinal says otherwise; fileWriter and error messages
 // see it as the file's path.
 func (s *stage) open(final string) (*tempFile, error) {
-	// The number in the temporary name only has to be unique; which table gets
-	// which number does not matter, since the files are renamed to their final
-	// names.
+	idx := 0
+	f, err := s.openTemp("", os.O_WRONLY, func(tmp string) {
+		s.files = append(s.files, stagedFile{tmp: tmp, final: final})
+		idx = len(s.files) - 1
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &tempFile{idx: idx, f: f, w: fileWriter(final, f), label: final}, nil
+}
+
+// openTemp creates a new temporary file in the stage's directory, named
+// .mysqldance-<infix>NNNN.tmp, with the mode of the output files (the umask
+// filters the mode given to OpenFile, so an exact mode is set afterwards).
+// record is called, with the lock held, once the file exists and before anything
+// is written, so that a partial file is removed by discard. The number in the
+// name only has to be unique: staged files are renamed to their final names.
+func (s *stage) openTemp(infix string, flag int, record func(tmp string)) (*os.File, error) {
 	s.mu.Lock()
 	s.n++
-	tmp := filepath.Join(s.dir, fmt.Sprintf("%s%04d%s", tmpPrefix, s.n, tmpSuffix))
+	tmp := filepath.Join(s.dir, fmt.Sprintf("%s%s%04d%s", tmpPrefix, infix, s.n, tmpSuffix))
 	s.mu.Unlock()
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, cmp.Or(s.mode, 0o666))
+	f, err := os.OpenFile(tmp, flag|os.O_CREATE|os.O_EXCL, cmp.Or(s.mode, 0o666))
 	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
-	s.files = append(s.files, stagedFile{tmp: tmp, final: final})
-	idx := len(s.files) - 1
+	record(tmp)
 	s.mu.Unlock()
 	if s.mode != 0 {
-		// The umask filtered the mode given to OpenFile.
 		if err := f.Chmod(s.mode); err != nil {
-			return nil, errors.Join(fmt.Errorf("write %s: %w", final, err), f.Close())
+			return nil, errors.Join(fmt.Errorf("chmod %s: %w", tmp, err), f.Close())
 		}
 	}
-	return &tempFile{idx: idx, f: f, w: fileWriter(final, f), label: final}, nil
+	return f, nil
+}
+
+// scratchFile is a scratch file of the external sort, in the output directory.
+type scratchFile struct {
+	*os.File
+	s *stage
+}
+
+// newScratch creates a scratch file for the sort of a table without a key. It
+// has the mode of the output files, so it is never more open than the data it
+// holds will be once written out. extsort removes it as soon as its run is
+// merged; a failed or interrupted run removes what is left in discard.
+func (s *stage) newScratch() (extsort.File, error) {
+	var name string
+	f, err := s.openTemp("sort-", os.O_RDWR, func(tmp string) {
+		if s.scratch == nil {
+			s.scratch = map[string]*scratchFile{}
+		}
+		s.scratch[tmp] = nil // set below; nil if the chmod fails, so discard still unlinks it
+		name = tmp
+	})
+	if err != nil {
+		return nil, err
+	}
+	sf := &scratchFile{f, s}
+	s.mu.Lock()
+	s.scratch[name] = sf
+	s.mu.Unlock()
+	return sf, nil
+}
+
+// Remove closes and deletes the file. It may be called again.
+func (f *scratchFile) Remove() error {
+	f.s.mu.Lock()
+	_, live := f.s.scratch[f.Name()]
+	delete(f.s.scratch, f.Name())
+	f.s.mu.Unlock()
+	if !live {
+		return nil
+	}
+	err := f.Close()
+	if rerr := os.Remove(f.Name()); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		err = errors.Join(err, rerr)
+	}
+	return err
 }
 
 // setFinal changes the path the file is renamed to.
@@ -639,6 +727,20 @@ func (s *stage) commit() error {
 // discard removes the temporary files that were not renamed.
 func (s *stage) discard() error {
 	var errs []error
+	s.mu.Lock()
+	left := s.scratch
+	s.scratch = nil
+	s.mu.Unlock()
+	for tmp, f := range left {
+		// Close the handle too: a later Remove finds nothing registered and
+		// would not.
+		if f != nil {
+			_ = f.Close()
+		}
+		if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
 	for _, f := range s.files {
 		if f.renamed {
 			continue

@@ -154,6 +154,43 @@ func parseMode(s string, ownerNeeds os.FileMode) (os.FileMode, error) {
 	return m, nil
 }
 
+// minSortMemory is the smallest --sort-memory: a smaller one would write a
+// scratch file for a few hundred rows.
+const minSortMemory = 1 << 20
+
+// parseSize parses a size in bytes: digits, optionally followed by a binary
+// unit (K, KB or KiB for 1024 bytes, then M and G likewise), in any case.
+func parseSize(s string) (int64, error) {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return 0, fmt.Errorf("%q is not a size such as 64MiB", s)
+	}
+	n, err := strconv.ParseInt(s[:i], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%q is too large", s)
+	}
+	var mult int64
+	switch strings.ToLower(s[i:]) {
+	case "", "b":
+		mult = 1
+	case "k", "kb", "kib":
+		mult = 1 << 10
+	case "m", "mb", "mib":
+		mult = 1 << 20
+	case "g", "gb", "gib":
+		mult = 1 << 30
+	default:
+		return 0, fmt.Errorf("%q has an unknown unit (use KiB, MiB or GiB)", s)
+	}
+	if n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("%q is too large", s)
+	}
+	return n * mult, nil
+}
+
 // parseArgs parses the command line into dump options without connecting.
 func parseArgs(args []string, getenv func(string) string) (dump.Options, error) {
 	return parseArgsTo(args, getenv, io.Discard)
@@ -207,6 +244,11 @@ The password is read from --password-file, else from MYSQL_PWD.
                              show the same point in time (default 1). Above 1
                              the lock is always taken, so the RELOAD privilege
                              is needed, and --no-lock cannot be used
+      --sort-memory SIZE     about how much memory a table without a key may use
+                             while it is sorted, e.g. 64MiB or 1GiB (default
+                             64MiB, at least 1MiB); past that the sort goes
+                             through temporary files in the output directory.
+                             With --jobs N, N tables are sorted at once
       --log-level LEVEL      debug, info, warn or error (default info). Logs go
                              to standard error
       --log-format FORMAT    text or json (default text)
@@ -220,6 +262,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 		logLevel, logFormat                      string
 		noLock, showVersion                      bool
 		fileMode, dirMode                        string
+		sortMemory                               string
 		port, jobs                               int
 		rowsPerInsert, rowsPerFile               uint64
 		maxInsertBytes                           int
@@ -258,6 +301,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.BoolVar(&showVersion, "version", false, "")
 	fs.StringVar(&fileMode, "file-mode", "", "")
 	fs.StringVar(&dirMode, "dir-mode", "", "")
+	fs.StringVar(&sortMemory, "sort-memory", "", "")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -318,13 +362,28 @@ The password is read from --password-file, else from MYSQL_PWD.
 		return usage("--dir-mode: %v", err)
 	}
 
+	// Unset (empty) leaves 0, which dump reads as its default. An explicit empty
+	// value counts as unset, as with --file-mode and --dir-mode (review ledger R-165).
+	var sortBytes int64
+	if sortMemory != "" {
+		n, err := parseSize(sortMemory)
+		switch {
+		case err != nil:
+			return usage("--sort-memory: %v", err)
+		case n < minSortMemory:
+			return usage("--sort-memory must be at least 1MiB")
+		}
+		sortBytes = n
+	}
+
 	data := datafile.Options{RowsPerInsert: uint32(rowsPerInsert), MaxInsertBytes: maxInsertBytes, RowsPerFile: uint32(rowsPerFile)}
 	opt := dump.Options{
-		Log:      logger,
-		FileMode: fm,
-		DirMode:  dm,
-		DBs:      fs.Args(),
-		OutDir:   output,
+		Log:        logger,
+		FileMode:   fm,
+		DirMode:    dm,
+		SortMemory: sortBytes,
+		DBs:        fs.Args(),
+		OutDir:     output,
 	}
 	// dump builds the MySQL writer from Data; another writer takes the options
 	// itself, and dump refuses both.

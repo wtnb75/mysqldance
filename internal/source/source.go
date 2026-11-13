@@ -16,13 +16,14 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
+	"mysqldance/internal/extsort"
 	"mysqldance/internal/schemafile"
 	"mysqldance/internal/sqlvalue"
 )
 
 // largeTableRows is the TABLE_ROWS estimate above which a table without a
-// usable key triggers a warning: it is read fully into memory and sorted there
-// (a table with a key is streamed). A variable so tests can lower it.
+// usable key triggers a warning: its rows are sorted through temporary files,
+// which is slow (a table with a key is streamed in the order the server gives). A variable so tests can lower it.
 var largeTableRows int64 = 500000
 
 // Config holds connection parameters. Socket, when set, takes precedence
@@ -63,6 +64,12 @@ type Config struct {
 	// so a small value cuts those off. Zero means no limit; a negative value
 	// is an error.
 	ReadTimeout time.Duration
+	// SortFile, when set, makes EachRow sort a table without a key through
+	// scratch files it creates once the rows held reach about SortMemory bytes,
+	// instead of holding the whole table in memory. With Jobs above 1, that many
+	// tables are sorted at once.
+	SortFile   extsort.NewFile
+	SortMemory int64
 	// Log receives how the snapshot is made: the target, the connections, the
 	// lock and how long it is awaited and held (Info), and the statements that
 	// take the lock and start the snapshots (Debug). Nil discards them. It never
@@ -141,6 +148,9 @@ type Snapshot struct {
 	// list from none.
 	tableList   []tableRow
 	tableListed bool
+	// sortMemory and sortFile are Config.SortMemory and Config.SortFile.
+	sortMemory int64
+	sortFile   extsort.NewFile
 }
 
 // Readers returns the connections that can read rows in parallel: the
@@ -244,6 +254,11 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 	var s *Snapshot
 	if err == nil {
 		s, err = start(ctx, sdb, dbs, cfg.NoLock, cfg.Jobs, cfg.LockTimeout, lg)
+	}
+	if err == nil {
+		for _, r := range s.Readers() {
+			r.sortMemory, r.sortFile = cfg.SortMemory, cfg.SortFile
+		}
 	}
 	if err != nil {
 		_ = sdb.Close()
@@ -839,11 +854,11 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
 				"table %s uses the %s engine; its data is not covered by the consistent snapshot",
 				sqlvalue.QuoteIdent(ti.Name), ti.Engine))
 		}
-		// A table with a key is streamed and needs no memory for its rows.
+		// A table with a key is streamed, and needs neither a sort nor scratch files.
 		if len(ti.OrderBy) == 0 && ti.ApproxRows > largeTableRows {
 			warnings = append(warnings, fmt.Sprintf(
 				"table %s has about %d rows, far beyond the scale this tool is designed for; "+
-					"all its rows are held in memory and sorted there because it has no primary key or NOT NULL unique key",
+					"its rows are sorted through temporary files because it has no primary key or NOT NULL unique key, which is slow for a table this large",
 				sqlvalue.QuoteIdent(ti.Name), ti.ApproxRows))
 		}
 		out = append(out, ti)
@@ -1094,12 +1109,14 @@ func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]sqlvalue.Value, e
 // EachRow calls fn with each row of t in output order, one []sqlvalue.Value per
 // row in t.Columns order. With a key the server orders the rows and they are
 // passed on as they arrive, so memory does not grow with the table; otherwise
-// all rows are read first and sorted in memory by their MySQL literals joined
-// with commas, in byte order. fn owns the row it is given. If fn fails, the
+// all rows are read first and sorted by their MySQL literals joined with commas,
+// in byte order: in memory, or, with Config.SortFile, through scratch files
+// once the rows held reach its limit (all rows are read before the first is
+// passed on either way). fn owns the row it is given. If fn fails, the
 // read stops and EachRow returns its error. A read that ends early (a lost
 // connection, a canceled context) is an error too, never a short table.
 // t must come from Tables for the database currently selected by Use.
-func (s *Snapshot) EachRow(ctx context.Context, t TableInfo, fn func(row []sqlvalue.Value) error) error {
+func (s *Snapshot) EachRow(ctx context.Context, t TableInfo, fn func(row []sqlvalue.Value) error) (err error) {
 	orderBy, err := orderByClause(t.OrderBy, t.OrderByTypes)
 	if err != nil {
 		return fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
@@ -1125,13 +1142,18 @@ func (s *Snapshot) EachRow(ctx context.Context, t TableInfo, fn func(row []sqlva
 	}
 
 	emit := fn
-	var held [][]sqlvalue.Value
+	var srt *extsort.Sorter
 	if len(t.OrderBy) == 0 {
-		// Rendering here and again in the writer is accepted: B-045 replaces
-		// this in-memory sort (review ledger R-045).
+		// A table without a key is ordered by the text of its rows. Each row is
+		// added to a sorter (which spills to scratch files with Config.SortFile)
+		// and played back in order after the read. Rendering the literals here and
+		// again in the writer is accepted (review ledger R-045).
+		srt = extsort.New(s.sortMemory, s.sortFile)
+		defer func() { err = errors.Join(err, srt.Close()) }()
+		var key, val []byte
 		emit = func(row []sqlvalue.Value) error {
-			held = append(held, row)
-			return nil
+			key, val = appendSortKey(key[:0], row), encodeRow(val[:0], row)
+			return srt.Add(key, val)
 		}
 	}
 	for rows.Next() {
@@ -1155,24 +1177,16 @@ func (s *Snapshot) EachRow(ctx context.Context, t TableInfo, fn func(row []sqlva
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if len(t.OrderBy) != 0 {
+	if srt == nil {
 		return nil
 	}
-	keys := make([]string, len(held))
-	for i, row := range held {
-		keys[i] = strings.Join(sqlvalue.Literals(row), ",")
-	}
-	idx := make([]int, len(held))
-	for i := range idx {
-		idx[i] = i
-	}
-	sort.Slice(idx, func(a, b int) bool { return keys[idx[a]] < keys[idx[b]] })
-	for _, i := range idx {
-		if err := fn(held[i]); err != nil {
-			return err
+	return srt.Each(func(_, val []byte) error {
+		row, err := decodeRow(t.Columns, val)
+		if err != nil {
+			return fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
 		}
-	}
-	return nil
+		return fn(row)
+	})
 }
 
 // orderByClause returns the ORDER BY clause (with a leading space) for the

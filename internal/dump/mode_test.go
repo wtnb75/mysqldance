@@ -1,6 +1,7 @@
 package dump
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -26,6 +27,115 @@ func TestStageCreateFileMode(t *testing.T) {
 	}
 	if got := modeOf(t, s.files[0].tmp); got != 0o664 {
 		t.Errorf("file mode = %o, want 664", got)
+	}
+}
+
+func TestStageScratchFile(t *testing.T) {
+	dir := t.TempDir()
+	// Not the default 0o644, so this fails unless the output files' mode is used.
+	s := &stage{dir: dir, mode: 0o664}
+	f, err := s.newScratch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf, ok := f.(*scratchFile)
+	if !ok {
+		t.Fatalf("scratch file is a %T", f)
+	}
+	if got := modeOf(t, sf.Name()); got != 0o664 {
+		t.Errorf("scratch file mode = %o, want 664 (the output file mode)", got)
+	}
+	if filepath.Dir(sf.Name()) != dir {
+		t.Errorf("scratch file %s is not in the output directory", sf.Name())
+	}
+	// It is named so that the sweep of a killed run finds it.
+	if !isTempName(filepath.Base(sf.Name())) {
+		t.Errorf("scratch file name %q is not a temporary name", filepath.Base(sf.Name()))
+	}
+	if _, err := f.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := io.ReadAll(f); err != nil || string(b) != "abc" {
+		t.Fatalf("read back %q, %v", b, err)
+	}
+	if len(s.files) != 0 {
+		t.Errorf("a scratch file is among the files to commit: %v", s.files)
+	}
+}
+
+func TestStageScratchRemoveAndDiscard(t *testing.T) {
+	dir := t.TempDir()
+	s := &stage{dir: dir}
+	a, err := s.newScratch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.newScratch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Remove(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Remove(); err != nil {
+		t.Fatalf("second Remove: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("%d files after removing one scratch file, want 1", len(entries))
+	}
+	// discard (a failed or interrupted run) removes the one still there.
+	if err := s.discard(); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("%d files left after discard", len(entries))
+	}
+	_ = b.Remove() // already gone: no error
+}
+
+func TestStageDiscardClosesScratchFiles(t *testing.T) {
+	s := &stage{dir: t.TempDir()}
+	f, err := s.newScratch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.discard(); err != nil {
+		t.Fatal(err)
+	}
+	// discard closed the handle, not only unlinked the path.
+	if _, err := f.Write([]byte("x")); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("write after discard: %v, want os.ErrClosed", err)
+	}
+	if err := f.Remove(); err != nil {
+		t.Errorf("Remove after discard: %v", err)
+	}
+}
+
+func TestSortMemoryOrDefault(t *testing.T) {
+	for _, tt := range []struct{ in, want int64 }{
+		{0, DefaultSortMemory}, {-1, DefaultSortMemory}, {4096, 4096},
+	} {
+		if got := sortMemoryOrDefault(tt.in); got != tt.want {
+			t.Errorf("sortMemoryOrDefault(%d) = %d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestSweepTempsRemovesScratchFiles(t *testing.T) {
+	dir := t.TempDir()
+	s := &stage{dir: dir}
+	if _, err := s.newScratch(); err != nil { // left behind by a killed run
+		t.Fatal(err)
+	}
+	if err := sweepTemps(dir); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("%d files left after the sweep", len(entries))
 	}
 }
 

@@ -438,7 +438,7 @@ func TestWarningsLargeTable(t *testing.T) {
 	if len(w) != 1 {
 		t.Fatalf("Warnings = %q, want one, for the table without a key", w)
 	}
-	if !strings.Contains(w[0], "`loose`") || !strings.Contains(w[0], "in memory") || !strings.Contains(w[0], "sorted") {
+	if !strings.Contains(w[0], "`loose`") || !strings.Contains(w[0], "temporary files") || !strings.Contains(w[0], "sorted") || strings.Contains(w[0], "held in memory") {
 		t.Errorf("loose warning = %q", w[0])
 	}
 }
