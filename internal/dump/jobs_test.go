@@ -187,10 +187,10 @@ func (e *env) requireNothingLeft(t *testing.T, user, table string) {
 	e.exec(t, "SET SESSION lock_wait_timeout = 1", "INSERT INTO "+table+" VALUES (1000)")
 }
 
-func (e *env) runAsUser(ctx context.Context, user string, jobs int, db, dir string) error {
+func (e *env) runAsUser(ctx context.Context, user string, jobs int, db, dir string, fileWriter func(string, *os.File) io.Writer) error {
 	cfg := e.cfg
 	cfg.User, cfg.Password, cfg.Jobs = user, "pw", jobs
-	return Run(ctx, Options{Source: cfg, DBs: []string{db}, OutDir: dir})
+	return Run(ctx, Options{Source: cfg, DBs: []string{db}, OutDir: dir, FileWriter: fileWriter})
 }
 
 func TestJobsWriteFailureEndsEverySession(t *testing.T) {
@@ -199,9 +199,9 @@ func TestJobsWriteFailureEndsEverySession(t *testing.T) {
 	e.exec(t, "CREATE TABLE m (id INT PRIMARY KEY) ENGINE=MyISAM") // keeps the lock until Close
 	user := e.reloadUser(t, db)
 	dir := t.TempDir()
-	failOn(t, filepath.Join(dir, naming.DataFile(db, "b")), nil)
+	fail := failOn(filepath.Join(dir, naming.DataFile(db, "b")))
 
-	err := e.runAsUser(context.Background(), user, 4, db, dir)
+	err := e.runAsUser(context.Background(), user, 4, db, dir, fail)
 	if err == nil || !strings.Contains(err.Error(), "injected write failure") {
 		t.Fatalf("Run = %v, want the injected write failure", err)
 	}
@@ -220,14 +220,14 @@ func TestJobsCancelEndsEverySession(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelAt := filepath.Join(dir, naming.DataFile(db, "b"))
-	hookFileWriter(t, func(path string, f *os.File) io.Writer {
+	cancelOnB := func(path string, f *os.File) io.Writer {
 		if path == cancelAt {
 			cancel()
 		}
 		return f
-	})
+	}
 
-	if err := e.runAsUser(ctx, user, 4, db, dir); !errors.Is(err, context.Canceled) {
+	if err := e.runAsUser(ctx, user, 4, db, dir, cancelOnB); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run = %v, want context.Canceled", err)
 	}
 	e.requireNothingLeft(t, user, "a")
@@ -240,9 +240,10 @@ func TestJobsCancelEndsEverySession(t *testing.T) {
 // failing table in order; in parallel it is the error of one of the failing
 // tables, never a cancel caused by another failure.
 func TestJobsErrorIsTheFirstTableInOrder(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	db := e.manyTables(t, 8)
-	hookFileWriter(t, func(path string, f *os.File) io.Writer {
+	failT03T07 := func(path string, f *os.File) io.Writer {
 		base := filepath.Base(path)
 		for _, name := range []string{"t03", "t07"} {
 			if base == naming.DataFile(db, name) {
@@ -254,11 +255,11 @@ func TestJobsErrorIsTheFirstTableInOrder(t *testing.T) {
 			}
 		}
 		return f
-	})
+	}
 	for _, jobs := range []int{1, 8} {
 		cfg := e.cfg
 		cfg.Jobs = jobs
-		err := Run(context.Background(), Options{Source: cfg, DBs: []string{db}, OutDir: t.TempDir()})
+		err := Run(context.Background(), Options{Source: cfg, DBs: []string{db}, OutDir: t.TempDir(), FileWriter: failT03T07})
 		if err == nil || !strings.Contains(err.Error(), "injected write failure") {
 			t.Fatalf("jobs=%d: Run = %v, want the injected write failure", jobs, err)
 		}

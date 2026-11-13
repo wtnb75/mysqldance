@@ -67,6 +67,8 @@ type Snapshot struct {
 	// sortMemory and sortFile are Config.SortMemory and Config.SortFile.
 	sortMemory int64
 	sortFile   extsort.NewFile
+	// largeTableRows is Config.LargeTableRows with its default applied.
+	largeTableRows int64
 }
 
 // Readers returns the connections that can read rows in parallel: the

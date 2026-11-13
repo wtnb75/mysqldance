@@ -11,10 +11,20 @@ import (
 	"mysqldance/internal/sqlvalue"
 )
 
-// largeTableRows is the TABLE_ROWS estimate above which a table without a
-// usable key triggers a warning: its rows are sorted through temporary files,
-// which is slow (a table with a key is streamed in the order the server gives). A variable so tests can lower it.
-var largeTableRows int64 = 500000
+// DefaultLargeTableRows is the Config.LargeTableRows used when none is set: the
+// TABLE_ROWS estimate above which a table without a usable key triggers a
+// warning. Its rows are sorted through temporary files, which is slow (a table
+// with a key is streamed in the order the server gives).
+const DefaultLargeTableRows = 500000
+
+// largeTableRowsOrDefault returns DefaultLargeTableRows for zero. A negative
+// threshold is kept: every table without a key is above it.
+func largeTableRowsOrDefault(n int64) int64 {
+	if n == 0 {
+		return DefaultLargeTableRows
+	}
+	return n
+}
 
 // CreateDatabase returns the statement from SHOW CREATE DATABASE.
 func (s *Snapshot) CreateDatabase(ctx context.Context) (string, error) {
@@ -178,7 +188,7 @@ func chooseKey(keys map[string][]string, cols []columnRow) []string {
 
 // Tables returns the base tables sorted by name, and the warnings found while
 // reading them: tables not using InnoDB, and tables whose row estimate
-// without a key exceeds largeTableRows. Warnings follow table name order.
+// without a key exceeds Config.LargeTableRows. Warnings follow table name order.
 func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
 	list, err := s.listTables(ctx)
 	if err != nil {
@@ -228,7 +238,7 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
 				sqlvalue.QuoteIdent(ti.Name), ti.Engine))
 		}
 		// A table with a key is streamed, and needs neither a sort nor scratch files.
-		if len(ti.OrderBy) == 0 && ti.ApproxRows > largeTableRows {
+		if len(ti.OrderBy) == 0 && ti.ApproxRows > s.largeTableRows {
 			warnings = append(warnings, fmt.Sprintf(
 				"table %s has about %d rows, far beyond the scale this tool is designed for; "+
 					"its rows are sorted through temporary files because it has no primary key or NOT NULL unique key, which is slow for a table this large",

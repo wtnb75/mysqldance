@@ -594,10 +594,10 @@
 - 初出: B-043
 - 再出: 0
 
-## R-083 グローバルの `largeTableRows` の書き換えと、閉じないスナップショットの接続数
+## R-083 閉じないスナップショットの接続数
 - 対象: internal/source/jobs_test.go の TestJobsTablesAndWarningsSameAsSerial
-- 指摘: `t.Parallel` が入ると競合する。1 テストで最大 1 + 2 + 8 接続を開き、`max_connections` を使い切りうる。
-- 却下の理由: 前者は TestWarningsLargeTable と同じ方式で、このパッケージに `t.Parallel` はない（`t.Parallel` を使わない理由は、このファイルの「競合する読み手がいない」の項と同じ）。後者は `openSnapshot` が `t.Cleanup` で閉じ、使う接続は最大 11 本で、既定の `max_connections`（151）に対して十分小さい。
+- 指摘: 1 テストで最大 1 + 2 + 8 接続を開き、`max_connections` を使い切りうる。
+- 却下の理由: `openSnapshot` が `t.Cleanup` で閉じ、使う接続は最大 11 本で、既定の `max_connections`（151）に対して十分小さい。（グローバルの `largeTableRows` の書き換えが `t.Parallel` と競合するという指摘は、B-051 でグローバルを `Config.LargeTableRows` にしたので無くなった。）
 - 初出: B-043
 - 再出: 0
 
@@ -1298,6 +1298,13 @@
 ## R-181 `readSchema` / `writeTables` / `writeExtraFiles` が `Options` を丸ごと受け取る
 - 対象: internal/dump/dump.go の readSchema、writeTables、writeExtraFiles
 - 指摘: 必要なのは `Log`、`Writer`、`OutDir` だけで、引数が広く、`writeTables` は 9 個になる。
-- 却下の理由: 保守性の好みで、失敗のシナリオが無い。引数を狭める構造体の導入は B-051（`Options` への置き換え）で触る範囲と重なるので、そこで扱う。この項目は挙動を変えない分割に限る。
+- 却下の理由: 保守性の好みで、失敗のシナリオが無い。この項目は挙動を変えない分割に限る。（B-051 は 2 つのグローバル変数を `Options` / `Config` のフィールドにする項目で、この引数の絞り込みは受け入れ条件に含まれず、扱っていない。）
 - 初出: B-050
+- 再出: 0
+
+## R-182 `Options.FileWriter` が公開フィールドである、`LargeTableRows` を全リーダーに持たせる、`LargeTableRows` に 0 を指定できない
+- 対象: internal/dump/dump.go の Options.FileWriter、internal/source/connect.go の Open（`largeTableRows` の代入）、Config.LargeTableRows
+- 指摘: (1) テスト用のフックが公開の `Options` に入る。(2) `largeTableRows` が使われない副リーダーにも写される。(3) 0 が「未指定」なので、閾値 0 を指定できない。
+- 却下の理由: いずれも失敗のシナリオがなく、好みの問題。(1) `internal/` の中で、B-051 の受け入れ条件が「`Options` のフィールドで渡す」と定めている。(2) `sortMemory` / `sortFile` と同じ 1 つのループで写す既存の方式で、`Tables` をどのリーダーで呼んでも同じ値になる。(3) 0 を既定の意味にするのは `SortMemory` と同じ流儀で、doc コメントに書いてある。全テーブルで警告したいときは負の値を使う（新しいテーブルの推定行数は 0 なので、閾値 0 では警告が出ない）。
+- 初出: B-051
 - 再出: 0

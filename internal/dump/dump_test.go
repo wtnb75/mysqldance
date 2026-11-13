@@ -786,28 +786,15 @@ func (f *failingWriter) Write(p []byte) (int, error) {
 	return f.w.Write(p)
 }
 
-// failOn makes writing the file at failing (its final path) fail after part
-// of its header, calling before first if it is not nil, and restores the hook
-// at cleanup.
-func failOn(t *testing.T, failing string, before func()) {
-	t.Helper()
-	hookFileWriter(t, func(path string, f *os.File) io.Writer {
+// failOn returns an Options.FileWriter that makes writing the file at failing
+// (its final path) fail after part of its header.
+func failOn(failing string) func(path string, f *os.File) io.Writer {
+	return func(path string, f *os.File) io.Writer {
 		if path == failing {
-			if before != nil {
-				before()
-			}
 			return &failingWriter{w: f, n: 10}
 		}
 		return f
-	})
-}
-
-// hookFileWriter replaces fileWriter until the end of the test.
-func hookFileWriter(t *testing.T, hook func(path string, f *os.File) io.Writer) {
-	t.Helper()
-	orig := fileWriter
-	t.Cleanup(func() { fileWriter = orig })
-	fileWriter = hook
+	}
 }
 
 // threeTables creates a database with tables a, b and c and returns its name.
@@ -824,6 +811,7 @@ func (e *env) threeTables(t *testing.T) string {
 }
 
 func TestWriteFailureKeepsPreviousDump(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	db := e.threeTables(t)
 	dir := t.TempDir()
@@ -836,9 +824,9 @@ func TestWriteFailureKeepsPreviousDump(t *testing.T) {
 	// The data changes, a table disappears and another is added, so a partly
 	// applied second dump would differ from the first in every way.
 	e.exec(t, "INSERT INTO a VALUES (10)", "DROP TABLE c", "CREATE TABLE d (id INT PRIMARY KEY)")
-	failOn(t, filepath.Join(dir, naming.DataFile(db, "b")), nil)
+	fail := failOn(filepath.Join(dir, naming.DataFile(db, "b")))
 
-	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir})
+	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, FileWriter: fail})
 	if err == nil || !strings.Contains(err.Error(), "injected write failure") {
 		t.Fatalf("Run = %v, want the injected write failure", err)
 	}
@@ -848,6 +836,7 @@ func TestWriteFailureKeepsPreviousDump(t *testing.T) {
 }
 
 func TestCancelKeepsPreviousDump(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	db := e.threeTables(t)
 	dir := t.TempDir()
@@ -860,14 +849,14 @@ func TestCancelKeepsPreviousDump(t *testing.T) {
 	// Cancel, as Ctrl-C does, while the data file of b is being created. No
 	// write fails, so the run stops because reading c sees the cancel.
 	cancelAt := filepath.Join(dir, naming.DataFile(db, "b"))
-	hookFileWriter(t, func(path string, f *os.File) io.Writer {
+	opt := Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, FileWriter: func(path string, f *os.File) io.Writer {
 		if path == cancelAt {
 			cancel()
 		}
 		return f
-	})
+	}}
 
-	if err := Run(ctx, Options{Source: e.cfg, DBs: []string{db}, OutDir: dir}); !errors.Is(err, context.Canceled) {
+	if err := Run(ctx, opt); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run = %v, want context.Canceled", err)
 	}
 	if after := readFiles(t, dir); !reflect.DeepEqual(after, before) {
@@ -876,6 +865,7 @@ func TestCancelKeepsPreviousDump(t *testing.T) {
 }
 
 func TestFailureInLaterDatabaseKeepsEarlierOnes(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	db1 := e.threeTables(t)
 	db2 := e.threeTables(t)
@@ -884,9 +874,9 @@ func TestFailureInLaterDatabaseKeepsEarlierOnes(t *testing.T) {
 	before := readFiles(t, dir)
 
 	e.exec(t, "USE "+sqlvalue.QuoteIdent(db1), "INSERT INTO a VALUES (10)")
-	failOn(t, filepath.Join(dir, naming.DataFile(db2, "b")), nil)
+	fail := failOn(filepath.Join(dir, naming.DataFile(db2, "b")))
 
-	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db1, db2}, OutDir: dir})
+	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db1, db2}, OutDir: dir, FileWriter: fail})
 	if err == nil || !strings.Contains(err.Error(), "injected write failure") {
 		t.Fatalf("Run = %v, want the injected write failure", err)
 	}
@@ -980,6 +970,7 @@ func TestSameDatabasesTwiceSameChecksum(t *testing.T) {
 }
 
 func TestSymlinkAppearingDuringRunRefused(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	db := e.threeTables(t)
 	dir := t.TempDir()
@@ -993,17 +984,17 @@ func TestSymlinkAppearingDuringRunRefused(t *testing.T) {
 	// An owned name that is not a regular file appears after the early check,
 	// while the data file of b is being created.
 	link := filepath.Join(dir, naming.DataFile(db, "zz"))
-	hookFileWriter(t, func(path string, f *os.File) io.Writer {
+	plant := func(path string, f *os.File) io.Writer {
 		if path == filepath.Join(dir, naming.DataFile(db, "b")) {
 			if err := os.Symlink(sentinel, link); err != nil {
 				t.Error(err)
 			}
 		}
 		return f
-	})
+	}
 	e.exec(t, "INSERT INTO a VALUES (10)")
 
-	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir})
+	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, FileWriter: plant})
 	if err == nil || !strings.Contains(err.Error(), link) {
 		t.Fatalf("Run = %v, want an error naming %s", err, link)
 	}

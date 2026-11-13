@@ -70,6 +70,7 @@ func TestExternalSortOutputMatchesInMemory(t *testing.T) {
 }
 
 func TestExternalSortFailureLeavesNoScratchFiles(t *testing.T) {
+	t.Parallel()
 	e := newEnv(t)
 	db := e.keylessTable(t)
 	dir := t.TempDir()
@@ -78,8 +79,8 @@ func TestExternalSortFailureLeavesNoScratchFiles(t *testing.T) {
 
 	// The write of the data file fails while the sorted runs are being played
 	// back, so scratch files are still on disk.
-	failOn(t, filepath.Join(dir, naming.DataFile(db, "nokey")), nil)
-	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, SortMemory: 4 << 10})
+	fail := failOn(filepath.Join(dir, naming.DataFile(db, "nokey")))
+	err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, SortMemory: 4 << 10, FileWriter: fail})
 	if err == nil || !strings.Contains(err.Error(), "injected write failure") {
 		t.Fatalf("Run = %v, want the injected write failure", err)
 	}

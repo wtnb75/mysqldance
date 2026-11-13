@@ -47,6 +47,11 @@ type Options struct {
 	// files in OutDir. With Source.Jobs above 1, that many tables are sorted at
 	// once. 0 means DefaultSortMemory.
 	SortMemory int64
+	// FileWriter, when set, wraps the writer of each output file, given the
+	// file's final path; nil writes to the file as is. Tests use it to inject
+	// write failures and to run code at a given point of the run. It is a field
+	// rather than a package variable so that tests can run in parallel (R-182).
+	FileWriter func(path string, f *os.File) io.Writer
 	// Log receives the progress (Info) and the warnings (Warn); nil discards
 	// them. A record never carries a row value or a connection string.
 	Log *slog.Logger
@@ -95,7 +100,7 @@ func Run(ctx context.Context, opt Options) (err error) {
 	cfg.Log = opt.Log
 	// The stage only holds settings until a file is made, so it can exist before
 	// Open; the sort of a table without a key makes its scratch files through it.
-	st := &stage{dir: opt.OutDir, mode: opt.FileMode}
+	st := &stage{dir: opt.OutDir, mode: opt.FileMode, wrap: opt.FileWriter}
 	cfg.SortFile, cfg.SortMemory = st.newScratch, sortMemoryOrDefault(opt.SortMemory)
 	snap, err := source.Open(ctx, cfg, opt.DBs...)
 	if err != nil {
@@ -659,6 +664,8 @@ func sweepTemps(dir string) error {
 type stage struct {
 	dir  string
 	mode os.FileMode // 0 = 0666 filtered by the umask
+	// wrap is Options.FileWriter.
+	wrap func(path string, f *os.File) io.Writer
 	// mu guards n and files: create is called by several goroutines (one per
 	// reader). n numbers the temporary names.
 	mu    sync.Mutex
@@ -700,8 +707,8 @@ type tempFile struct {
 
 // open creates a new temporary file and records it before anything is written,
 // so a partial file is removed by discard. final is the path the file is
-// renamed to unless setFinal says otherwise; fileWriter and error messages
-// see it as the file's path.
+// renamed to unless setFinal says otherwise; Options.FileWriter and error
+// messages see it as the file's path.
 func (s *stage) open(final string) (*tempFile, error) {
 	idx := 0
 	f, err := s.openTemp("", os.O_WRONLY, func(tmp string) {
@@ -711,7 +718,11 @@ func (s *stage) open(final string) (*tempFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &tempFile{idx: idx, f: f, w: fileWriter(final, f), label: final}, nil
+	var w io.Writer = f
+	if s.wrap != nil {
+		w = s.wrap(final, f)
+	}
+	return &tempFile{idx: idx, f: f, w: w, label: final}, nil
 }
 
 // openTemp creates a new temporary file in the stage's directory, named
@@ -866,7 +877,3 @@ func (s *stage) discard() error {
 	}
 	return errors.Join(errs...)
 }
-
-// fileWriter wraps the writer of an output file, given the file's final path;
-// tests replace it to inject write failures.
-var fileWriter = func(path string, f *os.File) io.Writer { return f }

@@ -14,13 +14,6 @@
   - [ ] 手動実行で PR が作られ、PR 上で CI が通る
   - [ ] 統合テストが必要な更新でも、B-026 の CI で検証される
 
-## B-051 [todo|P3] テスト用のグローバル変数を `Options` に置き換える
-- 依存: B-049, B-050
-- 概要: `dump.fileWriter` と `source.largeTableRows` はテストが書き換えるためのグローバル変数で、並列実行のテストを妨げる。`Options` のフィールドとして渡す形にする。B-049 と B-050 で触るファイルが変わった後に行う。
-- 受け入れ条件:
-  - [ ] 2 つのグローバル変数がなくなり、`Options` のフィールドで渡す
-  - [ ] 該当するテストが `t.Parallel()` で動く
-
 ## B-058 [todo|P3] INSERT の区切りのハッシュを混ぜて、偶数の RowsPerInsert でも偏らないようにする
 - 概要: `datafile.Write` の区切りは FNV-1a 32 ビットの生の値を `RowsPerInsert` で割った余りで決める。FNV-1a の下位ビットは入力の下位ビットにしか依存しないため、行が同じ末尾（`')` など）を持つと、偶数の値（50、100 など）で余りが 0 になる行が極端に少なくなりうる（B-009 で `--rows-per-file` の実装中に、末尾が共通のキーで 0 件になることを確認した。B-009 の `Split` はハッシュを混ぜて解決した）。その場合は `MaxInsertBytes` でしか区切られない。ただし、出力を変えると既存のダンプの差分が一度だけ大きく出る。
 - 受け入れ条件:
@@ -304,6 +297,15 @@
   - [ ] README に、意味が変わること（ビューの見え方、権限）を書く
 
 # Done
+
+## B-051 [done|P3] テスト用のグローバル変数を `Options` に置き換える
+- 依存: B-049, B-050
+- 概要: `dump.fileWriter` と `source.largeTableRows` はテストが書き換えるためのグローバル変数で、並列実行のテストを妨げる。`Options` のフィールドとして渡す形にする。B-049 と B-050 で触るファイルが変わった後に行う。
+- 前提: `fileWriter` は `dump.Options.FileWriter`、`largeTableRows` は `source.Config.LargeTableRows`（0 は既定の 500000、負の値は鍵のない全テーブルで警告）にする。`t.Parallel()` は、この 2 つのグローバルを書き換えていたテストに付ける。MySQL 全体のグローバルリードロックを取るテスト（`reloadUser` を使う `TestJobsWriteFailureEndsEverySession` と `TestJobsCancelEndsEverySession`）は、他のテストの書き込みを止めるので並列にしない。
+- 受け入れ条件:
+  - [x] 2 つのグローバル変数がなくなり、`Options` のフィールドで渡す
+  - [x] 該当するテストが `t.Parallel()` で動く
+- 結果: `fileWriter` と `largeTableRows` は無くなった。`failOn` は `Options.FileWriter` に渡す関数を返し、`hookFileWriter` は削除した。`t.Parallel()` を、`internal/source` の 2 テストと `internal/dump` の 7 テストに付けた。`task check` と、MySQL 8.0 / 8.4 の `task test:integration` が通った。
 
 ## B-050 [done|P3] `dumpDB` を段階ごとの関数に分ける
 - 依存: B-021
