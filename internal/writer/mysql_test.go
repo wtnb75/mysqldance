@@ -130,6 +130,43 @@ func TestMySQLTriggersWithoutDefiner(t *testing.T) {
 	}
 }
 
+// Routine bodies are MySQL syntax too: only the MySQL writer carries them.
+var _ RoutineWriter = (*MySQL)(nil)
+
+func TestOnlyMySQLWritesRoutines(t *testing.T) {
+	for name, w := range map[string]Writer{"postgres": NewPostgres(datafile.Options{}), "sqlite": NewSQLite(datafile.Options{})} {
+		if _, ok := w.(RoutineWriter); ok {
+			t.Errorf("%s writer implements RoutineWriter", name)
+		}
+	}
+}
+
+func TestMySQLRoutinesWithoutDefiner(t *testing.T) {
+	w := NewMySQL(datafile.Options{})
+	routines := []schemafile.Routine{
+		{Name: "f", Type: "FUNCTION", SQLMode: "ANSI_QUOTES",
+			Create: "CREATE DEFINER=`x`@`%` FUNCTION `f`() RETURNS int RETURN 1"},
+	}
+	var got bytes.Buffer
+	if err := w.WriteRoutines(&got, Schema{DB: "d", Routines: routines}); err != nil {
+		t.Fatal(err)
+	}
+	var want bytes.Buffer
+	err := schemafile.WriteRoutines(&want, "d", []schemafile.Routine{
+		{Name: "f", Type: "FUNCTION", SQLMode: "ANSI_QUOTES",
+			Create: "CREATE FUNCTION `f`() RETURNS int RETURN 1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != want.String() {
+		t.Errorf("routines differ:\n got: %q\nwant: %q", got.String(), want.String())
+	}
+	if strings.Contains(got.String(), "DEFINER") {
+		t.Errorf("DEFINER left in %q", got.String())
+	}
+}
+
 func TestMySQLDataMatchesDatafile(t *testing.T) {
 	opt := datafile.Options{RowsPerInsert: 3, RowsPerFile: 4}
 	w := NewMySQL(opt)

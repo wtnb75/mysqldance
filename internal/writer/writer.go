@@ -28,6 +28,9 @@ type Schema struct {
 	// Triggers are the triggers of the database in the order to create them
 	// in. Like the views, they are still MySQL SHOW CREATE text.
 	Triggers []schemafile.Trigger
+	// Routines are the stored procedures and functions of the database, in the
+	// order to create them in. They are MySQL SHOW CREATE text as well.
+	Routines []schemafile.Routine
 	// Defs is the structure of each table by name. It is set only for a writer
 	// whose NeedsDefs is true.
 	Defs map[string]source.TableDef
@@ -104,6 +107,16 @@ func outputColumns(t source.TableInfo, def source.TableDef, warn func(format str
 		}
 	}
 	return cols, nil
+}
+
+// RoutineWriter is implemented by a writer that can carry stored procedures and
+// functions over to its target. dump writes the result to the database's
+// routines file (naming.RoutinesFile), which sorts after every data file and
+// before the triggers file. For a writer without it, dump warns about each
+// routine instead of dropping it silently.
+type RoutineWriter interface {
+	// WriteRoutines writes the routines file of one database.
+	WriteRoutines(w io.Writer, s Schema) error
 }
 
 // TriggerWriter is implemented by a writer that can carry triggers over to its

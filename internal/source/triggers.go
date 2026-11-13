@@ -73,10 +73,18 @@ func (s *Snapshot) Triggers(ctx context.Context) ([]schemafile.Trigger, error) {
 }
 
 // showCreateTrigger returns the sql_mode and the statement of SHOW CREATE
-// TRIGGER. The columns are picked by name: the statement is the third one here,
-// not the second as for tables and views.
+// TRIGGER.
 func (s *Snapshot) showCreateTrigger(ctx context.Context, name string) (mode, create string, err error) {
-	rows, err := s.conn.QueryContext(ctx, "SHOW CREATE TRIGGER "+s.qualified(name))
+	return s.showCreateStatement(ctx, "TRIGGER", name, "SQL Original Statement", "the TRIGGER privilege")
+}
+
+// showCreateStatement returns the sql_mode and the statement of SHOW CREATE
+// <kind> for a trigger or a routine. The columns are picked by name: the
+// statement is the third one here, not the second as for tables and views.
+// needs names what the account must have, for the error when the statement is
+// NULL. kind is joined into the SQL, so callers pass a constant (R-168).
+func (s *Snapshot) showCreateStatement(ctx context.Context, kind, name, stmtCol, needs string) (mode, create string, err error) {
+	rows, err := s.conn.QueryContext(ctx, "SHOW CREATE "+kind+" "+s.qualified(name))
 	if err != nil {
 		return "", "", err
 	}
@@ -89,7 +97,7 @@ func (s *Snapshot) showCreateTrigger(ctx context.Context, name string) (mode, cr
 		if err := rows.Err(); err != nil {
 			return "", "", err
 		}
-		return "", "", fmt.Errorf("SHOW CREATE TRIGGER %s returned no rows", sqlvalue.QuoteIdent(name))
+		return "", "", fmt.Errorf("SHOW CREATE %s %s returned no rows", kind, sqlvalue.QuoteIdent(name))
 	}
 	vals := make([]sql.RawBytes, len(cols))
 	dest := make([]any, len(cols))
@@ -104,18 +112,18 @@ func (s *Snapshot) showCreateTrigger(ctx context.Context, name string) (mode, cr
 		switch c {
 		case "sql_mode":
 			modeIdx = i
-		case "SQL Original Statement":
+		case stmtCol:
 			stmtIdx = i
 		}
 	}
 	if modeIdx < 0 || stmtIdx < 0 {
-		return "", "", fmt.Errorf("SHOW CREATE TRIGGER %s has the columns %q, not the expected sql_mode and SQL Original Statement",
-			sqlvalue.QuoteIdent(name), cols)
+		return "", "", fmt.Errorf("SHOW CREATE %s %s has the columns %q, not the expected sql_mode and %s",
+			kind, sqlvalue.QuoteIdent(name), cols, stmtCol)
 	}
-	// The statement is NULL when the account lacks the TRIGGER privilege.
+	// The statement is NULL when the account may not see the body.
 	if vals[stmtIdx] == nil {
-		return "", "", fmt.Errorf("SHOW CREATE TRIGGER %s returned no statement; the account needs the TRIGGER privilege",
-			sqlvalue.QuoteIdent(name))
+		return "", "", fmt.Errorf("SHOW CREATE %s %s returned no statement; the account needs %s",
+			kind, sqlvalue.QuoteIdent(name), needs)
 	}
 	return string(vals[modeIdx]), string(vals[stmtIdx]), rows.Err()
 }

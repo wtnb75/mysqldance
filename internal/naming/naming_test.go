@@ -97,6 +97,29 @@ func TestTriggersFile(t *testing.T) {
 	}
 }
 
+func TestRoutinesFile(t *testing.T) {
+	if got := RoutinesFile("my db"); got != "my%20db.15-routines.sql" {
+		t.Errorf("RoutinesFile = %q", got)
+	}
+	if !IsOwnedBy("a.15-routines.sql", "a") || IsOwnedBy("a-b.15-routines.sql", "a") {
+		t.Error("IsOwnedBy does not recognize exactly the routines file of its database")
+	}
+	// Restoring runs the files in name order: the routines go in after every
+	// data file and before the triggers (which may call them).
+	for _, db := range []string{"a", "a-b", "a_b", "a.b"} {
+		for _, tbl := range []string{"t", "0", "-", "A", "a.b", "~"} {
+			for _, d := range DataFileParts(db, tbl, 12345) {
+				if r := RoutinesFile(db); r <= d {
+					t.Errorf("RoutinesFile(%q)=%q not > data file %q", db, r, d)
+				}
+			}
+		}
+		if RoutinesFile(db) >= TriggersFile(db) {
+			t.Errorf("RoutinesFile(%q) is not before the triggers file", db)
+		}
+	}
+}
+
 func TestConstraintsFile(t *testing.T) {
 	if got := ConstraintsFile("my db"); got != "my%20db.90-constraints.sql" {
 		t.Errorf("ConstraintsFile = %q", got)

@@ -9,6 +9,7 @@ import (
 const (
 	schemaSuffix      = ".00-schema.sql"
 	dataInfix         = ".10-data."
+	routinesSuffix    = ".15-routines.sql"
 	triggersSuffix    = ".20-triggers.sql"
 	constraintsSuffix = ".90-constraints.sql"
 	sqlExt            = ".sql"
@@ -38,6 +39,14 @@ func EscapeName(s string) string {
 // SchemaFile returns the schema file name of a database.
 func SchemaFile(db string) string {
 	return NewPlan(db, nil).SchemaFile()
+}
+
+// RoutinesFile returns the name of the file that holds the stored procedures and
+// functions of a database. "15" sorts after every data file (they continue with
+// ".10-data.") and before the triggers file, because a trigger may call a
+// routine.
+func RoutinesFile(db string) string {
+	return NewPlan(db, nil).RoutinesFile()
 }
 
 // TriggersFile returns the name of the file that holds the triggers of a
@@ -89,8 +98,8 @@ func dataFileParts(dbComp, tableComp string, n int) []string {
 	return names
 }
 
-// IsOwnedBy reports whether file is the schema file, the triggers file, the
-// constraints file or a data file of db, by its unshortened name (see
+// IsOwnedBy reports whether file is the schema file, the routines file, the
+// triggers file, the constraints file or a data file of db, by its unshortened name (see
 // Plan.IsOwned for the names of a run).
 func IsOwnedBy(file, db string) bool {
 	return isOwned(file, EscapeName(db))
