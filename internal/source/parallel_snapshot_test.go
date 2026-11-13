@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,6 +96,19 @@ func waitFor(t *testing.T, c *sql.Conn, query string) {
 			t.Fatalf("condition not reached within 10s: %s", query)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// waitForInserts polls n until it reaches want, and fails the test after 10
+// seconds.
+func waitForInserts(t *testing.T, n *atomic.Int64, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for n.Load() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("writer committed %d rows, want %d within 10s", n.Load(), want)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -194,6 +208,9 @@ func TestParallelSnapshotWithoutLockDiffers(t *testing.T) {
 	_, dsn := testConfig(t)
 	mustExec(t, conn, "CREATE TABLE i (id INT PRIMARY KEY AUTO_INCREMENT, v INT)", "INSERT INTO i (v) VALUES (0)")
 
+	// inserted counts the writer's committed INSERTs (autocommit; incremented
+	// after the statement returns, so it may lag the server by one).
+	var inserted atomic.Int64
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -208,6 +225,7 @@ func TestParallelSnapshotWithoutLockDiffers(t *testing.T) {
 				t.Errorf("writer: %v", err)
 				return
 			}
+			inserted.Add(1)
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
@@ -217,7 +235,17 @@ func TestParallelSnapshotWithoutLockDiffers(t *testing.T) {
 		close(stop)
 		<-done
 	}()
-	conns := snapshotConns(t, dsn, db, 3, 100*time.Millisecond)
+	// Start the snapshots one at a time and, between two of them, wait until the
+	// writer has committed two more rows, instead of sleeping and hoping. The
+	// server may stall the writer (another test package holding the global read
+	// lock on a shared server did); a fixed pause then yields identical
+	// snapshots. Two rows, because the counter can lag the server by one, so
+	// the next snapshot is guaranteed to see more rows than this one.
+	var conns []*sql.Conn
+	for range 3 {
+		conns = append(conns, snapshotConns(t, dsn, db, 1, 0)...)
+		waitForInserts(t, &inserted, inserted.Load()+2)
+	}
 
 	seen := map[int]bool{}
 	for _, c := range conns {
