@@ -24,25 +24,40 @@ func WriteTriggers(w io.Writer, db string, triggers []Trigger) error {
 	// under the header's SET NAMES utf8mb4, so the output does not depend on the
 	// connection that created the trigger (review ledger R-087).
 	stmts := make([][]string, len(triggers))
-	var flat []string
 	for i, t := range triggers {
 		if hasDelimiterLine(t.Create) {
 			return fmt.Errorf("trigger %s has a line that starts with DELIMITER, which the mysql client would run as a command",
 				sqlvalue.QuoteIdent(t.Name))
 		}
-		stmts[i] = []string{
-			"DROP TRIGGER IF EXISTS " + sqlvalue.QuoteIdent(t.Name),
-			"SET SQL_MODE=" + sqlvalue.Literal("VARCHAR", []byte(t.SQLMode), false),
-			t.Create,
-		}
-		flat = append(flat, stmts[i]...)
+		stmts[i] = dropSetCreate("TRIGGER", t.Name, t.SQLMode, t.Create)
+	}
+	return writeDelimited(w, db, stmts)
+}
+
+// dropSetCreate returns the three statements that re-create one object: the
+// DROP, the SET SQL_MODE of its creation, and the CREATE.
+func dropSetCreate(kind, name, sqlMode, create string) []string {
+	return []string{
+		"DROP " + kind + " IF EXISTS " + sqlvalue.QuoteIdent(name),
+		"SET SQL_MODE=" + sqlvalue.Literal("VARCHAR", []byte(sqlMode), false),
+		create,
+	}
+}
+
+// writeDelimited writes the header, then each group of statements (a blank line
+// before each group), every statement ended by one delimiter that none of them
+// contains.
+func writeDelimited(w io.Writer, db string, groups [][]string) error {
+	var flat []string
+	for _, ss := range groups {
+		flat = append(flat, ss...)
 	}
 	delim := chooseDelimiter(flat)
 
 	var b strings.Builder
 	b.WriteString(datafile.Header(db))
 	b.WriteString("DELIMITER " + delim + "\n")
-	for _, ss := range stmts {
+	for _, ss := range groups {
 		b.WriteString("\n")
 		for _, s := range ss {
 			fmt.Fprintf(&b, "%s%s\n", s, delim)

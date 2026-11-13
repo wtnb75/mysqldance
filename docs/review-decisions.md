@@ -1188,3 +1188,31 @@
 - 却下の理由: `--file-mode` と `--dir-mode` が同じ扱い（空は未指定）で、フラグの規約として揃えた。不正な値（単位の誤り、1MiB 未満、負数）は全て使い方のエラーになる。丸めるのは未指定を表す空文字だけで、データを落とさない。コメントに R-165 を書いた。
 - 初出: B-045
 - 再出: 0
+
+## R-166 `dumpDB` のルーチンの処理がトリガーの処理のコピーになっている
+- 対象: internal/dump/dump.go の dumpDB（`writer.RoutineWriter` と `writer.TriggerWriter` の分岐、claim と書き出し）
+- 指摘: 読む、ライタの型を確かめる、オブジェクトごとに警告する、nil にする、の並びが重複している。3 つ目の種類（B-048 のイベント）で 3 つ目のコピーになる。
+- 却下の理由: 失敗のシナリオを示せない（好みの問題）。種類ごとに警告の属性（`table` / `trigger` と `routine` / `type`）、ファイル名、ライタのインターフェースが違い、共通化するとコールバックだらけになる。2 つの間の重複は短く、`dumpDB` の分割は B-050 で扱う。
+- 初出: B-047
+- 再出: 0
+
+## R-167 ルーチンの種類の検査が `source.Routines` と `schemafile.WriteRoutines` の両方にある
+- 対象: internal/source/routines.go の Routines、internal/schemafile/routines.go の WriteRoutines
+- 指摘: 同じ検査が 2 か所にあり、メッセージが違う。許す種類を変えるときに両方を直す必要がある。
+- 却下の理由: 失敗のシナリオを示せない。`source` の検査は未対応の種類（MariaDB のパッケージ）を黙って落とさないため、`schemafile` の検査は `DROP` / `CREATE` の文を作るときに種類を文に入れてよいと保つため。層が別で、どちらか一方だけでも誤った入力は止まる。`TestWriteRoutinesRefusesUnknownType` が確かめている。
+- 初出: B-047
+- 再出: 0
+
+## R-168 `showCreateStatement` の `kind` を SQL に連結している
+- 対象: internal/source/triggers.go の showCreateStatement
+- 指摘: `"SHOW CREATE "+kind` は呼び出し側が定数を渡す前提で、将来の呼び出しで注入になりうる。
+- 却下の理由: 失敗のシナリオを示せない。呼び出しは `"TRIGGER"` の定数と、`Routines` が `PROCEDURE` / `FUNCTION` に絞った値だけで、利用者の入力は入らない。`SHOW CREATE` の種類名は `?` で渡せない。メソッドは非公開で、コメントに定数を渡すと書いた。
+- 初出: B-047
+- 再出: 0
+
+## R-169 ルーチン用に書き換えたコメントが長い行になった
+- 対象: internal/naming/plan.go の IsOwned のコメント、internal/source/triggers.go の showCreateTrigger のコメント
+- 指摘: コメントが長くなり、`showCreateTrigger` のコメントから「列は名前で選ぶ」の説明が消えた。
+- 却下の理由: 好みの問題で、`CLAUDE.md` や linter の規約にない（`golangci-lint` は通っている）。列の説明は共通の `showCreateStatement` のコメントに残っている。
+- 初出: B-047
+- 再出: 0

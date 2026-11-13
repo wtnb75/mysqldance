@@ -50,6 +50,18 @@ func (m *MySQL) WriteSchema(w io.Writer, s Schema) error {
 	return schemafile.Write(w, s.DB, s.CreateDatabase, tables, ordered)
 }
 
+// WriteRoutines implements RoutineWriter. The DEFINER clause is removed, as for
+// views and triggers, so the routines belong to the restoring user. A routine
+// with SQL SECURITY DEFINER then runs with that user's privileges.
+func (m *MySQL) WriteRoutines(w io.Writer, s Schema) error {
+	routines := make([]schemafile.Routine, len(s.Routines))
+	for i, r := range s.Routines {
+		r.Create = schemafile.StripDefiner(r.Create)
+		routines[i] = r
+	}
+	return schemafile.WriteRoutines(w, s.DB, routines)
+}
+
 // WriteTriggers implements TriggerWriter. The DEFINER clause is removed, as for
 // views, so the triggers belong to the restoring user and the name of the
 // dumping user stays out of the output.

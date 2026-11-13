@@ -213,6 +213,18 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		}
 		triggers = nil
 	}
+	routines, err := snap.Routines(ctx)
+	if err != nil {
+		return err
+	}
+	rw, hasRoutines := opt.Writer.(writer.RoutineWriter)
+	if !hasRoutines {
+		for _, r := range routines {
+			opt.Log.Warn(fmt.Sprintf("%s %s is not output", strings.ToLower(r.Type), sqlvalue.QuoteIdent(r.Name)),
+				"database", db, "routine", r.Name, "type", r.Type)
+		}
+		routines = nil
+	}
 	var defs map[string]source.TableDef
 	if opt.Writer.NeedsDefs() {
 		if defs, err = snap.Defs(ctx); err != nil {
@@ -225,7 +237,7 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 		}
 	}
 	schema := writer.Schema{
-		DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps, Triggers: triggers, Defs: defs,
+		DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps, Triggers: triggers, Routines: routines, Defs: defs,
 		Warn: func(msg string) { opt.Log.Warn(msg, "database", db) },
 	}
 
@@ -243,6 +255,14 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	schemaName := plan.SchemaFile()
 	if err := claim(seen, schemaName, fmt.Sprintf("the schema of database %q", db)); err != nil {
 		return err
+	}
+	// Likewise a database without routines has no routines file; routines is
+	// nil for a writer that cannot write them.
+	writeRoutines := len(routines) > 0
+	if writeRoutines {
+		if err := claim(seen, plan.RoutinesFile(), fmt.Sprintf("the routines of database %q", db)); err != nil {
+			return err
+		}
 	}
 	// A database without triggers has no triggers file, so the file of an
 	// earlier dump does not outlive its triggers (see removeStale).
@@ -311,6 +331,13 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 			if err := claim(seen, n, fmt.Sprintf("table %q of database %q", t.Name, db)); err != nil {
 				return err
 			}
+		}
+	}
+	if writeRoutines {
+		if err := st.create(filepath.Join(opt.OutDir, plan.RoutinesFile()), func(w io.Writer) error {
+			return rw.WriteRoutines(w, schema)
+		}); err != nil {
+			return err
 		}
 	}
 	if writeTriggers {
