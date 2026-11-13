@@ -438,4 +438,6 @@ tasks:
         if [ -n "{{.RESTORE_IMAGE}}" ]; then
           restore_dsn='root:root@tcp({{.HOST}}:{{.RESTORE_PORT}})/'
         fi
-        env {{.GODEBUG_ENV}} MYSQLDANCE_TEST_SSL_MODE='{{.SSL_MODE}}' MYSQLDANCE_TEST_DSN='root:root@tcp({{.HOST}}:{{.PORT}})/' MYSQLDANCE_TEST_RESTORE_DSN="$restore_dsn" MYSQLDANCE_TEST_PG_DSN='postgres://postgres:pg@{{.HOST}}:{{.PG_PORT}}/postgres?sslmode=disable' go test -count=1 {{.TESTFLAGS}} ./...
+        # -p 1: packages share one server, and FLUSH TABLES WITH READ LOCK in one
+        # package stalls the writers of another.
+        env {{.GODEBUG_ENV}} MYSQLDANCE_TEST_SSL_MODE='{{.SSL_MODE}}' MYSQLDANCE_TEST_DSN='root:root@tcp({{.HOST}}:{{.PORT}})/' MYSQLDANCE_TEST_RESTORE_DSN="$restore_dsn" MYSQLDANCE_TEST_PG_DSN='postgres://postgres:pg@{{.HOST}}:{{.PG_PORT}}/postgres?sslmode=disable' go test -p 1 -count=1 {{.TESTFLAGS}} ./...

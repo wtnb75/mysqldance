@@ -40,7 +40,9 @@ jobs:
     - name: Run integration tests
       run: |
         set -o pipefail
-        go test -count=1 -v ./... 2>&1 | tee integration.log
+        # -p 1: packages share one server, and FLUSH TABLES WITH READ LOCK in one
+        # package stalls the writers of another.
+        go test -p 1 -count=1 -v ./... 2>&1 | tee integration.log
     - name: Fail if the integration tests were skipped
       run: |
         if grep -q 'MYSQLDANCE_TEST_DSN is not set' integration.log; then
