@@ -24,10 +24,12 @@ import (
 )
 
 // version and commit are set at build time by goreleaser through
-// -ldflags "-X main.version=... -X main.commit=...".
+// -ldflags "-X main.version=... -X main.commit=...". Left at the defaults,
+// --version falls back to the build info the Go toolchain recorded (see
+// resolveBuildInfo).
 var (
-	version = "dev"
-	commit  = "unknown"
+	version = defaultVersion
+	commit  = defaultCommit
 )
 
 func main() {
@@ -76,7 +78,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 0
 	}
 	if errors.Is(err, errVersion) {
-		_, _ = fmt.Fprintf(stdout, "mysqldance %s (commit %s)\n", version, commit)
+		v, c := buildVersion()
+		_, _ = fmt.Fprintf(stdout, "mysqldance %s (commit %s)\n", v, c)
 		return 0
 	}
 	if err != nil {
