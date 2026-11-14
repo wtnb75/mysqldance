@@ -63,7 +63,7 @@ func (s *SQLite) WriteSchema(w io.Writer, sc Schema) error {
 		if !ok {
 			return fmt.Errorf("table %s: no table definition was read", sqlvalue.QuoteIdent(t.Name))
 		}
-		if err := writeSQLiteTable(&out, sc.DB, t, def, taken, warn); err != nil {
+		if err := writeSQLiteTable(&out, sc.DB, t, def, sc.Defs, taken, warn); err != nil {
 			return fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
 		}
 	}
@@ -75,8 +75,8 @@ func (s *SQLite) WriteSchema(w io.Writer, sc Schema) error {
 	return nil
 }
 
-func writeSQLiteTable(out *strings.Builder, db string, t source.TableInfo, def source.TableDef, taken map[string]string,
-	warnf func(format string, a ...any)) error {
+func writeSQLiteTable(out *strings.Builder, db string, t source.TableInfo, def source.TableDef, defs map[string]source.TableDef,
+	taken map[string]string, warnf func(format string, a ...any)) error {
 	table := sqlvalue.QuoteIdent(t.Name)
 	// warn prefixes the table; the name is an argument, never part of the format.
 	warn := func(format string, a ...any) { warnf("table %s: "+format, append([]any{table}, a...)...) }
@@ -149,6 +149,15 @@ func writeSQLiteTable(out *strings.Builder, db string, t source.TableInfo, def s
 		}
 		if slices.ContainsFunc(fk.Columns, func(c string) bool { return !written[c] }) {
 			warn("foreign key %s uses a generated column and is not output", name)
+			continue
+		}
+		// InnoDB accepts any index on the referenced columns; SQLite needs the
+		// primary key or a unique index there, or writing to the child fails with
+		// "foreign key mismatch" once foreign keys are on. A parent that was not
+		// read is not judged: the reference is carried over as it was.
+		if parent, ok := defs[fk.RefTable]; ok && !isSQLiteParentKey(parent, fk.RefColumns) {
+			warn("foreign key %s is not output: its columns in %s are not the primary key or a unique index",
+				name, sqlvalue.QuoteIdent(fk.RefTable))
 			continue
 		}
 		lines = append(lines, "FOREIGN KEY ("+quoteList(fk.Columns)+") REFERENCES "+sqlvalue.QuoteIdent(fk.RefTable)+
@@ -282,6 +291,36 @@ func indexColumns(ix source.IndexDef, written map[string]bool) (string, bool) {
 		}
 	}
 	return strings.Join(parts, ", "), true
+}
+
+// isSQLiteParentKey reports whether cols, in any order, are exactly the columns
+// of the primary key or of a unique index of parent that the SQLite output
+// carries (not FULLTEXT / SPATIAL, not an expression, not a generated column).
+// Prefixes, DESC and collations need no check: InnoDB cannot reference a prefix
+// index, SQLite ignores the sort order here, and no column or index in this
+// output names a collation.
+func isSQLiteParentKey(parent source.TableDef, cols []string) bool {
+	generated := map[string]bool{}
+	for _, c := range parent.Columns {
+		if c.Generated {
+			generated[c.Name] = true
+		}
+	}
+	want := slices.Sorted(slices.Values(cols))
+	return slices.ContainsFunc(parent.Indexes, func(ix source.IndexDef) bool {
+		if !ix.Unique || ix.Kind == "FULLTEXT" || ix.Kind == "SPATIAL" {
+			return false
+		}
+		names := make([]string, len(ix.Parts))
+		for i, p := range ix.Parts {
+			if p.Column == "" || generated[p.Column] {
+				return false
+			}
+			names[i] = p.Column
+		}
+		slices.Sort(names)
+		return slices.Equal(names, want)
+	})
 }
 
 func quoteList(names []string) string {
