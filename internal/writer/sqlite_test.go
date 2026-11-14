@@ -96,7 +96,7 @@ func relationalSchema() Schema {
 				Checks: []string{"ck_qty"},
 			},
 		},
-		Views: []schemafile.View{{Name: "v", Create: "CREATE VIEW `v` AS select 1"}},
+		Views: []schemafile.View{{Name: "v", Create: "CREATE VIEW `v` AS select now() AS `n`"}},
 	}
 }
 
@@ -144,7 +144,7 @@ func TestSQLiteSchema(t *testing.T) {
 		"table `child`: index `idx_note` covers a column prefix; the whole column is indexed",
 		"table `child`: foreign key `fk_other` references another database and is not output",
 		"table `child`: CHECK constraint `ck_qty` is not output",
-		"view `v` is not output",
+		"view `v` is not output: NOW() cannot be converted to SQLite",
 	} {
 		if !strings.Contains(log, want) {
 			t.Errorf("warnings lack %q:\n%s", want, log)

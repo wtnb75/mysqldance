@@ -41,8 +41,9 @@ func (e *env) jobsFixture(t *testing.T) []string {
 			"INSERT INTO nokey VALUES (2, 1), (1, 2), (1, 1)",
 			"CREATE TABLE big (id INT PRIMARY KEY, v VARCHAR(20))",
 			"INSERT INTO big VALUES "+strings.Join(values, ", "),
-			"CREATE VIEW v1 AS SELECT id FROM t01",
-			"CREATE VIEW v2 AS SELECT id FROM t02",
+			// NOW() has no SQLite conversion, so the SQLite writer warns about them too.
+			"CREATE VIEW v1 AS SELECT id, NOW() AS n FROM t01",
+			"CREATE VIEW v2 AS SELECT id, NOW() AS n FROM t02",
 		)
 		dbs = append(dbs, db)
 	}

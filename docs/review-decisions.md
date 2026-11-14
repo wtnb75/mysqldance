@@ -1337,6 +1337,13 @@
 - 初出: B-061
 - 再出: 0
 
+## R-188 `writeSQLiteViews` が `sc.Views[byName[n]]` を存在確認なしで引く
+- 対象: internal/writer/sqliteview.go の writeSQLiteViews
+- 指摘: `OrderViews` が入力にない名前を返すと、添字 0 のビューを黙って変換する。大文字小文字だけが違う名前でも `byName` と SQLite の名前空間が食い違う。
+- 却下の理由: 失敗のシナリオがない推測。`schemafile.OrderViews` は入力の名前だけを返す（MySQL のライタも同じ引き方をしている）。ビューの名前は MySQL の同じ DB 内で一意で、大文字小文字だけが違う名前は `dump` がファイル名の衝突として先にエラーにする（R-053）。
+- 初出: B-062
+- 再出: 0
+
 ## R-187 ldflags に `dev` / `unknown` をそのまま渡すと、未指定と区別できない
 - 対象: cmd/mysqldance/buildinfo.go の resolveBuildInfo、Taskfile.yml の build
 - 指摘: 既定値と同じ文字列を比べて未指定と判断するので、`-X main.version=dev` の明示指定が build info に置き換わりうる。

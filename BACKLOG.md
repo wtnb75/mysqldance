@@ -1,12 +1,5 @@
 # Backlog
 
-## B-062 [todo|P3] SQLite 向けの出力でビューを変換する
-- 依存: B-036
-- 概要: B-036 の SQLite 向け出力はビューを出力しない（警告のみ）。MySQL の `SHOW CREATE VIEW` は `ALGORITHM` / `DEFINER` / `SQL SECURITY` 句、文字コード指定子（`_utf8mb4'x'`）、`db`.`t` 形式の修飾名、SQLite にない関数（`IF()`、`CONCAT()`、`DATE_FORMAT()` など）を含むため、変換の範囲を決める（単純な `SELECT` だけを通して残りは警告する、など）。
-- 受け入れ条件:
-  - [ ] 変換できるビューが SQLite にリストアでき、できないビューは理由つきの警告になる
-  - [ ] 出力は決定的である
-
 ## B-063 [todo|P3] SQLite 向けの出力で、外部キーの参照先が UNIQUE / 主キーでないときに警告する
 - 依存: B-036
 - 概要: InnoDB は、外部キーが参照する列に UNIQUE でない通常のインデックスがあれば足りるが、SQLite は参照先の列が主キーか UNIQUE インデックスであることを求める。B-036 の出力はこの外部キーをそのまま書くので、リストアは通る（`foreign_keys=OFF`）が、利用者が外部キーを有効にすると、子テーブルへの書き込みが `foreign key mismatch` で失敗する。B-036 のレビューで指摘された。
@@ -270,7 +263,26 @@
   - [ ] `invoker` の出力が決定的で、復元して `SECURITY_TYPE` が `INVOKER` になる（統合テスト）
   - [ ] README に、意味が変わること（ビューの見え方、権限）を書く
 
+## B-113 [todo|P3] SQLite 向けのビューの注意の警告を、列の型と照合順序を使って正確にする
+- 依存: B-062
+- 概要: B-062 の SQLite 向けビューの注意の警告は、構文だけで決める（文字列リテラル、`LIKE`、`GROUP BY` など）。列の型を知らないため、次の差は警告されない。`DECIMAL` / `BIGINT UNSIGNED` / `BIT(64)` の列は SQLite では `TEXT` なので、整数との比較（`price > 5`）や算術（`price + tax`）の結果が MySQL と変わる。大文字小文字を区別しない照合順序の文字列列どうしの比較（`a.name = b.name`、`IN`、`MIN` / `MAX`、`JOIN ... ON`）が、SQLite では 1 バイトずつの比較になる。ビューが読む列の型と照合順序（`source.TableDef`）を使って、該当するビューに理由つきの警告を出す。B-062 のレビューで指摘された。
+- 受け入れ条件:
+  - [ ] `DECIMAL` / `BIGINT UNSIGNED` / `BIT` の列を比較・算術に使うビューが、理由つきの警告になる
+  - [ ] 大文字小文字を区別しない照合順序の文字列列どうしの比較を含むビューが、理由つきの警告になる
+  - [ ] 該当しないビューの警告は増えない
+
 # Done
+
+## B-062 [done|P3] SQLite 向けの出力でビューを変換する
+- 依存: B-036
+- 概要: B-036 の SQLite 向け出力はビューを出力しない（警告のみ）。MySQL の `SHOW CREATE VIEW` は `ALGORITHM` / `DEFINER` / `SQL SECURITY` 句、文字コード指定子（`_utf8mb4'x'`）、`db`.`t` 形式の修飾名、SQLite にない関数（`IF()`、`CONCAT()`、`DATE_FORMAT()` など）を含むため、変換の範囲を決める（単純な `SELECT` だけを通して残りは警告する、など）。
+- 前提（仕様確定）: `SHOW CREATE VIEW` の本文をトークン分割し、許可リスト方式で変換する。`ALGORITHM` / `DEFINER` / `SQL SECURITY` 句、同じ DB の `db`. 修飾、文字コード指定子を除く。列・JOIN・WHERE・GROUP BY・ORDER BY・LIMIT と許可した関数だけを通す。関数は MySQL と意味が同じものだけ許可する（`COUNT` / `SUM` / `MIN` / `MAX` / `AVG` / `COALESCE` / `IFNULL` / `NULLIF` / `ABS` / `ROUND` / `UPPER` / `LOWER` / `SUBSTR` / `TRIM` / `REPLACE` など）。`IF(a,b,c)` は `CASE WHEN`、`CONCAT(a,b)` は `(a || b)` に書き換える。それ以外（`DATE_FORMAT` など未知の関数、`WITH CHECK OPTION`、別 DB の参照など）は理由つきの警告にして出力しない。MySQL と意味が変わりうる式（`/`、文字列リテラルとの比較、`ORDER BY` の照合順序）を含むビューは出力するが、変換したビューごとに「結果が MySQL と異なりうる」と理由つきの警告を出す。README に書く。
+- 結果: `internal/writer/sqliteview.go` に許可リスト方式の変換を足した。ビューは依存順にテーブルの後へ書く。出力しなかったビューや別 DB を読むビューを読むビューも出力しない（理由つきの警告）。`CONCAT` の引数は括弧で包み、`COUNT(DISTINCT a, b)` は出力しない。意味が変わりうる式を含むビューは出力して注意の警告を出す。列の型を使う警告は B-113。
+- 受け入れ条件:
+  - [x] 変換できるビューが SQLite にリストアでき、できないビューは理由つきの警告になる
+  - [x] 意味が変わりうる式を含むビューは、出力したうえで注意の警告になる
+  - [x] 出力は決定的である
+  - [x] README の SQLite の節を、ビューの扱いに合わせて更新する
 
 ## B-030 [done|P3] 手動実行の自動修正・依存更新 workflow を作る
 - 依存: B-025

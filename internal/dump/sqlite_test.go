@@ -127,7 +127,11 @@ func sqliteFixture(t *testing.T, e *env) string {
 		"CREATE TABLE nokey (a INT, b VARCHAR(10))",
 		"CREATE TABLE gen (id INT PRIMARY KEY, x INT, y INT AS (x * 2) STORED)",
 		"CREATE TABLE empty_t (id INT PRIMARY KEY)",
-		"CREATE VIEW v AS SELECT id FROM child",
+		"CREATE VIEW v AS SELECT id, IF(parent_id IS NULL, 'orphan', 'owned') AS kind, CONCAT(note, '!') AS shout FROM child WHERE id > 0",
+		// DATE_FORMAT has no SQLite equivalent: the view is reported, not output.
+		"CREATE VIEW v_year AS SELECT DATE_FORMAT(d, '%Y') AS y FROM child",
+		// It reads a view that is not output, so it is not output either.
+		"CREATE VIEW v_year2 AS SELECT y FROM v_year",
 
 		"INSERT INTO parent VALUES (18446744073709551615, 'max'), (1, 'one')",
 		"INSERT INTO child (parent_id, qty, flags, small, data, f, d, dt, j, note) VALUES"+
@@ -149,7 +153,11 @@ func TestSQLiteRoundTrip(t *testing.T) {
 	log := e.dumpSQLite(t, dir, datafile.Options{}, db)
 
 	// Nothing that SQLite cannot hold is dropped without a word.
-	for _, want := range []string{"view `v` is not output"} {
+	for _, want := range []string{
+		"view `v_year` is not output: DATE_FORMAT() cannot be converted to SQLite",
+		"view `v_year2` is not output: it reads the view `v_year`, which is not output",
+		"view `v` is output, but its result may differ from MySQL",
+	} {
 		if !strings.Contains(log, want) {
 			t.Errorf("log lacks %q:\n%s", want, log)
 		}
@@ -181,8 +189,13 @@ func TestSQLiteRoundTrip(t *testing.T) {
 	if _, err := lite.Exec("INSERT INTO parent VALUES ('2', 'one')"); err == nil {
 		t.Error("SQLite accepted a duplicate of a UNIQUE key")
 	}
-	if got := cells(t, lite, "SELECT name FROM sqlite_master WHERE type = 'view'"); len(got) != 0 {
-		t.Errorf("views = %q, want none", got)
+	// Only the view that converts is restored, and it returns the MySQL rows.
+	if got := cells(t, lite, "SELECT name FROM sqlite_master WHERE type = 'view'"); !reflect.DeepEqual(got, []string{`"v"`}) {
+		t.Errorf("views = %q, want only v", got)
+	}
+	want := cells(t, adminQuery{e}, "SELECT id, kind, shout FROM `"+db+"`.v ORDER BY id")
+	if got := cells(t, lite, "SELECT id, kind, shout FROM v ORDER BY id"); !reflect.DeepEqual(got, want) {
+		t.Errorf("view v in SQLite = %q, in MySQL = %q", got, want)
 	}
 }
 
