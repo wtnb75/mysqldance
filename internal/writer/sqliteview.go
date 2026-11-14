@@ -9,25 +9,46 @@ import (
 	"mysqldance/internal/sqlvalue"
 )
 
-// The view conversion for SQLite is an allow list: the body of SHOW CREATE VIEW
+// The view conversion for SQLite and PostgreSQL is an allow list: the body of SHOW CREATE VIEW
 // is split into tokens, and only the keywords, operators and functions below are
 // carried over. Anything else makes the view "not converted", which the writer
 // reports with the reason; a view is never output half converted.
 
-// sqliteViewKeywords are the words of a MySQL SELECT that mean the same in
-// SQLite. A word that is not here (and is not a function below) is refused.
-var sqliteViewKeywords = setOf("select", "distinct", "from", "where", "group", "by", "order", "having",
+// viewKeywords are the words of a MySQL SELECT that mean the same in SQLite and
+// PostgreSQL. A word that is not here (and is not a function below) is refused.
+var viewKeywords = setOf("select", "distinct", "from", "where", "group", "by", "order", "having",
 	"limit", "offset", "as", "join", "inner", "left", "outer", "cross", "on", "using", "and", "or", "not",
 	"is", "null", "in", "like", "between", "case", "when", "then", "else", "end", "asc", "desc", "union",
 	"all", "exists", "true", "false")
 
-// sqliteViewFuncs are the functions SQLite has with the MySQL meaning.
-var sqliteViewFuncs = setOf("count", "sum", "min", "max", "avg", "coalesce", "ifnull", "nullif", "abs",
-	"round", "upper", "lower", "substr", "trim", "replace")
+// viewOps are the operators that are carried over as they are. "/" and "%" are
+// carried over too, but make the view cautioned.
+var viewOps = setOf("(", ")", ",", ".", "=", "<", ">", "<=", ">=", "<>", "!=", "+", "-", "*")
 
-// sqliteViewOps are the operators that are carried over as they are. "/" and
-// "%" are carried over too, but make the view cautioned.
-var sqliteViewOps = setOf("(", ")", ",", ".", "=", "<", ">", "<=", ">=", "<>", "!=", "+", "-", "*")
+// viewDialect is what differs between the targets of the view conversion.
+type viewDialect struct {
+	target string // used in the reasons: "cannot be converted to <target>"
+	funcs  map[string]bool
+	// ident converts a backtick-quoted identifier token; reason is set when the
+	// target cannot hold it.
+	ident func(tok string) (out, reason string)
+	// str converts a decoded string literal.
+	str func(v string) (out, reason string)
+	// note ends the warning about a view whose result may differ.
+	note       string
+	postgresql bool
+}
+
+var sqliteDialect = &viewDialect{
+	target: "SQLite",
+	funcs: setOf("count", "sum", "min", "max", "avg", "coalesce", "ifnull", "nullif", "abs",
+		"round", "upper", "lower", "substr", "trim", "replace"),
+	ident: func(tok string) (string, string) { return tok, "" },
+	str: func(v string) (string, string) {
+		return sqlvalue.SQLiteLiteral("VARCHAR", []byte(v), false), ""
+	},
+	note: "SQLite compares and sorts text byte by byte, and divides integers as integers",
+}
 
 // cautionOrder is the order the reasons are reported in, so that the warning is
 // the same on every run.
@@ -56,11 +77,14 @@ type viewTok struct {
 	text string // the source text; the decoded value for tokString
 }
 
-// writeSQLiteViews writes the views that convert, in dependency order, and
-// reports each one that is not output or whose result may differ. A view that
-// reads a view that is not output is not output either: SQLite would accept it
-// and fail only when it is queried.
-func writeSQLiteViews(out *strings.Builder, sc Schema, warnf func(format string, a ...any)) {
+// writeViews writes the views that convert, in dependency order, and reports
+// each one that is not output or whose result may differ. A view that reads a
+// view that is not output is not output either: SQLite would accept it and fail
+// only when it is queried, PostgreSQL would refuse it and stop the restore.
+// taken holds the names that are already used by something else in the target
+// (PostgreSQL keeps tables, views and indexes in one namespace).
+func writeViews(out *strings.Builder, sc Schema, d *viewDialect, env *pgViewEnv, taken map[string]string,
+	warnf func(format string, a ...any)) {
 	byName := make(map[string]int, len(sc.Views))
 	names := make([]string, len(sc.Views))
 	for i, v := range sc.Views {
@@ -94,16 +118,19 @@ func writeSQLiteViews(out *strings.Builder, sc Schema, warnf func(format string,
 			notOutput("it reads the view " + sqlvalue.QuoteIdent(dep) + ", which is not output")
 			continue
 		}
-		stmt, caution, reason := convertSQLiteView(v.Name, v.Create)
+		if what, ok := taken[v.Name]; ok {
+			notOutput("its name is already used by " + what)
+			continue
+		}
+		stmt, caution, reason := convertView(d, env, v.Name, v.Create)
 		if reason != "" {
 			notOutput(reason)
 			continue
 		}
 		out.WriteString(stmt)
 		if len(caution) > 0 {
-			warnf("view %s is output, but its result may differ from MySQL: %s "+
-				"(SQLite compares and sorts text byte by byte, and divides integers as integers)",
-				name, strings.Join(caution, ", "))
+			warnf("view %s is output, but its result may differ from MySQL: %s (%s)",
+				name, strings.Join(caution, ", "), d.note)
 		}
 	}
 }
@@ -114,11 +141,18 @@ var viewHeader = regexp.MustCompile("^CREATE (?:OR REPLACE )?(?:ALGORITHM=\\w+ )
 
 var viewCheckOption = regexp.MustCompile(`(?i)\s+WITH\s+(?:CASCADED\s+|LOCAL\s+)?CHECK\s+OPTION\s*$`)
 
-// convertSQLiteView turns a MySQL SHOW CREATE VIEW statement of the view name
-// into a SQLite CREATE VIEW statement ending in ";\n". If it cannot, reason says
-// why and the statement is empty. caution lists what in the converted view may
-// give a result that differs from MySQL.
+// convertSQLiteView converts a view for SQLite; see convertView. It and
+// convertPostgresView exist so that the tests name the dialect once (review
+// ledger R-194).
 func convertSQLiteView(name, create string) (stmt string, caution []string, reason string) {
+	return convertView(sqliteDialect, nil, name, create)
+}
+
+// convertView turns a MySQL SHOW CREATE VIEW statement of the view name into a
+// CREATE VIEW statement of the dialect d ending in ";\n". If it cannot, reason
+// says why and the statement is empty. caution lists what in the converted view
+// may give a result that differs from MySQL. env is set for PostgreSQL only.
+func convertView(d *viewDialect, env *pgViewEnv, name, create string) (stmt string, caution []string, reason string) {
 	// The DEFINER clause holds quoted user names that may contain spaces.
 	create = schemafile.StripDefiner(create)
 	head := viewHeader.FindString(create)
@@ -127,13 +161,23 @@ func convertSQLiteView(name, create string) (stmt string, caution []string, reas
 	}
 	body := strings.TrimSpace(create[len(head):])
 	if viewCheckOption.MatchString(body) {
-		return "", nil, "WITH CHECK OPTION cannot be converted to SQLite"
+		return "", nil, "WITH CHECK OPTION cannot be converted to " + d.target
 	}
-	toks, reason := lexView(body)
+	toks, reason := lexView(body, d.target)
 	if reason != "" {
 		return "", nil, reason
 	}
-	c := &viewConv{caution: map[string]bool{}}
+	// The name of the view goes through the same check as any identifier.
+	qname, reason := d.ident(sqlvalue.QuoteIdent(name))
+	if reason != "" {
+		return "", nil, reason
+	}
+	if d.postgresql {
+		if reason := checkGroupBy(toks, env); reason != "" {
+			return "", nil, reason
+		}
+	}
+	c := &viewConv{d: d, env: env, caution: map[string]bool{}}
 	out := c.convert(toks)
 	if c.reason != "" {
 		return "", nil, c.reason
@@ -143,13 +187,13 @@ func convertSQLiteView(name, create string) (stmt string, caution []string, reas
 			caution = append(caution, k)
 		}
 	}
-	return "CREATE VIEW " + sqlvalue.QuoteIdent(name) + " AS " + strings.TrimSpace(out) + ";\n", caution, ""
+	return "CREATE VIEW " + qname + " AS " + strings.TrimSpace(out) + ";\n", caution, ""
 }
 
 // lexView splits the body of a view into tokens. A character that has no place
 // in a SELECT that SHOW CREATE VIEW prints (a comment, a variable, a hex
 // literal) is refused.
-func lexView(s string) ([]viewTok, string) {
+func lexView(s, target string) ([]viewTok, string) {
 	var toks []viewTok
 	for i := 0; i < len(s); {
 		c := s[i]
@@ -214,7 +258,7 @@ func lexView(s string) ([]viewTok, string) {
 			// the meaning of the literal and is refused.
 			if word[0] == '_' && j < len(s) && s[j] == '\'' {
 				if strings.EqualFold(word, "_binary") {
-					return nil, "_binary cannot be converted to SQLite"
+					return nil, "_binary cannot be converted to " + target
 				}
 				i = j
 				continue
@@ -284,17 +328,20 @@ func decodeMySQLString(s string, i int) (val string, end int, ok bool) {
 	return "", 0, false
 }
 
-// viewConv converts tokens to SQLite text. reason is set on the first token
+// viewConv converts tokens to the text of the dialect d. reason is set on the first token
 // that cannot be carried over; after that, convert returns early.
 type viewConv struct {
+	d       *viewDialect
+	env     *pgViewEnv
 	caution map[string]bool
 	reason  string
-	prev    string // the last word or operator that was converted, lower case
+	prev    string   // the last word or operator that was converted, lower case
+	calls   []string // the functions around the tokens being converted, innermost last
 }
 
 func (c *viewConv) fail(format string, a ...any) {
 	if c.reason == "" {
-		c.reason = fmt.Sprintf(format, a...) + " cannot be converted to SQLite"
+		c.reason = fmt.Sprintf(format, a...) + " cannot be converted to " + c.d.target
 	}
 }
 
@@ -312,11 +359,26 @@ func (c *viewConv) convert(toks []viewTok) string {
 	for i := 0; i < len(toks) && c.reason == ""; i++ {
 		t := toks[i]
 		switch t.kind {
-		case tokSpace, tokIdent, tokNumber:
+		case tokSpace, tokNumber:
 			out.WriteString(t.text)
+		case tokIdent:
+			s, reason := c.d.ident(t.text)
+			if reason != "" {
+				c.reason = reason
+				return ""
+			}
+			if c.d.postgresql && !c.checkBool(toks, i) {
+				return ""
+			}
+			out.WriteString(s)
 		case tokString:
 			c.caution["a string literal"] = true
-			out.WriteString(sqlvalue.SQLiteLiteral("VARCHAR", []byte(t.text), false))
+			s, reason := c.d.str(t.text)
+			if reason != "" {
+				c.reason = reason
+				return ""
+			}
+			out.WriteString(s)
 			c.prev = "'"
 		case tokOp:
 			switch {
@@ -324,7 +386,7 @@ func (c *viewConv) convert(toks []viewTok) string {
 				c.caution["a division"] = true
 			case t.text == "%":
 				c.caution["a remainder (%)"] = true
-			case !sqliteViewOps[t.text]:
+			case !viewOps[t.text]:
 				c.fail("the operator %s", t.text)
 				return ""
 			}
@@ -336,7 +398,17 @@ func (c *viewConv) convert(toks []viewTok) string {
 			c.prev = t.text
 		case tokWord:
 			w := strings.ToLower(t.text)
-			if i+1 < len(toks) && toks[i+1].kind == tokOp && toks[i+1].text == "(" && !sqliteViewKeywords[w] {
+			if c.d.postgresql && w == "limit" {
+				if end, rewritten := c.limit(toks, i); c.reason != "" {
+					return ""
+				} else if rewritten != "" {
+					out.WriteString(rewritten)
+					i = end
+					c.prev = "limit"
+					continue
+				}
+			}
+			if i+1 < len(toks) && toks[i+1].kind == tokOp && toks[i+1].text == "(" && !viewKeywords[w] {
 				end := matchingParen(toks, i+1)
 				if end < 0 {
 					c.fail("a parenthesis that is not closed")
@@ -347,7 +419,7 @@ func (c *viewConv) convert(toks []viewTok) string {
 				c.prev = ")"
 				continue
 			}
-			if !sqliteViewKeywords[w] {
+			if !viewKeywords[w] {
 				c.fail("%s", strings.ToUpper(t.text))
 				return ""
 			}
@@ -359,7 +431,9 @@ func (c *viewConv) convert(toks []viewTok) string {
 	return out.String()
 }
 
-// keyword checks the context of a keyword that is only the same in SQLite there.
+// keyword checks the context of a keyword that means the same in SQLite and
+// PostgreSQL only there. viewKeywords and viewOps are shared by both dialects:
+// a word is added only if it means the same in both.
 func (c *viewConv) keyword(w string, toks []viewTok, i int) {
 	switch w {
 	case "left", "inner", "cross":
@@ -427,9 +501,12 @@ func (c *viewConv) call(w string, inner []viewTok) string {
 		}
 		return "(" + strings.Join(args, " || ") + ")"
 	}
-	if !sqliteViewFuncs[w] {
+	if !c.d.funcs[w] {
 		c.fail("%s()", strings.ToUpper(w))
 		return ""
+	}
+	if c.d.postgresql && w == "ifnull" {
+		w = "coalesce"
 	}
 	switch w {
 	case "count":
@@ -442,7 +519,10 @@ func (c *viewConv) call(w string, inner []viewTok) string {
 	case "avg", "sum", "round", "upper", "lower", "substr":
 		c.caution[strings.ToUpper(w)+"()"] = true
 	}
-	return w + "(" + c.convert(inner) + ")"
+	c.calls = append(c.calls, w)
+	body := c.convert(inner)
+	c.calls = c.calls[:len(c.calls)-1]
+	return w + "(" + body + ")"
 }
 
 // splitArgs splits the tokens inside the parentheses of a call at the commas
@@ -474,8 +554,21 @@ func splitArgs(inner []viewTok) [][]viewTok {
 func (c *viewConv) args(inner []viewTok, group bool) []string {
 	var out []string
 	for _, a := range splitArgs(inner) {
+		// The arguments of IF() belong to the caller; those of CONCAT() are named,
+		// for the check of a boolean column.
+		call := ""
+		if group {
+			call = "concat"
+		}
+		c.calls = append(c.calls, call)
 		s := strings.TrimSpace(c.convert(a))
-		if group && !isAtom(a) {
+		c.calls = c.calls[:len(c.calls)-1]
+		if c.d.postgresql && group {
+			// PostgreSQL's || takes no two numbers; MySQL's CONCAT takes anything.
+			if !isStringLiteral(a) { // a string literal is text already
+				s = "CAST(" + s + " AS text)"
+			}
+		} else if group && !isAtom(a) {
 			s = "(" + s + ")"
 		}
 		out = append(out, s)

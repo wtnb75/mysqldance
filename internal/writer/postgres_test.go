@@ -29,11 +29,15 @@ func TestPostgresNeedsDefs(t *testing.T) {
 	}
 }
 
-// pgSchema is relationalSchema with its views and a CHECK constraint, which the
-// PostgreSQL writer does not output, plus a foreign key to a non-unique column.
+// pgSchema is relationalSchema with a view that converts and one that does not,
+// and a CHECK constraint, which the PostgreSQL writer does not output, plus a
+// foreign key to a non-unique column.
 func pgSchema() Schema {
 	s := relationalSchema()
-	s.Views = []schemafile.View{{Name: "v", Create: "CREATE VIEW `v` AS select 1"}}
+	s.Views = []schemafile.View{
+		{Name: "v", Create: "CREATE VIEW `v` AS select 1"},
+		{Name: "w", Create: "CREATE VIEW `w` AS select date_format(`child`.`created`,'%Y') AS `y` from `child`"},
+	}
 	return s
 }
 
@@ -67,7 +71,8 @@ const wantPostgresDDL = wantSettings +
 	"  CONSTRAINT \"parent__PRIMARY\" PRIMARY KEY (\"id\")\n" +
 	");\n" +
 	"CREATE UNIQUE INDEX \"parent__uk_code\" ON \"parent\" (\"code\");\n" +
-	"CREATE UNIQUE INDEX \"parent__uk_id_code\" ON \"parent\" (\"id\", \"code\");\n"
+	"CREATE UNIQUE INDEX \"parent__uk_id_code\" ON \"parent\" (\"id\", \"code\");\n" +
+	"CREATE VIEW \"v\" AS select 1;\n"
 
 func TestPostgresSchema(t *testing.T) {
 	got, warns := writeSchemaText(t, pgSchema())
@@ -76,7 +81,7 @@ func TestPostgresSchema(t *testing.T) {
 	}
 	// Nothing PostgreSQL cannot carry over disappears without a word.
 	for _, want := range []string{
-		"view `v` is not output", "generated column `twice` is not output",
+		"view `w` is not output: DATE_FORMAT() cannot be converted to PostgreSQL", "generated column `twice` is not output",
 		"ON UPDATE of column `created` is not output", "index `ft_note` (FULLTEXT) is not output",
 		"index `fn` has an expression key part", "index `idx_note` covers a column prefix",
 		"CHECK constraint `ck_qty` is not output",
