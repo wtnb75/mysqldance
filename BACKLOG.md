@@ -1,12 +1,5 @@
 # Backlog
 
-## B-029 [todo|P3] カバレッジを GitHub Pages で公開する
-- 依存: B-025
-- 概要: `mcprt` の `main.yml` のように、`gotest` の `html-output-dir` に出した HTML を `wtnb75/actions/merge-pages@v1` でまとめ、`actions/deploy-pages` で `main` へのプッシュのたびに公開する。Pages の有効化はリポジトリの設定で行う。
-- 受け入れ条件:
-  - [ ] `main` へのプッシュでカバレッジの HTML が Pages に公開される
-  - [ ] README のバッジからカバレッジのページに行ける
-
 ## B-030 [todo|P3] 手動実行の自動修正・依存更新 workflow を作る
 - 依存: B-025
 - 概要: `mcprt` の `fix.yml`（`wtnb75/actions/gofix@v1`）と `update-deps.yml`（`wtnb75/actions/goupdate@v1`）に倣い、`workflow_dispatch` で手動実行する。実行するとテストを通したうえで PR を作る（`contents: write` と `pull-requests: write` が必要）。
@@ -285,6 +278,13 @@
   - [ ] README に、意味が変わること（ビューの見え方、権限）を書く
 
 # Done
+
+## B-029 [done|P3] カバレッジを GitHub Pages で公開する
+- 依存: B-025
+- 概要: `mcprt` の `main.yml` のように、`gotest` の `html-output-dir` に出した HTML を `wtnb75/actions/merge-pages@v1` でまとめ、`actions/deploy-pages` で `main` へのプッシュのたびに公開する。Pages の有効化はリポジトリの設定で行う。
+- 前提: Pages は有効化済み（`build_type: workflow`）。`main.yml` の `test` ジョブに `merge-pages` / `configure-pages` を足し、`test` に依存する `deploy` ジョブで公開する（統合テストは待たない）。カバレッジは単体テストのもの。公開先は `https://wtnb75.github.io/mysqldance/coverage/`。README にバッジやリンクは置かない（外部サービスに頼らず、ページは URL で直接開く）。
+- 受け入れ条件:
+  - [x] `main` へのプッシュでカバレッジの HTML が Pages に公開される（ブランチからの `workflow_dispatch` で公開まで通ることを確認した。`main` のプッシュでの実行は未確認）
 
 ## B-061 [done|P3] `go install` でも `--version` が意味のある値を出すようにする
 - 概要: `--version` の `version` / `commit` は ldflags でしか入らず、`go install ...@vX.Y.Z` や `go build` で作ったバイナリは `dev (commit unknown)` と出る。ldflags が空のときに限り、`runtime/debug.ReadBuildInfo()` の `Main.Version` と `vcs.revision` に切り替える。B-032 のレビューで指摘された。
