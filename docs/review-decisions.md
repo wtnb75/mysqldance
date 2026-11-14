@@ -1351,3 +1351,31 @@
 - 初出: B-061
 - 再出: 0
 
+## R-188 SQLite の外部キーの親の判定が、テーブル名の大文字小文字を区別して引く
+- 対象: internal/writer/sqlite.go の writeSQLiteTable（`defs[fk.RefTable]`）
+- 指摘: `lower_case_table_names` が 1 / 2 のサーバーで `REFERENCED_TABLE_NAME` と `TABLE_NAME` の綴りが違うと、親が見つからず判定を飛ばして外部キーを出力する。
+- 却下の理由: 失敗のシナリオを示せない（綴りが食い違う実例がない）。PostgreSQL のライタ（`byName[fk.RefTable]`）も同じ完全一致で引き、ライタに届くテーブル名は `dump` が大文字小文字の衝突を先に検査している（R-053）。綴りの違いに備えるなら、外部キーの出力全体（`REFERENCES` の綴りも）で揃える別件で、今回の範囲ではない。
+- 初出: B-063
+- 再出: 0
+
+## R-189 SQLite の外部キーの親の判定が、接頭辞・DESC・照合順序を見ていない
+- 対象: internal/writer/sqlite.go の isSQLiteParentKey
+- 指摘: 接頭辞だけの UNIQUE 索引や DESC の索引を親のキーとして数える。照合順序が違うと `foreign key mismatch` になりうる。
+- 却下の理由: 失敗のシナリオを示せない。InnoDB は接頭辞の索引を外部キーの参照先にできない。降順の UNIQUE 索引でも SQLite は外部キーを受け付ける（実機で `PRAGMA foreign_keys=ON` のまま子の行を挿入できることを確かめた）。この出力は列にも索引にも照合順序を付けないので、親の列と索引の照合順序は常に同じ（BINARY）。
+- 初出: B-063
+- 再出: 0
+
+## R-190 `isSQLiteParentKey` が「SQLite に出力される索引」の条件を二重に持つ
+- 対象: internal/writer/sqlite.go の isSQLiteParentKey と writeSQLiteTable の索引の処理
+- 指摘: FULLTEXT / SPATIAL / 式 / 生成列の判定が 2 か所にあり、片方だけ変わると食い違う。FK ごとに `generated` を作り直す。
+- 却下の理由: 好みの問題で、失敗のシナリオはない。`writeSQLiteTable` の判定は警告の文面と出力を分けるための分岐で、共通化すると引数が増える。食い違えば `TestSQLiteForeignKeyParentKey`（式の索引、部分一致）が失敗する。作り直しは FK の数だけで、無視できる。
+- 初出: B-063
+- 再出: 0
+
+## R-191 SQLite で外部キーを落とすのでなく、警告つきで出力すべき
+- 対象: internal/writer/sqlite.go の writeSQLiteTable（FK の親の判定）
+- 指摘: 落とすと参照の情報と `ON DELETE` / `ON UPDATE` が失われる。出力して警告だけにするほうが穏当。
+- 却下の理由: B-063 の確定した仕様（出力するか落とすかは実装時に決める）で「落として理由つきの警告」と決めた。出力すると、外部キーを有効にした利用者の子テーブルへの書き込みが `foreign key mismatch` で失敗し、これが項目の発端。落とした外部キーは警告に名前と親テーブルを書くので、黙って落とさない不変条件も満たす。
+- 初出: B-063
+- 再出: 0
+
