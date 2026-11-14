@@ -67,9 +67,7 @@ func (s *SQLite) WriteSchema(w io.Writer, sc Schema) error {
 			return fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
 		}
 	}
-	for _, v := range sc.Views {
-		warn("view %s is not output (views are not converted to SQLite)", sqlvalue.QuoteIdent(v.Name))
-	}
+	writeSQLiteViews(&out, sc, warn)
 	if _, err := io.WriteString(w, out.String()); err != nil {
 		return err
 	}
