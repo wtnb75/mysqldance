@@ -67,7 +67,7 @@ func (s *SQLite) WriteSchema(w io.Writer, sc Schema) error {
 			return fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
 		}
 	}
-	writeSQLiteViews(&out, sc, warn)
+	writeViews(&out, sc, sqliteDialect, nil, nil, warn)
 	if _, err := io.WriteString(w, out.String()); err != nil {
 		return err
 	}

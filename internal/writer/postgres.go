@@ -35,7 +35,8 @@ import (
 // dropped silently: generated columns, ON UPDATE CURRENT_TIMESTAMP, default
 // expressions, FULLTEXT and SPATIAL indexes, expression indexes, CHECK
 // constraints, foreign keys into another database or onto columns that are not
-// a primary or unique key, and views. A value or a name PostgreSQL cannot hold
+// a primary or unique key, and the views that cannot be converted
+// (postgresview.go). A value or a name PostgreSQL cannot hold
 // is an error. AUTO_INCREMENT, ENUM/SET member lists and collations are not
 // carried over, by design and without a warning (README; review ledger R-058).
 type Postgres struct {
@@ -131,9 +132,8 @@ func (p *Postgres) WriteSchema(w io.Writer, s Schema) error {
 			return fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
 		}
 	}
-	for _, v := range s.Views {
-		warn("view %s is not output (views are not converted to PostgreSQL)", sqlvalue.QuoteIdent(v.Name))
-	}
+	env := newPGViewEnv(s.Defs)
+	writeViews(&out, s, pgDialect, &env, taken, warn)
 	if _, err := io.WriteString(w, out.String()); err != nil {
 		return err
 	}
@@ -294,6 +294,13 @@ func pgPrecision(columnType string) string {
 	return "0"
 }
 
+// isPGBoolean reports whether the column becomes a PostgreSQL boolean. An
+// unsigned TINYINT is never one, whether the server reports its display width
+// ("tinyint(1) unsigned") or not ("tinyint unsigned").
+func isPGBoolean(c source.ColumnDef) bool {
+	return c.DataType == "tinyint" && strings.HasPrefix(c.Type, "tinyint(1)") && !isUnsigned(c)
+}
+
 // pgColumnType maps a MySQL column to the PostgreSQL type that keeps its
 // values exact, and says how its values are written. The rules:
 //
@@ -310,9 +317,7 @@ func pgColumnType(c source.ColumnDef) (string, sqlvalue.PGColumn, error) {
 	num := sqlvalue.PGColumn{Kind: sqlvalue.PGNumber}
 	switch c.DataType {
 	case "tinyint":
-		// An unsigned TINYINT is never a boolean, whether the server reports
-		// its display width ("tinyint(1) unsigned") or not ("tinyint unsigned").
-		if strings.HasPrefix(c.Type, "tinyint(1)") && !unsigned {
+		if isPGBoolean(c) {
 			return "boolean", sqlvalue.PGColumn{Kind: sqlvalue.PGBool}, nil
 		}
 		return "smallint", num, nil

@@ -188,10 +188,13 @@ func TestPostgresRoundTrip(t *testing.T) {
 	log := e.dumpPostgres(t, dir, datafile.Options{}, db)
 
 	// Nothing PostgreSQL cannot hold is dropped without a word.
-	for _, want := range []string{"view `v` is not output", "generated column `y` is not output"} {
+	for _, want := range []string{"generated column `y` is not output"} {
 		if !strings.Contains(log, want) {
 			t.Errorf("log lacks %q:\n%s", want, log)
 		}
+	}
+	if strings.Contains(log, "view `v`") {
+		t.Errorf("a view that converts was reported:\n%s", log)
 	}
 	want := []string{naming.SchemaFile(db), naming.ConstraintsFile(db)}
 	for _, tb := range []string{"child", "empty_t", "flags", "gen", "nokey", "parent"} {
@@ -265,8 +268,90 @@ func TestPostgresRoundTrip(t *testing.T) {
 	if _, err := conn.Exec(context.Background(), "INSERT INTO child (id, parent_id, dt) VALUES (99, 12345, now())"); err == nil {
 		t.Error("PostgreSQL accepted a row that breaks the foreign key")
 	}
-	if got := pgCells(t, conn, db, "SELECT table_name::text FROM information_schema.views WHERE table_schema = current_schema()"); len(got) != 0 {
-		t.Errorf("views = %q, want none", got)
+	if got := pgCells(t, conn, db, "SELECT table_name::text FROM information_schema.views WHERE table_schema = current_schema()"); !reflect.DeepEqual(got, []string{`"v"`}) {
+		t.Errorf("views = %q, want only v", got)
+	}
+}
+
+// The views that convert are restored by a real PostgreSQL and return the
+// MySQL rows; the ones PostgreSQL would refuse are reported and not output, so
+// the restore does not stop.
+func TestPostgresViews(t *testing.T) {
+	e := newEnv(t)
+	pg := newPGEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE items (id INT NOT NULL PRIMARY KEY, grp VARCHAR(5) NOT NULL, qty INT NOT NULL, flag TINYINT(1) NOT NULL, note VARCHAR(20) NULL)",
+		"INSERT INTO items VALUES (1,'a',1,1,NULL),(2,'a',3,0,'two'),(3,'b',5,1,'it''s'),(4,'c',2,0,NULL)",
+		"CREATE VIEW v_basic AS SELECT id, IF(qty > 1, 'many', 'few') AS kind, CONCAT(grp, '-', id) AS tag, IFNULL(note, 'none') AS n FROM items WHERE id > 0",
+		// A boolean column that is only selected is fine. (MySQL prints a
+		// WHERE flag as flag <> 0, which PostgreSQL refuses; v_bool covers that.)
+		"CREATE VIEW v_flag AS SELECT id, flag FROM items",
+		"CREATE VIEW v_agg AS SELECT grp, COUNT(*) AS n, SUM(qty) AS q FROM items GROUP BY grp",
+		"CREATE VIEW v_pk AS SELECT id, note FROM items GROUP BY id",
+		"CREATE VIEW v_lim AS SELECT id FROM items ORDER BY id LIMIT 1, 2",
+		"CREATE VIEW v_over AS SELECT id, tag FROM v_basic",
+		// PostgreSQL refuses these when they are created.
+		"CREATE VIEW v_bool AS SELECT id FROM items WHERE flag = 1",
+		"CREATE VIEW v_round AS SELECT ROUND(qty / 3, 1) AS r FROM items",
+		"CREATE VIEW v_use_bad AS SELECT id FROM v_bool",
+		// The generated column is not output, so a view that reads it would fail.
+		"CREATE TABLE gen (id INT PRIMARY KEY, x INT, y INT AS (x * 2) STORED)",
+		"CREATE VIEW v_gen AS SELECT id, y FROM gen",
+	)
+	dir := t.TempDir()
+	log := e.dumpPostgres(t, dir, datafile.Options{}, db)
+	for _, want := range []string{
+		"view `v_bool` is not output: the boolean column `flag`",
+		"view `v_round` is not output: ROUND() cannot be converted to PostgreSQL",
+		"view `v_use_bad` is not output: it reads the view `v_bool`, which is not output",
+		"view `v_gen` is not output: it reads the column `y`, which is a generated column",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("log lacks %q:\n%s", want, log)
+		}
+	}
+	// The same bytes every run.
+	again := t.TempDir()
+	e.dumpPostgres(t, again, datafile.Options{}, db)
+	a, errA := os.ReadFile(filepath.Join(dir, naming.SchemaFile(db)))
+	b, errB := os.ReadFile(filepath.Join(again, naming.SchemaFile(db)))
+	if errA != nil || errB != nil {
+		t.Fatal(errA, errB)
+	}
+	if !bytes.Equal(a, b) {
+		t.Error("two dumps of the same database differ")
+	}
+
+	pg.restore(t, dir)
+	conn := pg.connect(t)
+	my := adminQuery{e}
+	if got := pgCells(t, conn, db, "SELECT table_name::text FROM information_schema.views WHERE table_schema = current_schema() ORDER BY 1"); !reflect.DeepEqual(got,
+		[]string{`"v_agg"`, `"v_basic"`, `"v_flag"`, `"v_lim"`, `"v_over"`, `"v_pk"`}) {
+		t.Errorf("views = %q", got)
+	}
+	qualified := func(view string) string { return "`" + db + "`.`" + view + "`" }
+	for _, c := range []struct{ name, mysql, postgres string }{
+		{"v_basic", "SELECT id, kind, tag, n FROM " + qualified("v_basic") + " ORDER BY id",
+			"SELECT id::text, kind::text, tag::text, n::text FROM v_basic ORDER BY id"},
+		{"v_flag", "SELECT id, flag FROM " + qualified("v_flag") + " ORDER BY id",
+			"SELECT id::text, flag::int::text FROM v_flag ORDER BY id"},
+		{"v_agg", "SELECT grp, n, q FROM " + qualified("v_agg") + " ORDER BY grp",
+			"SELECT grp::text, n::text, q::text FROM v_agg ORDER BY grp"},
+		{"v_pk", "SELECT id, note FROM " + qualified("v_pk") + " ORDER BY id",
+			"SELECT id::text, note::text FROM v_pk ORDER BY id"},
+		{"v_lim", "SELECT id FROM " + qualified("v_lim") + " ORDER BY id", "SELECT id::text FROM v_lim ORDER BY id"},
+		{"v_over", "SELECT id, tag FROM " + qualified("v_over") + " ORDER BY id", "SELECT id::text, tag::text FROM v_over ORDER BY id"},
+	} {
+		wantRows := cells(t, my, c.mysql)
+		gotRows := pgCells(t, conn, db, c.postgres)
+		if !reflect.DeepEqual(gotRows, wantRows) {
+			t.Errorf("view %s differs\nMySQL:      %q\nPostgreSQL: %q", c.name, wantRows, gotRows)
+		}
+		if len(gotRows) == 0 {
+			t.Errorf("view %s returned no rows", c.name)
+		}
 	}
 }
 

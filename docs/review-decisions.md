@@ -1379,3 +1379,31 @@
 - 初出: B-063
 - 再出: 0
 
+## R-192 PostgreSQL 向けのビューの警告の注記に「NULL last」とあるのに、ORDER BY の注意が出ない
+- 対象: internal/writer/sqliteview.go の keyword（`order`）と、internal/writer/postgresview.go の pgDialect.note
+- 指摘: `ORDER BY` だけのビューでは注意の警告が出ず、`NULL` の並びの違いが黙って残る。
+- 却下の理由: 事実に反する。`keyword` は `order by` を見ると `caution["ORDER BY"]` を立てるので、`ORDER BY` のビューは必ず注意の警告を出し、注記に `NULL` の並びも書く（`TestPostgresViews` の `view `v_a` is output, but its result may differ from MySQL: ORDER BY`）。
+- 初出: B-064
+- 再出: 0
+
+## R-193 PostgreSQL 向けの `CONCAT()` の `CAST(... AS text)` が、値の文字列の形を変えうる
+- 対象: internal/writer/sqliteview.go の args（`group` が真のとき）
+- 指摘: DOUBLE や TIMESTAMP を `CAST` すると、MySQL と違う文字列になりうるのに、注意の警告がない。
+- 却下の理由: 失敗のシナリオを示せない（「違いうる」という推測）。`||` は文字列でない引数を取れないので、`CAST` を外すと整数同士の `CONCAT` が `CREATE VIEW` で拒否され、リストア全体が止まる。止まるほうが重い。`CONCAT()` を使うビューは文字列のリテラルを含むことが多く、その場合は「a string literal」の注意の警告が出る。型を使った注意は B-113（SQLite 向け）と同じ方針で扱う。
+- 初出: B-064
+- 再出: 0
+
+## R-194 `aggregateFuncs` と `pgViewFuncs` の集約関数の名前が重複し、`convertPostgresView` / `convertSQLiteView` がテスト専用
+- 対象: internal/writer/postgresview.go の aggregateFuncs、convertPostgresView
+- 指摘: 集約関数の名前を 2 か所に持つ。ラッパーがテストからしか呼ばれない。
+- 却下の理由: 好みの問題で、失敗のシナリオはない。`pgViewFuncs` は「PostgreSQL に渡してよい関数」、`aggregateFuncs` は「GROUP BY の検査で集約とみなす関数」で、集合の意味が違う。ラッパーは B-062 から `convertSQLiteView` があり、ライタの経路（`convertView`）と同じ関数を通る。
+- 初出: B-064
+- 再出: 1
+
+## R-195 PostgreSQL 向けのビューの検査が、列名だけの判定・テキストの連結で、過剰に拒否する・取り違えうる
+- 対象: internal/writer/postgresview.go の pgViewEnv.BoolCols / NotOut、joinToks
+- 指摘: boolean 列と生成列を列名だけで判定するので、別のテーブルの同名の整数列を使うビューまで拒否する。`joinToks` はトークンの文字列を区切りなしに連結して比べるので、別のトークン列が同じ文字列になりうる。
+- 却下の理由: 前者は確定した仕様どおり（拒否する側に倒す。出力して PostgreSQL が拒否するとリストア全体が止まる）。拒否されたビューは理由つきの警告になり、黙って落とさない。正確にするには列を解決する（別名と FROM の解決）必要があり、B-115 で扱う。後者は、MySQL の `SHOW CREATE VIEW` の出力のトークンは区切りが一意で、`GROUP BY` と `SELECT` の同じ式は同じトークン列になる。連結が衝突する二つの式が同じビューの `SELECT` と `GROUP BY` に並ぶ失敗のシナリオを示せない。
+- 初出: B-064
+- 再出: 0
+
