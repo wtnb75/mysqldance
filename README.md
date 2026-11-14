@@ -441,6 +441,8 @@ task lint                                   # golangci-lint
 Integration tests run only when the `MYSQLDANCE_TEST_DSN` environment variable is set (for example `root:root@tcp(127.0.0.1:33061)/`).
 CI (`.github/workflows/integration.yml`) runs them against MySQL 8.0 and 8.4 on every push and fails the job if they are skipped.
 
+The `fix` and `update-deps` workflows are run by hand (`workflow_dispatch`). Each runs `go fix` or `go get -u`, then the unit tests, and opens a PR only if they pass. A PR created with the default `GITHUB_TOKEN` does not trigger the `branch` workflow, so CI does not start by itself. Before merging, run `branch` on the PR's branch (`chore/go-fix` or `chore/update-deps`) from the Actions tab, or with `gh workflow run branch.yml --ref chore/update-deps`, to run the integration tests as well.
+
 ### Sample data
 
 To try `mysqldance` or look at diffs of its output, load a small sample database into a MySQL container:

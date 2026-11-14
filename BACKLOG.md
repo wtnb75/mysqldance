@@ -1,12 +1,5 @@
 # Backlog
 
-## B-030 [todo|P3] 手動実行の自動修正・依存更新 workflow を作る
-- 依存: B-025
-- 概要: `mcprt` の `fix.yml`（`wtnb75/actions/gofix@v1`）と `update-deps.yml`（`wtnb75/actions/goupdate@v1`）に倣い、`workflow_dispatch` で手動実行する。実行するとテストを通したうえで PR を作る（`contents: write` と `pull-requests: write` が必要）。
-- 受け入れ条件:
-  - [ ] 手動実行で PR が作られ、PR 上で CI が通る
-  - [ ] 統合テストが必要な更新でも、B-026 の CI で検証される
-
 ## B-062 [todo|P3] SQLite 向けの出力でビューを変換する
 - 依存: B-036
 - 概要: B-036 の SQLite 向け出力はビューを出力しない（警告のみ）。MySQL の `SHOW CREATE VIEW` は `ALGORITHM` / `DEFINER` / `SQL SECURITY` 句、文字コード指定子（`_utf8mb4'x'`）、`db`.`t` 形式の修飾名、SQLite にない関数（`IF()`、`CONCAT()`、`DATE_FORMAT()` など）を含むため、変換の範囲を決める（単純な `SELECT` だけを通して残りは警告する、など）。
@@ -278,6 +271,14 @@
   - [ ] README に、意味が変わること（ビューの見え方、権限）を書く
 
 # Done
+
+## B-030 [done|P3] 手動実行の自動修正・依存更新 workflow を作る
+- 依存: B-025
+- 概要: `mcprt` の `fix.yml`（`wtnb75/actions/gofix@v1`）と `update-deps.yml`（`wtnb75/actions/goupdate@v1`）に倣い、`workflow_dispatch` で手動実行する。実行するとテストを通したうえで PR を作る（`contents: write` と `pull-requests: write` が必要）。`update-deps.yml` は #78 で追加済みなので、残りは `fix.yml`。既定の `GITHUB_TOKEN` で作った PR のブランチは push イベントを起こさず `branch.yml` が自動では走らないため、PR 上の CI は自動起動にしない（PAT や `workflow_dispatch` の連鎖は入れない）。PR を開いたら、そのブランチで `branch.yml` を手動実行して、統合テストを含む CI を確かめる。
+- 受け入れ条件:
+  - [x] `fix.yml` を `workflow_dispatch` で手動実行でき、`contents: write` と `pull-requests: write` だけを持つ
+  - [x] `fix.yml` は、`go fix` / `gofmt` / `go vet` / lint / 単体テスト（`-v ./...`）を通ったときだけ PR を作る
+  - [x] PR 上の CI は自動起動しない。統合テストが必要な更新は、PR のブランチで `branch.yml`（B-026 の統合テストを呼ぶ）を手動実行して検証する。この手順を `README.md` か `CLAUDE.md` に書く
 
 ## B-029 [done|P3] カバレッジを GitHub Pages で公開する
 - 依存: B-025
