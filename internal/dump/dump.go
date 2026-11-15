@@ -47,6 +47,11 @@ type Options struct {
 	// files in OutDir. With Source.Jobs above 1, that many tables are sorted at
 	// once. 0 means DefaultSortMemory.
 	SortMemory int64
+	// ExcludeTables lists tables as DB.TABLE (exact names) that are left out: no
+	// schema, no data file, no triggers. Run fails before it touches OutDir if one
+	// is not a base table of a database in DBs. The data file of such a table from
+	// an earlier dump is removed like any other file that is not written again.
+	ExcludeTables []string
 	// FileWriter, when set, wraps the writer of each output file, given the
 	// file's final path; nil writes to the file as is. Tests use it to inject
 	// write failures and to run code at a given point of the run. It is a field
@@ -98,6 +103,7 @@ func Run(ctx context.Context, opt Options) (err error) {
 	// not even created or swept.
 	cfg := opt.Source
 	cfg.Log = opt.Log
+	cfg.ExcludeTables = opt.ExcludeTables
 	// The stage only holds settings until a file is made, so it can exist before
 	// Open; the sort of a table without a key makes its scratch files through it.
 	st := &stage{dir: opt.OutDir, mode: opt.FileMode, wrap: opt.FileWriter}
@@ -244,6 +250,13 @@ func readSchema(ctx context.Context, opt Options, snap *source.Snapshot, db stri
 		return writer.Schema{}, err
 	}
 	for _, w := range warnings {
+		opt.Log.Warn(w, "database", db)
+	}
+	refWarnings, err := snap.ExcludedRefs(ctx)
+	if err != nil {
+		return writer.Schema{}, err
+	}
+	for _, w := range refWarnings {
 		opt.Log.Warn(w, "database", db)
 	}
 	views, deps, err := snap.Views(ctx)

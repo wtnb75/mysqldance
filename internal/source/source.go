@@ -69,6 +69,9 @@ type Snapshot struct {
 	sortFile   extsort.NewFile
 	// largeTableRows is Config.LargeTableRows with its default applied.
 	largeTableRows int64
+	// excluded is the tables of Config.ExcludeTables, resolved by Open; it is
+	// read only, and shared by every reader.
+	excluded excludeSet
 }
 
 // Readers returns the connections that can read rows in parallel: the

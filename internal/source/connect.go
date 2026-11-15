@@ -65,6 +65,11 @@ type Config struct {
 	// table without a key; 0 means DefaultLargeTableRows. A negative value warns
 	// for every such table (a new table's estimate is 0, so tests use it).
 	LargeTableRows int64
+	// ExcludeTables lists tables, as DB.TABLE (split at the first dot, exact
+	// names), that Tables, Defs and Triggers leave out. Open checks that each is
+	// a base table of one of the databases it is given, before it takes a lock.
+	// The decision to take the global read lock still counts them.
+	ExcludeTables []string
 	// Log receives how the snapshot is made: the target, the connections, the
 	// lock and how long it is awaited and held (Info), and the statements that
 	// take the lock and start the snapshots (Debug). Nil discards them. It never
@@ -135,6 +140,10 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 			return nil, err
 		}
 	}
+	excludeSpecs, err := checkExcludeSpecs(cfg.ExcludeTables, dbs)
+	if err != nil {
+		return nil, err
+	}
 
 	mc := mysql.NewConfig()
 	mc.User = cfg.User
@@ -164,7 +173,6 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 	// A bad ssl setting must fail here, as the first thing Run does, so it
 	// aborts before the output directory is created or any file is deleted
 	// or written.
-	var err error
 	if mc.TLS, mc.AllowFallbackToPlaintext, err = tlsConfig(cfg, host); err != nil {
 		return nil, err
 	}
@@ -179,6 +187,12 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 	}
 	sdb := sql.OpenDB(connector)
 	err = pingWithin(ctx, sdb, cfg.ConnectTimeout)
+	// The names are checked before the lock, so a mistyped one never makes
+	// other sessions wait.
+	var excluded excludeSet
+	if err == nil {
+		excluded, err = resolveExcludes(ctx, sdb, excludeSpecs)
+	}
 	var s *Snapshot
 	if err == nil {
 		s, err = start(ctx, sdb, dbs, cfg.NoLock, cfg.Jobs, cfg.LockTimeout, lg)
@@ -190,6 +204,7 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 		for _, r := range s.Readers() {
 			r.sortMemory, r.sortFile = cfg.SortMemory, cfg.SortFile
 			r.largeTableRows = largeRows
+			r.excluded = excluded
 		}
 	}
 	if err != nil {

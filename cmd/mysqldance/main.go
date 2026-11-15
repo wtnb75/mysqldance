@@ -194,6 +194,17 @@ func parseSize(s string) (int64, error) {
 	return n * mult, nil
 }
 
+// stringList is a flag that may be given more than once; the values keep the
+// order given.
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+
+func (l *stringList) Set(v string) error {
+	*l = append(*l, v)
+	return nil
+}
+
 // parseArgs parses the command line into dump options without connecting.
 func parseArgs(args []string, getenv func(string) string) (dump.Options, error) {
 	return parseArgsTo(args, getenv, io.Discard)
@@ -231,6 +242,11 @@ The password is read from --password-file, else from MYSQL_PWD.
       --dir-mode MODE        exact octal permission of the output directory
                              when it is created, e.g. 0750 (default 0755
                              filtered by the umask; an existing one is kept)
+      --exclude-table DB.TABLE
+                             leave a table out of the output: its schema, data
+                             and triggers. Repeatable; exact names, split at the
+                             first dot. It must be a base table of a database to
+                             dump
       --no-lock              do not take FLUSH TABLES WITH READ LOCK when a
                              table is not InnoDB (warn instead)
       --lock-timeout DUR     give up when FLUSH TABLES WITH READ LOCK has not
@@ -259,6 +275,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 `)
 	}
 
+	var excludeTables stringList
 	var (
 		host, user, socket, passwordFile, output string
 		sslMode, sslCA, target                   string
@@ -305,6 +322,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.StringVar(&fileMode, "file-mode", "", "")
 	fs.StringVar(&dirMode, "dir-mode", "", "")
 	fs.StringVar(&sortMemory, "sort-memory", "", "")
+	fs.Var(&excludeTables, "exclude-table", "")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -365,6 +383,12 @@ The password is read from --password-file, else from MYSQL_PWD.
 		return usage("--dir-mode: %v", err)
 	}
 
+	for _, spec := range excludeTables {
+		if _, _, err := source.SplitTableSpec(spec); err != nil {
+			return usage("--exclude-table: %v", err)
+		}
+	}
+
 	// Unset (empty) leaves 0, which dump reads as its default. An explicit empty
 	// value counts as unset, as with --file-mode and --dir-mode (review ledger R-165).
 	var sortBytes int64
@@ -387,6 +411,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 		SortMemory: sortBytes,
 		DBs:        fs.Args(),
 		OutDir:     output,
+		// Nil when the flag is not given, so the options stay as they were.
+		ExcludeTables: excludeTables,
 	}
 	// dump builds the MySQL writer from Data; another writer takes the options
 	// itself, and dump refuses both.

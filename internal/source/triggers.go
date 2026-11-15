@@ -34,6 +34,10 @@ func (s *Snapshot) Triggers(ctx context.Context) ([]schemafile.Trigger, error) {
 		if err := rows.Scan(&r.name, &r.table, &r.timing, &r.event, &order); err != nil {
 			return nil, err
 		}
+		// The triggers of a table left out are left out with it.
+		if s.excludes(r.table) {
+			continue
+		}
 		// Without the order, triggers of one event would fall back to name order
 		// and run in another order after a restore; refuse instead of guessing.
 		if !order.Valid {

@@ -206,7 +206,9 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
 	var out []TableInfo
 	var warnings []string
 	for _, r := range list {
-		if r.typ != "BASE TABLE" {
+		// A table left out is not read at all: no SHOW CREATE, and no warning
+		// about its engine or size (the lock decision of Open still counts it).
+		if r.typ != "BASE TABLE" || s.excludes(r.name) {
 			continue
 		}
 		ti := TableInfo{Name: r.name, Engine: r.engine, ApproxRows: r.rows}
