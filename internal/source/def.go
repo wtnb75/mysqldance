@@ -81,7 +81,7 @@ func (s *Snapshot) Defs(ctx context.Context) (map[string]TableDef, error) {
 	// Pointers, so that the readers below append in place.
 	defs := map[string]*TableDef{}
 	for _, r := range list {
-		if r.typ == "BASE TABLE" {
+		if r.typ == "BASE TABLE" && !s.excludes(r.name) {
 			defs[r.name] = &TableDef{}
 		}
 	}

@@ -88,6 +88,38 @@ func TestParseArgsDefaults(t *testing.T) {
 	}
 }
 
+func TestParseArgsExcludeTable(t *testing.T) {
+	got, err := parseArgs([]string{"--exclude-table", "db1.sessions", "--exclude-table", "db2.audit.log", "-o", "out", "db1", "db2"}, noEnv)
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	// Repeated flags are kept in the order given; the first dot splits the pair.
+	if want := []string{"db1.sessions", "db2.audit.log"}; !reflect.DeepEqual(got.ExcludeTables, want) {
+		t.Errorf("ExcludeTables = %q, want %q", got.ExcludeTables, want)
+	}
+	// Without the flag the list is nil, so the options are as before.
+	got, err = parseArgs([]string{"-o", "out", "db1"}, noEnv)
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	if got.ExcludeTables != nil {
+		t.Errorf("ExcludeTables = %q, want nil", got.ExcludeTables)
+	}
+}
+
+func TestParseArgsExcludeTableUsageErrors(t *testing.T) {
+	for _, spec := range []string{"", "sessions", ".sessions", "db.", "."} {
+		var stderr bytes.Buffer
+		_, err := parseArgsTo([]string{"--exclude-table", spec, "-o", "out", "db1"}, noEnv, &stderr)
+		if !errors.Is(err, errUsage) {
+			t.Errorf("--exclude-table %q: err = %v, want errUsage", spec, err)
+		}
+		if !strings.Contains(stderr.String(), "--exclude-table") || !strings.Contains(stderr.String(), spec) {
+			t.Errorf("--exclude-table %q: stderr does not name the flag and the value:\n%s", spec, stderr.String())
+		}
+	}
+}
+
 func TestParseArgsLockTimeout(t *testing.T) {
 	for _, tt := range []struct {
 		args []string
