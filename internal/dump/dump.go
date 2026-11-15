@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -141,6 +142,9 @@ func Run(ctx context.Context, opt Options) (err error) {
 	seen := map[string]string{}
 	// The file names of each database, for finding its files of earlier dumps.
 	plans := map[string]*naming.Plan{}
+	// What the constraints files need of each database (see writeConstraints).
+	cw, hasConstraints := opt.Writer.(writer.ConstraintWriter)
+	schemas := map[string]writer.Schema{}
 	for i, db := range opt.DBs {
 		if i > 0 {
 			if err := snap.Use(ctx, db); err != nil {
@@ -150,12 +154,21 @@ func Run(ctx context.Context, opt Options) (err error) {
 		opt.Log.Info("dumping database", "database", db)
 		start := time.Now()
 		var tot dbTotals
-		if err := dumpDB(ctx, opt, snap, db, seen, st, plans, &tot); err != nil {
+		schema, err := dumpDB(ctx, opt, snap, db, seen, st, plans, &tot)
+		if err != nil {
 			return fmt.Errorf("database %q: %w", db, err)
+		}
+		if hasConstraints {
+			schemas[db] = writer.Schema{DB: db, Tables: schema.Tables, Defs: schema.Defs, Warn: schema.Warn}
 		}
 		// The files are staged, not yet in place: that is the last step of the run.
 		opt.Log.Info("database dumped", "database", db, "tables", tot.tables,
 			"rows", tot.rows, "bytes", tot.bytes, "files", tot.files, "duration", time.Since(start))
+	}
+	if hasConstraints {
+		if err := writeConstraints(opt, cw, schemas, plans, st); err != nil {
+			return err
+		}
 	}
 	// Everything was read and written. From here on the output directory
 	// changes, so stop only for a cancel that arrived before this point.
@@ -222,32 +235,34 @@ type dbTotals struct {
 // dumpDB stages the files of db and records its file names in plans. Once every
 // table is written it sets tot to the totals of the data files. It runs in
 // stages, in this order: read the objects of the database, validate every
-// output file name, stage the schema file, the data files, and the other files.
-func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, seen map[string]string, st *stage, plans map[string]*naming.Plan, tot *dbTotals) error {
+// output file name, stage the schema file, the data files, and the other files
+// (the constraints file is staged by writeConstraints, once every database is
+// read). It returns the schema it read.
+func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, seen map[string]string, st *stage, plans map[string]*naming.Plan, tot *dbTotals) (writer.Schema, error) {
 	schema, err := readSchema(ctx, opt, snap, db)
 	if err != nil {
-		return err
+		return schema, err
 	}
 	plan, err := planFiles(opt, db, schema, seen)
 	if err != nil {
-		return err
+		return schema, err
 	}
 	// Run reads plans only when every database was staged, so a failed
 	// planFiles needs no entry.
 	plans[db] = plan
 	// Refuse owned entries that are not regular files before writing anything.
 	if _, err := ownedEntries(opt.OutDir, plan); err != nil {
-		return err
+		return schema, err
 	}
 	if err := st.create(filepath.Join(opt.OutDir, plan.SchemaFile()), func(w io.Writer) error {
 		return opt.Writer.WriteSchema(w, schema)
 	}); err != nil {
-		return err
+		return schema, err
 	}
 	if err := writeTables(ctx, opt, snap, db, schema.Tables, plan, seen, st, tot); err != nil {
-		return err
+		return schema, err
 	}
-	return writeExtraFiles(opt, schema, plan, st)
+	return schema, writeExtraFiles(opt, schema, plan, st)
 }
 
 // readSchema reads everything the writer needs to describe db. Objects that
@@ -361,9 +376,9 @@ func planFiles(opt Options, db string, schema writer.Schema, seen map[string]str
 
 // extraFile is a file of a database besides its schema and data files.
 type extraFile struct {
-	name  string // the file name, without the directory
-	what  string // what it holds, for the message of a name clash
-	write func(io.Writer) error
+	name  string                // the file name, without the directory
+	what  string                // what it holds, for the message of a name clash
+	write func(io.Writer) error // nil for the constraints file (see writeConstraints)
 }
 
 // extraFiles lists the routines, views, triggers, events and constraints files
@@ -387,8 +402,9 @@ func extraFiles(wr writer.Writer, schema writer.Schema, plan *naming.Plan) []ext
 	if ew, ok := wr.(writer.EventWriter); ok && len(schema.Events) > 0 {
 		files = append(files, extraFile{plan.EventsFile(), "events", func(w io.Writer) error { return ew.WriteEvents(w, schema) }})
 	}
-	if cw, ok := wr.(writer.ConstraintWriter); ok {
-		files = append(files, extraFile{plan.ConstraintsFile(), "constraints", func(w io.Writer) error { return cw.WriteConstraints(w, schema) }})
+	if _, ok := wr.(writer.ConstraintWriter); ok {
+		// Staged by writeConstraints once every database is read, not here.
+		files = append(files, extraFile{plan.ConstraintsFile(), "constraints", nil})
 	}
 	return files
 }
@@ -439,8 +455,32 @@ func writeTables(ctx context.Context, opt Options, snap *source.Snapshot, db str
 // writeExtraFiles stages the files of extraFiles.
 func writeExtraFiles(opt Options, schema writer.Schema, plan *naming.Plan, st *stage) error {
 	for _, e := range extraFiles(opt.Writer, schema, plan) {
+		if e.write == nil {
+			continue
+		}
 		if err := st.create(filepath.Join(opt.OutDir, e.name), e.write); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// writeConstraints stages the constraints file of every database, once all of
+// them are read: a foreign key between two databases is in the file of the one
+// that runs later, so a file needs the definitions of the others. Only what
+// they check is kept (tables and definitions, no rows).
+func writeConstraints(opt Options, cw writer.ConstraintWriter, schemas map[string]writer.Schema, plans map[string]*naming.Plan, st *stage) error {
+	all := make([]writer.Schema, 0, len(opt.DBs))
+	for _, db := range opt.DBs {
+		s := schemas[db]
+		s.ConstraintsFile = plans[db].ConstraintsFile()
+		all = append(all, s)
+	}
+	for i, db := range opt.DBs {
+		s := all[i]
+		s.Peers = slices.Concat(all[:i], all[i+1:])
+		if err := st.create(filepath.Join(opt.OutDir, s.ConstraintsFile), func(w io.Writer) error { return cw.WriteConstraints(w, s) }); err != nil {
+			return fmt.Errorf("database %q: %w", db, err)
 		}
 	}
 	return nil
