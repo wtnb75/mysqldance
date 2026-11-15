@@ -13,8 +13,9 @@ import (
 // PostgreSQL checks a view when it is created: a type that does not fit an
 // operator, or a column that is selected without being grouped, is an error, and
 // the error stops the restore. So besides the allow list that SQLite uses, the
-// shapes that are certain to be refused are found here and the view is not
-// output. What cannot be found without the types of the expressions is left to
+// shapes that are refused are found here and the view is not output. Most are
+// certain to be refused; a few (a GROUP BY expression, see checkGroupBy) are
+// refused on purpose although PostgreSQL would accept them. What cannot be found without the types of the expressions is left to
 // the PostgreSQL integration tests.
 
 // pgViewEnv is what the checks need to know about the tables of the database.
@@ -229,8 +230,11 @@ var aggregateFuncs = setOf("count", "sum", "min", "max", "avg")
 // ungrouped: MySQL (with ONLY_FULL_GROUP_BY) accepts a column that depends on
 // the grouped columns, and so does PostgreSQL, but only through a primary key
 // that is wholly grouped. An expression is ungrouped unless the same text is
-// in the GROUP BY or it holds an aggregate. Only the query itself and each
-// branch of a UNION are checked, not subqueries.
+// in the GROUP BY or it holds an aggregate; so an expression built only from
+// grouped columns (a + 1) is refused although PostgreSQL accepts it (B-115). A
+// WITH ROLLUP clause is read as part of the last grouping item, so it also
+// ends here, with a reason that does not name WITH ROLLUP. Only the query
+// itself and each branch of a UNION are checked, not subqueries.
 func checkGroupBy(toks []viewTok, env *pgViewEnv) string {
 	var sig []viewTok
 	for _, t := range toks {

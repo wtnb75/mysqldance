@@ -95,7 +95,8 @@ func (m *MySQL) WriteTriggers(w io.Writer, s Schema) error {
 
 // NewRowWriter implements Writer. Each value is rendered as a MySQL literal
 // when its row arrives; the split and the INSERT boundaries are decided on the
-// rendered text of that row alone, so no row is held.
+// rendered text of that row and the bytes since the previous cut (see
+// datafile.Write), so no row is held.
 func (m *MySQL) NewRowWriter(db string, t source.TableInfo, open OpenFile) (RowWriter, error) {
 	return newStreamWriter(t, open, datafile.Header(db), "", sqlvalue.QuoteIdent, m.data,
 		infallible(sqlvalue.Literals)), nil

@@ -455,9 +455,9 @@
 ## R-062 `viewRefs` の部分文字列照合が偽の依存を作り、循環でエラーになりうる
 - 対象: internal/source/dialect.go の viewRefs
 - 指摘: 文字列リテラルの中の `` `db`.`b` `` などが偽の依存になり、2 つのビューが循環して並べ替えが失敗する。
-- 却下の理由: 循環はエラーにならない。`schemafile.OrderViews` は循環を見つけると、残りを名前順で末尾に足す（schemafile.go の OrderViews のコメントとコード）。偽の辺が増えても順序が変わりうるだけで、ダンプは失敗しない。リテラルに別のビューの修飾名を書くビューは現実には稀で、VIEW_TABLE_USAGE がない MariaDB では他に構文解析なしの手段がない。コメントに理由を書いた。大文字小文字の指摘（同じ関数）は受け入れて直した。
+- 却下の理由: 循環はダンプのエラーにならない。`schemafile.OrderViews` は循環を見つけると、残りを名前順で末尾に足す（schemafile.go の OrderViews のコメントとコード）。ダンプは失敗しない。ただし偽の辺が本物の依存と循環を作ると、残りが名前順になって本物の依存の順が崩れ、復元で `CREATE VIEW` が参照先の無さで失敗しうる（B-146 で認めた影響。ダンプの時点では分からず、復元で初めて出る）。リテラルに別のビューの修飾名を書くビューは現実には稀で、VIEW_TABLE_USAGE がない MariaDB では他に構文解析なしの手段がない。コメントに理由を書いた。大文字小文字の指摘（同じ関数）は受け入れて直した。
 - 初出: B-038
-- 再出: 0
+- 再出: 1（B-146: 偽の循環で本物の依存の順が崩れ、復元で失敗しうる影響を書き足した）
 
 ## R-063 MariaDB の `INVISIBLE` 列が EXTRA に出ず、黙って落ちる
 - 対象: internal/source/dialect.go の mariadb（`columns` を共有）
@@ -630,9 +630,10 @@
 ## R-087 トリガーの `character_set_client` / `collation_connection` を残さない
 - 対象: internal/schemafile/triggers.go の WriteTriggers
 - 指摘: 作成時の接続の文字コードを残さないと、復元したトリガーの属性が変わり、照合順序に敏感な比較の挙動が変わりうる。
-- 却下の理由: B-046 で確定した仕様（設計書 12 節の B-046、README の Triggers 節）。全ファイルは固定ヘッダーの `SET NAMES utf8mb4` で流し、本体のテキストは `utf8mb4` で読み書きするので、本体は変わらない。属性まで残すと、サーバーや接続の設定でダンプが変わり、「環境依存の値を出力に混ぜない」（決定性）に反する。`sql_mode` は本体の解釈を変えるので残す。
+- 却下の理由: B-046 で確定した仕様（設計書 12 節の B-046、README の Triggers 節）。全ファイルは固定ヘッダーの `SET NAMES utf8mb4` で流し、本体のテキストは `utf8mb4` で読み書きするので、本体の文字は変わらない。属性まで残すと、出力に作成時の接続ごとの値が混ざり、全ファイルを 1 つの文字セットで流す方針に合わない。`sql_mode` は本体の解釈を変えるので残す。
+- 影響（B-146 で書き足した）: 文字セットと照合順序はオブジェクトごとに `information_schema` に保存された値で、残しても決定性は損なわない。残さない理由は、全ファイルを `SET NAMES utf8mb4` で流す方針（出力を 1 つの文字セットにそろえる）にある。その代償として、`utf8mb4` 以外の接続で作ったトリガー・ルーチン・イベントの本文にある文字列リテラルは、復元後は `utf8mb4` の照合順序で比較される。照合順序に敏感な比較の結果が変わりうる。ルーチンの文字列引数と `Database Collation` も同様。意図した仕様の損失で、README の Routines / Triggers / Events の節に「残さない」と書いてある。
 - 初出: B-046
-- 再出: 1（B-048: イベントの `character_set_client` / `collation_connection` / `Database Collation` でも同じ指摘。理由は同じで、`schemafile.WriteEvents` にコメントを足した）
+- 再出: 2（B-048: イベントの `character_set_client` / `collation_connection` / `Database Collation` でも同じ指摘。理由は同じで、`schemafile.WriteEvents` にコメントを足した。B-146: 理由の「決定性に反する」は成り立たないので、書き換えた）
 
 ## R-088 ダンプしたテーブルに属さないトリガーも出力される
 - 対象: internal/dump/dump.go の dumpDB（snap.Triggers）

@@ -415,7 +415,8 @@ func postgresDefault(c source.ColumnDef, col sqlvalue.PGColumn) (string, bool) {
 
 // NewRowWriter implements Writer. Each value is rendered as a PostgreSQL
 // literal when its row arrives; the split and the INSERT boundaries are decided
-// on the rendered text of that row alone. Each file runs in one transaction. A
+// on the rendered text of that row and the bytes since the previous cut (see
+// datafile.Write). Each file runs in one transaction. A
 // table or a value PostgreSQL cannot hold fails with the table (and column), so
 // the dump stops instead of changing it.
 func (p *Postgres) NewRowWriter(db string, t source.TableInfo, open OpenFile) (RowWriter, error) {
