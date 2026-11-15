@@ -10,8 +10,9 @@ import (
 // order, as the INSERT statements of one or more data files. Only the row being
 // added and the write buffer are held, so memory does not grow with the number
 // of rows. The bytes are those of Split followed by WriteStatements on each
-// group: both decisions (where a statement ends, where a file ends) depend on
-// the row alone, never on how many rows follow.
+// group. Where a file ends depends on the row alone. Where a statement ends
+// depends on the row and on the bytes since the previous cut (MaxInsertBytes);
+// neither depends on how many rows follow.
 type Stream struct {
 	open    func() (io.WriteCloser, error)
 	header  string

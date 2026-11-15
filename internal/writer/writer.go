@@ -17,7 +17,7 @@ import (
 // Schema is everything the schema file of one database is made of, as read
 // from the source: nothing in it is yet adapted to a target DBMS. The table
 // and view definitions (Create) are still MySQL SHOW CREATE text; a writer for
-// another DBMS needs them as structure, which is for its own backlog item.
+// another DBMS builds its own definitions from the structure in Defs.
 type Schema struct {
 	DB             string
 	CreateDatabase string
@@ -201,7 +201,8 @@ func infallible(f func([]sqlvalue.Value) []string) func([]sqlvalue.Value) ([]str
 
 // keyColumns returns the indexes in a row of the columns the rows of t are
 // ordered by, or nil when t has no such key or a key column is not part of the
-// row (a generated column), in which case the whole row is used.
+// row (a generated column), in which case the whole row is used. Then updating
+// any column of a row can move a file boundary (see datafile.Split).
 func keyColumns(t source.TableInfo) []int {
 	idx := make([]int, 0, len(t.OrderBy))
 	for _, k := range t.OrderBy {

@@ -50,8 +50,11 @@ func HeaderUse(db string) string {
 // groups that become separate data files. A group ends after a row whose
 // key hash modulo rowsPerFile is zero, and after the last row. keyCols are the
 // indexes of the key columns in a row; the hash is the mixed (mix32) FNV-1a
-// 32-bit hash of those values, so updating a non-key column never moves a boundary. Without
-// key columns (a table without a usable key) the whole row is hashed instead.
+// 32-bit hash of those values, so updating a non-key column never moves a
+// boundary. With no key columns (empty or nil keyCols) the whole row is hashed
+// instead, as the bytes of the row joined by commas. That is a table without a
+// usable key, and also a table whose key has a generated column (see
+// writer.keyColumns); there updating any column can move a boundary.
 // Content-defined cuts make the sizes vary (rowsPerFile is only an average)
 // and a table may turn from one group into several as it grows; both are
 // intended (review ledger R-026, R-027). rowsPerFile 0 returns one group. The result is never empty: a table without
@@ -127,7 +130,9 @@ func mix32(h uint32) uint32 {
 // Statement boundaries are content-defined: a statement is closed after a row
 // whose FNV-1a 32-bit hash, mixed by mix32, modulo RowsPerInsert is zero,
 // after the row that makes the statement reach MaxInsertBytes, and after the
-// last row. Removing one row therefore only affects boundaries next to it.
+// last row. The hash cut depends on the row alone. The size cut depends on the
+// bytes since the previous cut, so removing or changing a row can move the size
+// cuts after it, but only up to the next hash cut, where the count starts again.
 func Write(w io.Writer, db, table string, columns []string, listColumns bool, rows [][]string, opt Options) error {
 	return WriteStatements(w, Header(db), "", sqlvalue.QuoteIdent, table, columns, listColumns, rows, opt)
 }

@@ -22,7 +22,8 @@ import (
 // What SQLite cannot represent is reported through Schema.Warn, never dropped
 // silently: generated columns, ON UPDATE CURRENT_TIMESTAMP, default
 // expressions, FULLTEXT and SPATIAL indexes, expression indexes, CHECK
-// constraints, foreign keys into another database, and views.
+// constraints, foreign keys into another database, and the views that cannot
+// be converted (sqliteview.go).
 type SQLite struct {
 	data datafile.Options
 }
@@ -333,7 +334,8 @@ func quoteList(names []string) string {
 
 // NewRowWriter implements Writer. Each value is rendered as a SQLite literal
 // when its row arrives; the split and the INSERT boundaries are decided on the
-// rendered text of that row alone. Each file runs in one transaction, so
+// rendered text of that row and the bytes since the previous cut (see
+// datafile.Write). Each file runs in one transaction, so
 // restoring a large table is not one commit per statement.
 func (s *SQLite) NewRowWriter(_ string, t source.TableInfo, open OpenFile) (RowWriter, error) {
 	return newStreamWriter(t, open, sqliteDataHeader, sqliteDataFooter, sqlvalue.QuoteIdent, s.data,
