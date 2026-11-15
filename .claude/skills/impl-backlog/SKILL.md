@@ -5,43 +5,41 @@ description: Use when the user asks to implement, work on, start, or pick up an 
 
 # impl-backlog
 
-`BACKLOG.md` の項目を1つ選び、**仕様の確定だけをユーザーと行い、その後は PR の作成まで自動で進める**。項目の形式・ID規則は `mgmt-backlog` に従う。
+`BACKLOG.md` の項目を1つ選び、PR の作成まで自動で進める。**`ready` の項目は、質問なしで最後まで進める**。`todo` の項目は、先に仕様の確定だけをユーザーと行う。項目の形式・ID規則は `mgmt-backlog` に従う。
 
 **REQUIRED SUB-SKILL:** 実装には superpowers:test-driven-development を使う。
 
 ## 手順
 
-### 前半: 仕様の確定（ユーザーに聞くのはここだけ）
+### 前半: 対象と仕様
 
-1. **対象を決める**: 先に `git fetch origin main` を実行する。ユーザー指定のID/タイトル。指定が無ければ `task backlog:next` を実行し、候補の先頭（最も優先度が高く ID が最小）を提案して、了承を得る。指定した項目が blocked 欄にあれば、着手せずに待っている依存先を伝え、先に依存先を実装することを提案する。`# Done` 節の項目は対象外。
-   - **依存先は `origin/main` で確かめる**: 手元の `BACKLOG.md` は、未マージのブランチ上だと依存先が完了に見える。対象の `依存:` の項目が、`git show origin/main:BACKLOG.md` の `# Done` 節にあるかを確かめる（候補の一覧も、`git show origin/main:BACKLOG.md > $TMPDIR/BACKLOG.origin-main.md` を作り、`task backlog:next FILE=$TMPDIR/BACKLOG.origin-main.md` で見る）。
+1. **対象を決める**: 先に `git fetch origin main` を実行する。ユーザー指定のID/タイトル。指定が無ければ `task backlog:next REF=origin/main` を実行し、ready 欄の先頭（最も優先度が高く ID が最小）を、**了承を取らずに**選ぶ。ready 欄が空なら、todo 欄の先頭を提案して、了承を得る。`# Done` 節の項目は対象外。
+   - **依存先は `origin/main` で確かめる**: 手元の `BACKLOG.md` は、未マージのブランチ上だと依存先が完了に見える。指定された項目が `task backlog:next REF=origin/main` の blocked 欄にあれば、着手せずに待っている依存先を伝え、先に依存先を実装することを提案する。
    - 依存先が手元のブランチにだけ完了とある（`origin/main` に無い）場合は、着手せず、そのブランチの PR が未マージであることを伝える。「マージを待つ」「そのブランチを起点に積む」「別の項目にする」の中から、ユーザーに選んでもらう。
-2. **読んで調べる**: 項目のブロック、設計書（`docs/superpowers/specs/`）の関連する節、関連コード、`docs/review-decisions.md` を読む。実機で確かめられる事実（MySQL の挙動、ツールの有無など）は、聞かずにここで確かめる。1つのPRに収まらない大きさなら、実装を始めず、`mgmt-backlog` の「項目の大きさ」に従って分割を提案する。
-3. **質問をまとめて1回で聞く**: 調べても残る不明点のうち、次のものだけを `AskUserQuestion` で1回にまとめて聞く（最大4問、推奨案を先頭に）。
-   - 検証できない受け入れ条件
-   - 複数の案があり、好みや方針で決まるもの（フラグ名、既定値、互換性など）
-
-   一般的な既定値で決められるものは聞かず、「前提」として決める。聞くことが無ければ聞かない。
-4. **仕様を確定して記録する**: 答えと前提を、項目の概要と受け入れ条件に反映する（`mgmt-backlog` の更新）。「仕様を確定した。以降は PR の作成まで自動で進める」と一言伝える。
+   - `git status` で、`BACKLOG.md` に対象以外の項目の未 commit の変更があれば、着手せずに伝える（この項目の PR に混ざるため）。
+2. **仕様を確かめる**: 対象の status（手元の `BACKLOG.md`）で分ける。
+   - **`ready`**: 質問しない。項目のブロックと関連コードを読む。台帳（`docs/review-decisions.md`）は全文を読まず、触るファイル名や関数名で `rg` し、当たった項目だけを読む。`- 仕様:` の前提が、今のコードで成り立つかを確かめる。崩れていたら（参照した関数が無い、依存先が仕様を変えた、など）、実装せず、見出しを `[todo|Pn]` に戻し、理由を報告して止まる。
+   - **`todo`**: `refine-backlog` の手順 2〜4（調べる、まとめて聞く、記録して `ready` にする）を行う。ユーザーに聞くのはここだけ。終えたら「仕様を確定した。以降は PR の作成まで自動で進める」と一言伝える。
 
 ### 後半: 自動実行（質問しない）
 
-5. **ブランチを用意する**: 下の「ブランチ名」に従う（先に `git fetch origin main`。起点は `origin/main`）。用意した直後に `task fmt` を実行し、`git status` に差分が出たら、この項目と関係のない整形・fix の取り込み漏れ。実装を始める前に、別の commit（`chore: apply go fmt / go fix ...`）にする。
-6. **実装**: TDDで、受け入れ条件を1つずつテストに落として満たす。区切りごとに `task check` を実行する（下の「チェック」）。
-7. **整理**: `simplify` スキルで差分を整理する（再利用、単純化、効率）。コードが変わったら `task check` を通し直す。
-8. **レビューと判断**: 下の「レビューの判断」に従う。
-9. **検証**: superpowers:verification-before-completion に従い、最終の差分で「チェック」を全て実行し、出力を確認する。
-10. **完了を記録**: 実装と同じ変更の中で、受け入れ条件のチェックを `[x]` にし、全て満たしたときだけ `done` にして、ブロックを `# Done` 節へ移す。`BACKLOG.md` に実装中の中間状態は書かない。
-11. **commit・push・PR**: 下の「PR」に従う。マージはしない。
+3. **ブランチを用意する**: 下の「ブランチ名」に従う（先に `git fetch origin main`。起点は `origin/main`）。用意した直後に `task fmt` を実行し、`git status` に差分が出たら、この項目と関係のない整形・fix の取り込み漏れ。実装を始める前に、別の commit（`chore: apply go fmt / go fix ...`）にする。
+4. **実装**: TDDで、受け入れ条件を1つずつテストに落として満たす。区切りごとに `task check` を実行する（下の「チェック」）。
+5. **整理**: `simplify` スキルで差分を整理する（再利用、単純化、効率）。コードが変わったら `task check` を通し直す。
+6. **レビューと判断**: 下の「レビューの判断」に従う。
+7. **検証**: superpowers:verification-before-completion に従い、最終の差分で「チェック」を全て実行し、出力を確認する。
+8. **完了を記録**: 実装と同じ変更の中で、受け入れ条件のチェックを `[x]` にし、全て満たしたときだけ `mgmt-backlog` の「完了」を行う（見出しを `[done|Pn]` にして `# Done` 節へ、本文は `docs/backlog-done.md` へ。どちらも ID の昇順の位置）。`BACKLOG.md` に実装中の中間状態は書かない。
+9. **commit・push・PR**: 下の「PR」に従う。マージはしない。
 
 ## 自動で進めるときの規則
 
 - 後半では質問しない。途中で新しい不明点が出たら、一般的な既定値で決め、PR の本文の「前提」に書く。
 - 次の場合は、質問ではなく**止まって報告する**（PR は作らない）。
   - 同じ ID のブランチが既にある
+  - `ready` の項目の前提が、今のコードで成り立たない（`todo` に戻す）
   - 同じ失敗が 3 回続けて直らない
   - 受け入れ条件を満たすのに、項目の範囲を超える変更が要る（分割を提案する）
-- 次の場合は **draft の PR** にして、項目は `todo` のまま残す。未達の条件と理由を本文に書く。
+- 次の場合は **draft の PR** にして、項目は完了にしない（status は `ready` のまま残す）。未達の条件と理由を本文に書く。
   - 満たせなかった受け入れ条件がある
   - 必須の統合テストを実行できなかった（Docker が使えないなど）
 
@@ -49,14 +47,21 @@ description: Use when the user asks to implement, work on, start, or pick up an 
 
 - **`task check`**: `go fmt`、`go fix`、`golangci-lint`、単体テストを順に実行する。`go fmt` と `go fix` はファイルを書き換えるので、実行後に `git diff` で意図しない変更がないか見る。失敗したら、直すまで次に進まない。
   - この項目と関係のないファイルが書き換わっていたら、**戻さない**（戻しても次の `task check` でまた出る）。取り込み漏れとして、別の commit（`chore: apply go fmt / go fix ...`）にする。PR の本文の「概要」に 1 行書く。
-- **`task test:integration`**: Docker で MySQL 8.0 と 8.4 を起動して統合テストを実行する。`internal/source`・`internal/dump`・`internal/datafile`・`internal/schemafile`・`internal/sqlvalue` を変えたとき、または受け入れ条件が実機の MySQL での確認を求めているときは、検証（9.）で必ず実行する。
+- **`task test:integration`**: Docker で MySQL 8.0 と 8.4（と PostgreSQL 17）を起動して統合テストを実行する。`internal/source`・`internal/dump`・`internal/datafile`・`internal/schemafile`・`internal/sqlvalue`・`internal/writer`・`internal/extsort` を変えたとき、または受け入れ条件が実機の MySQL での確認を求めているときは、検証（7.）で必ず実行する。
+- **他のサーバー向けの統合テスト**: `task test:integration` には含まれない。次の変更をしたときは、検証（7.）で該当するものも実行する（詳しい条件と変数は `Taskfile.yml` のコメント）。
+
+  | 変えたもの | タスク |
+  |---|---|
+  | PostgreSQL 向けのライタ（`internal/writer/postgres*.go`） | `task test:integration:postgres` |
+  | 方言（`internal/source/dialect.go`）、セッションの設定、カタログのクエリ | `task test:integration:mariadb`、`task test:integration:mysql57`、`task test:integration:mysql56` |
+
 - 統合テストは `MYSQLDANCE_TEST_DSN` が無いと skip される。`task test` の結果だけで統合テストが通ったとは言わない。
 
 ## レビューの判断
 
 `code-review` スキルを `medium` で実行する（バグの検出が中心）。`--fix` の自動適用は使わず、指摘ごとに自分で判断する。
 
-1. **台帳と照合する**: 各指摘を `docs/review-decisions.md` と、対象のファイルと内容で照合する（`rg`）。一致したら、再検討せずに却下し、台帳の「再出」を 1 増やす。
+1. **台帳と照合する**: 各指摘を `docs/review-decisions.md` と、対象のファイルと内容で照合する（`rg`。全文は読まない）。一致したら、再検討せずに却下し、台帳の「再出」を 1 増やす。
 2. **検証する**: 残った指摘は、判断の前に確かめる。失敗するテストを書くか、コードを読んで失敗のシナリオを具体的に追う。
 3. **判断する**:
 
@@ -64,7 +69,7 @@ description: Use when the user asks to implement, work on, start, or pick up an 
    |---|---|---|
    | 受け入れ | 失敗するテストが書ける。または、`CLAUDE.md` の不変条件（決定性、差分の局所性、黙って落とさない）、セキュリティ、データの破損・欠落に当たると確認できた。または、受け入れ条件・確定した仕様に反する | 失敗するテストを先に書き、直す |
    | 範囲外 | 正しい指摘だが、この項目の範囲を超える | 直さず、`mgmt-backlog` で新規項目に積む。PR の本文に項目の ID を書く |
-   | 却下 | 失敗のシナリオを示せない（推測）。確定した仕様や設計書の【決定】に反する提案。`CLAUDE.md` や linter の規約にない好みの問題 | 台帳に追記する（下記） |
+   | 却下 | 失敗のシナリオを示せない（推測）。確定した仕様や設計書の【決定】に反する提案。`CLAUDE.md` や linter の規約にない好みの問題 | 好みの問題は PR の本文に書くだけ。それ以外は台帳に追記する（下記） |
 
    - 判断できないものは、受け入れ（安全側）にする。
    - データの破損、セキュリティ、決定性に関する指摘は、再現テストか、起きない理由の確認（テストまたは仕様の根拠）なしに却下しない。
@@ -72,21 +77,23 @@ description: Use when the user asks to implement, work on, start, or pick up an 
 
 ### 同じ指摘を繰り返さない
 
-却下した指摘は、その場で次の2つを行う。
+却下した指摘のうち、**仕様・設計の決定や、コードの挙動の確認を根拠に却下したもの**は、その場で次の2つを行う。
 
 - `docs/review-decisions.md` に追記する（書き方は台帳の冒頭にある。初出は B-NNN）。
 - 却下の理由がコードの意図に関わるなら、指摘された箇所に理由を 1 行のコメント（英語）で足す。レビュアーが次回それを読んで、同じ指摘をしなくなる。
+
+好みの問題（名前、書き方、メッセージの文面など、規約にない提案）だけで却下したものは、台帳に書かない。PR の本文の「レビューの判断」に残す。
 
 台帳の「再出」が 1 以上の項目がある場合は、コメントが足りていない。コメントを足す。台帳の変更は、その項目の PR に含める。
 
 ## PR
 
 1. **commit**: 英語で `feat(B-NNN): ...` や `fix(B-NNN): ...` の形式（goreleaser の変更履歴の分類に効く）。1〜数個にまとめる。
-2. **`origin/main` に追従する**: push の前に `git fetch origin main` を実行し、`git log --oneline HEAD..origin/main` に commit があれば `git merge origin/main` で取り込む（rebase や force push はしない）。衝突したら解消する。`BACKLOG.md` の `# Done` 節は、他の項目の完了記録と必ず衝突するので、両方の項目を残す。解消したら `task check` を通し直し、マーカーが残っていないことを `rg '^(<<<<<<<|=======|>>>>>>>)'` で確かめる。
+2. **`origin/main` に追従する**: push の前に `git fetch origin main` を実行し、`git log --oneline HEAD..origin/main` に commit があれば `git merge origin/main` で取り込む（rebase や force push はしない）。衝突したら解消する。`BACKLOG.md` の `# Done` 節と `docs/backlog-done.md` が他の項目の完了記録と衝突したら、両方の項目を ID の昇順で残す。解消したら `task check` を通し直し、マーカーが残っていないことを `rg '^(<<<<<<<|=======|>>>>>>>)'` で確かめる。
 3. **push**: `git push -u origin <ブランチ>`。force push はしない。
 4. **作成**: `gh pr create --base main --title "B-NNN: <項目のタイトル>"`。本文は日本語で、次の順に書く。
    - 概要（項目の内容と、何を変えたか）
-   - 確定した仕様と、置いた前提
+   - 確定した仕様と、置いた前提（項目の `- 仕様:` と、後半で置いた前提）
    - 受け入れ条件の結果（1つずつ）
    - チェックの結果（実行したタスクと結果。統合テストを実行したか）
    - レビューの判断（指摘 / 判断 / 理由の表。台帳で却下したものは台帳の ID）
@@ -111,8 +118,8 @@ description: Use when the user asks to implement, work on, start, or pick up an 
 
 ## 守ること
 
-- 1回の依頼で扱う項目は1つ。複数指定されたら1つずつ順に完了させる。
+- 1回の依頼で扱う項目は1つ。複数指定されたら1つずつ順に完了させる。項目が `ready` なら、1項目ごとに新しいセッションか subagent で実行する方が、前の項目の文脈を持ち越さない。
 - 実装中に見つけた別件は実装せず、`mgmt-backlog` で新規項目として追加する。
-- `BACKLOG.md` の変更は、対象項目のブロックと、別項目化した新規項目だけ。
+- `BACKLOG.md` と `docs/backlog-done.md` の変更は、対象項目のブロックと、別項目化した新規項目だけ。
 - 前から残る `go fmt` / `go fix` の結果は、この項目の範囲外ではなく、別 commit で取り込む（上の「チェック」）。
 - 整理（`simplify`）とレビュー（`code-review`）を省いて、検証や PR に進まない。ただし、この項目で `BACKLOG.md` や文書しか変えていない場合は、コードのレビューは対象外とし、PR の本文にその旨を書く。

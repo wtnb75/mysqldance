@@ -2,6 +2,10 @@
 
 `impl-backlog` のコードレビューで**却下した指摘**の台帳。同じ指摘が再び出たとき、再検討せずにこの台帳で判断するために残す。受け入れた指摘（コードを直したもの）は書かない。
 
+- **書くもの**: 仕様・設計の決定や、コードの挙動の確認（テスト、仕様の根拠）を理由に却下した指摘。
+- **書かないもの**: 好みの問題（名前、書き方、メッセージの文面など、`CLAUDE.md` や linter の規約にない提案）だけで却下した指摘。PR の本文に残す。
+- **読み方**: 全文を読まない。対象のファイル名や関数名で `rg -n -A 5 '<名前>' docs/review-decisions.md` を実行し、当たった項目だけを読む。
+
 ## 書き方
 
 ```markdown
@@ -14,6 +18,7 @@
 ```
 
 - ID は `R-NNN`（3桁以上、最大 ID + 1）。
+- 完了した項目の本文は `BACKLOG.md` から `docs/backlog-done.md` に移した。「却下の理由」が「B-NNN の確定した仕様・前提・受け入れ条件」を参照していて、その項目が完了済みなら、`docs/backlog-done.md` にある。既存の項目の書き換えはしない。
 - 対象のコードが変わって理由が当てはまらなくなったら、項目を見直して更新または削除する。
 - 再出が 1 以上の項目は、指摘された箇所に理由のコメント（英語）が足りていない。コメントを足す。
 - B-049 で `internal/source/source.go` を分けた。「対象」に `source.go` とある項目の関数は、次のファイルにある。接続・ロック・スナップショット（`Open`、`start`、`startParallel`、`lockGlobal`、`pingWithin`、`Use`、`use`、`checkDatabases`、`firstNonInnoDB`、`Close`）は `connect.go`、カタログ（`Tables`、`checkTableType`、`catalogTypeName(s)`、`tableColumns`）は `catalog.go`、行の読み出し（`Rows`、`EachRow`）は `rows.go`、型（`TableInfo`、`Snapshot`）は `source.go`。対象の書き換えはしない。

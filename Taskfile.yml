@@ -93,30 +93,36 @@ tasks:
 
   # Backlog helpers. BACKLOG.md format: see .claude/skills/mgmt-backlog.
   #   FILE  backlog file (default BACKLOG.md)
-  #   N     number of candidates shown by backlog:next (default 5)
+  #   REF   git ref to read FILE from instead of the working tree, e.g.
+  #         REF=origin/main (an unmerged branch can show a dependency as done)
+  #   N     number of candidates shown per status by backlog:next (default 5)
   backlog:stats:
     desc: Show backlog item counts per priority and status
     vars:
       FILE: '{{.FILE | default "BACKLOG.md"}}'
+      SRC: '{{if .REF}}git show {{.REF}}:{{.FILE}}{{else}}cat {{.FILE}}{{end}}'
     preconditions:
-      - sh: test -f {{.FILE}}
-        msg: "{{.FILE}} not found"
+      - sh: "{{.SRC}} > /dev/null"
+        msg: "{{.FILE}} not found{{if .REF}} in {{.REF}}{{end}}"
     cmds:
-      - awk -v mode=stats -f scripts/backlog.awk {{.FILE}}
+      - "{{.SRC}} | awk -v mode=stats -f scripts/backlog.awk"
 
   backlog:next:
-    desc: Show the top todo candidates (highest priority, lowest ID first) and items blocked by dependencies
+    desc: Show the top candidates (ready, then todo; highest priority, lowest ID first) and items blocked by dependencies
     vars:
       FILE: '{{.FILE | default "BACKLOG.md"}}'
       N: '{{.N | default "5"}}'
+      SRC: '{{if .REF}}git show {{.REF}}:{{.FILE}}{{else}}cat {{.FILE}}{{end}}'
     preconditions:
-      - sh: test -f {{.FILE}}
-        msg: "{{.FILE}} not found"
+      - sh: "{{.SRC}} > /dev/null"
+        msg: "{{.FILE}} not found{{if .REF}} in {{.REF}}{{end}}"
     cmds:
-      - echo "== next candidates (first one is picked automatically) =="
-      - awk -v mode=ready -f scripts/backlog.awk {{.FILE}} | sort | head -n {{.N}}
+      - echo "== ready (spec confirmed; impl-backlog picks the first one without asking) =="
+      - "{{.SRC}} | awk -v mode=next -v want=ready -f scripts/backlog.awk | sort | head -n {{.N}}"
+      - echo "== todo (spec not confirmed; refine-backlog first) =="
+      - "{{.SRC}} | awk -v mode=next -v want=todo -f scripts/backlog.awk | sort | head -n {{.N}}"
       - echo "== blocked (unmet dependencies) =="
-      - awk -v mode=blocked -f scripts/backlog.awk {{.FILE}} | sort
+      - "{{.SRC}} | awk -v mode=blocked -f scripts/backlog.awk | sort"
 
   # Sample data for trying mysqldance by hand: scripts/sample/*.sql is loaded
   # into a MySQL container, in file name order. Overridable variables:

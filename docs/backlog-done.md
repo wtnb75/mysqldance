@@ -1,0 +1,694 @@
+# Backlog: done items
+
+`BACKLOG.md` の `# Done` 節にある項目の本文（概要、仕様、受け入れ条件）。`BACKLOG.md` には見出しの 1 行だけを残し、本文はここに置く。完了のときに `impl-backlog` が、ID の昇順の位置に入れる。
+
+普段は読まない。完了した項目の仕様や前提を確かめるときに、`rg -n -A 12 '^## B-NNN ' docs/backlog-done.md` で 1 項目だけ読む。
+
+## B-003 [done|P2] 複数 DB を 1 つのスナップショットで読む
+- 概要: 現状は DB ごとに別の接続・別のスナップショットで読むため、DB をまたぐ外部キーやビューの整合性は保証されない。複数 DB を 1 接続・1 トランザクションで読む形にする（設計書 12 節）。
+- 前提: 接続は 1 本・トランザクションは 1 つ。DB の切り替えは `USE` で行い、DB ごとのキャッシュ（列カタログ、警告）は切り替えで捨てる。1 DB のときの出力と挙動は変えない。フラグの追加はしない。DDL（スキーマ変更）はトランザクションの対象外で、`information_schema` や `SHOW CREATE` は MVCC されない（従来どおり）。
+- 受け入れ条件:
+  - [x] 複数 DB の指定時、全 DB が同一時点の内容になる（最初の DB の読み出し後に別の DB を更新しても、後続の DB のダンプに現れない）
+  - [x] README の「Limitations」から該当項目を削除する
+
+## B-004 [done|P2] 出力をアトミックにする
+- 概要: 一時的な名前で書いてからリネームし、ダンプが途中で失敗しても出力先に不完全な DB が残らないようにする（設計書 12 節）。
+- 前提（仕様確定）:
+  - 単位は 1 回の実行（全 DB）。全ての DB の全ファイルを出力先内の一時ファイル `.mysqldance-NNNN.tmp`（`.sql` ではないので initdb が読まない）に書き切ってから、まとめて確定する。
+  - 確定は「リネームで置き換え → 今回の出力に無い古い所有ファイルを削除」の順。読み出し・書き込み・Ctrl-C の失敗は確定の前に起きるので、前回のダンプには触れない。
+  - 確定中の失敗と SIGKILL・電源断は、ファイルシステムに複数ファイルのアトミックな更新がないため範囲外（README に書く）。異常終了で残った一時ファイルは次回の実行の最初に掃除する。
+  - 所有ファイルが通常ファイルでない（symlink など）場合は、従来どおり何も書く前にエラーにする（確定の直前にも再検査する）。
+  - 一時ファイルは rename の前に fsync する。同じ出力先への並行実行は対象外。
+- 受け入れ条件:
+  - [x] 書き込み中の失敗・Ctrl-C のあとも、出力先に前回のダンプが完全な形で残る
+  - [x] 失敗しても一時ファイルが残らない。異常終了で残った一時ファイルは次回の実行で掃除される
+  - [x] 複数 DB の途中で失敗しても、先に処理した DB の前回の出力が変わらない
+  - [x] README の「Failure handling」を新しい挙動に合わせて更新する
+
+## B-005 [done|P2] 非トランザクションテーブル（MyISAM など）の一貫性を確保する
+- 概要: MVP は警告して続行する。`FLUSH TABLES WITH READ LOCK`（FTWRL）で取得する（`LOCK TABLES` は InnoDB のスナップショットのトランザクションを暗黙にコミットするため使わない）。対象の DB に非 InnoDB の基本テーブルがあるときだけ、FTWRL → `START TRANSACTION WITH CONSISTENT SNAPSHOT` の順に開始し、ダンプが終わる（`Close`）までロックを保持する。非 InnoDB が無ければ従来どおりロックしない。古いバージョンのデータを持ってくる話と合わせて扱う（設計書 12 節）。
+- 確定した仕様:
+  - 既定: 非 InnoDB があるとき自動でロックする。`--no-lock` を付けるとロックせず、従来の「警告して続行」に戻る。
+  - ロックを取れない（RELOAD 権限が無いなど）ときはエラーで終了する。メッセージに `--no-lock` での回避を書く。
+  - ロックを取らずに始めたのに、後で非 InnoDB のテーブルが現れたとき（ダンプ中の `CREATE TABLE`）もエラーにする（黙って非一貫にしない）。
+  - 非 InnoDB の警告は、ロックを取ったときは出さない（一貫しているため）。`--no-lock` のときは従来どおり出す。
+- 受け入れ条件:
+  - [x] MyISAM を含む DB のダンプで、ロックを使って一貫した内容を取得できる（ダンプ中、他の接続の MyISAM への書き込みが待たされる）
+  - [x] InnoDB だけの DB ではロックを取らない（他の接続の書き込みが待たされない）
+  - [x] `--no-lock` でロックを取らず、非 InnoDB の警告が出る
+  - [x] RELOAD 権限が無いときはエラーになり、`--no-lock` を案内する
+  - [x] ロックによる影響（書き込みの待たせ方、必要な権限、`--no-lock`）を README に書く
+
+## B-009 [done|P2] 巨大テーブルを主キー範囲で分割して出力する
+- 概要: ファイル名の末尾に番号を足す（`mydb.10-data.orders.0001.sql`）。辞書順にロードして正しく復元できること（設計書 4.1 節・12 節）。
+- 確定した仕様:
+  - フラグ `--rows-per-file N`（1 ファイルあたりの平均行数）。既定 0 = 分割しない（既存の出力は変わらない）。
+  - 境界は内容で決める。主キー（なければ並べ替えに使う一意キー）の列の値の FNV-1a 32 ビットハッシュ（混ぜたもの）を N で割った余りが 0 の行の後でファイルを閉じる。キーが更新されない限り、1 行の更新で境界は動かない。キーのないテーブルは行の文字列のハッシュを使う。
+  - ファイル名: 分割した結果が 2 ファイル以上のときだけ `<db>.10-data.<table>.0001.sql` のように番号を付ける。1 ファイルのときは `<db>.10-data.<table>.sql`（従来どおり）。番号は 4 桁以上のゼロ詰めで、ファイル数の桁数が 4 を超えるときは全ファイルを同じ桁数にそろえる（辞書順を保つため）。
+  - 各ファイルは固定ヘッダーを持つ（単独でも流せる）。ファイルの終わりでは `INSERT` 文も閉じる。
+- 受け入れ条件:
+  - [x] 分割後のファイルを辞書順にロードして、元と同じデータに復元できる
+  - [x] 1 行を更新したときの差分が該当する 1 行だけである
+
+## B-012 [done|P1] TLS で MySQL に接続できるようにする
+- 概要: `source.Open` は `mysql.NewConfig()` に TLS を設定しておらず、フラグもない（コードを読んだ範囲。`rg -i 'tls|ssl'` でヒットなし）。リモートの MySQL に TCP で繋ぐと、パスワード認証の交換と全行のデータが平文で流れる可能性がある。個人情報を含みうるダンプなので優先度を上げる。着手時に、現状の接続が平文であることをパケットまたはサーバー側の `Ssl_cipher` で確かめる。
+- 受け入れ条件:
+  - [x] `--ssl-mode`（`disabled` / `preferred` / `required` / `verify-ca` / `verify-identity`。既定は `preferred`）と `--ssl-ca FILE` を追加する。`preferred` はサーバーが TLS 対応なら暗号化し、非対応なら平文にフォールバックする（証明書は検証しない）。`required` は検証しないが、`--ssl-ca` を指定したときは CA で検証する。`verify-ca` は CA チェーンを検証する（`--ssl-ca` 必須）。`verify-identity` はチェーンとホスト名を検証する（`--ssl-ca` 省略時はシステムの CA。`--socket` とは併用不可）。Unix ソケットで `preferred` のときは TLS を使わない。クライアント証明書は対象外
+  - [x] TLS を必須にした場合（`required` 以上）、TLS 非対応のサーバーへは接続せずエラーにする
+  - [x] 統合テストで、TLS 接続時に `Ssl_cipher` が空でないこと、`disabled` では空であることを確認する
+  - [x] README の使い方に追記する（既定が `preferred` になったことを含む）
+
+## B-013 [done|P2] 出力ファイルのパーミッションを指定できるようにする
+- 概要: 出力ファイルは `0o666`（umask 適用）、ディレクトリは `0o755` で作られ、既定では同じホストの他ユーザーが読める。README に注意は書いてあるが、ツール側に絞る手段がない。ただし絞りすぎると `docker-entrypoint-initdb.d` として使うとき、コンテナ内の `mysql` ユーザーが読めなくなる。
+- 確定した仕様:
+  - フラグ `--file-mode MODE` と `--dir-mode MODE`（8 進数。`0640`・`750` など）。指定したときは umask に関係なくそのモードにする。
+  - 既定は現状維持（ファイルは `0666`、ディレクトリは `0755`、どちらも umask 適用）。`docker-entrypoint-initdb.d` で読めなくなるのを避けるため。README に書く。
+  - `--dir-mode` は、この実行が作った出力ディレクトリだけに効く。既存のディレクトリと、一緒に作る親ディレクトリのモードは変えない。
+  - 検証: 9 ビットの権限だけを受け付ける。ファイルは所有者が読めること（`0400` 以上）、ディレクトリは所有者が `rwx` を持つことを要求する。
+- 受け入れ条件:
+  - [x] ファイルとディレクトリのモードを指定するフラグを追加する（既定は現状維持か絞るかを決めて README に書く）
+  - [x] 既存の出力ディレクトリのモードは変えない
+
+## B-014 [done|P2] SIGTERM を処理し、終了時のクリーンアップを確実にする
+- 概要: `signal.NotifyContext` は `os.Interrupt` だけを受ける。`docker stop` や `kill` が送る SIGTERM では、書き込み中のファイルが途中で切れたまま残り、トランザクションもサーバー側のタイムアウトまで残る。また `Snapshot.Close` の `ROLLBACK` は `context.Background()` で実行するため、接続が切れていると待ち続ける可能性がある。B-004 のアトミック化とは別に、プロセス終了時の振る舞いとして直す。
+- 確定した仕様:
+  - SIGINT と SIGTERM を同じ経路（`signal.NotifyContext`）で受ける。
+  - `Close` の `ROLLBACK` は 5 秒で打ち切る。超えても接続を閉じるので、サーバー側のトランザクションはそこで終わる。
+- 受け入れ条件:
+  - [x] SIGTERM でも Ctrl-C と同じ経路で中断し、書き込み中のファイルを削除して終了コード 1 で終わる
+  - [x] `Close` の `ROLLBACK` にタイムアウトを設ける
+
+## B-015 [done|P3] 接続と読み取りのタイムアウトを設定できるようにする
+- 概要: `mysql.Config` に `Timeout` / `ReadTimeout` を設定していないため、サーバーが応答しなくなるとダンプが待ち続ける。`--connect-timeout`（既定 30s）と `--read-timeout`（既定 0 = 無制限）を追加し、`source.Config` 経由で `mysql.Config.Timeout` / `ReadTimeout` に渡す。`WriteTimeout` は追加しない（クライアントが送るのは短い SQL 文だけで、詰まりは読み取り側で検出できる）。
+- 前提: `ReadTimeout` は「応答を 1 回待つ時間」の上限で、行が届き始める前の長いクエリ（巨大テーブルの `ORDER BY`、`FLUSH TABLES WITH READ LOCK` の待ち）も対象になる。既定を 0 にするのはこのため。負の値はエラー。`--read-timeout` を `--lock-timeout` より短くすると、ロック待ちが先に打ち切られるので、README に書く。
+- 受け入れ条件:
+  - [x] `--connect-timeout`（既定 30s、0 = 無制限）を追加し、到達できないホスト、およびTCP接続は受けるが挨拶を返さないサーバーへの接続が指定時間で失敗する（最初の接続の確立全体に効く）
+  - [x] `--read-timeout`（既定 0 = 無制限）を追加し、応答しないサーバーへの問い合わせが指定時間で失敗する。既定では巨大テーブルの正常な読み出しを打ち切らない
+  - [x] 負の値はフラグ解析と `source.Open` の両方でエラーになる
+  - [x] `README.md` のフラグ表と、`--lock-timeout` との関係を更新する
+
+## B-016 [done|P2] FLOAT / DOUBLE のラウンドトリップ精度を検証する
+- 概要: `sqlvalue.Literal` は `FLOAT` / `DOUBLE` をテキストプロトコルの文字列のまま出す。サーバーがこの文字列を何桁で出すかによっては、復元後に値が変わる可能性がある（未確認。設計書 5 節の「浮動小数点の表記」にも検証の記載がある）。この項目は検証だけを行う。不一致が見つかったら、修正は別の項目として積む。
+- 結果: `DOUBLE` は `-0` を除いて一致、`FLOAT` は不一致（有効数字 6 桁で出るため）、`-0` は両方で符号が落ちる。修正は B-059。
+- 受け入れ条件:
+  - [x] 8.0 と 8.4 の実機で、ダンプ → 復元 → 元の値とビット単位で一致するかをテストする（`0.1`、`1e38`、`3.4028235e38`、`1.7976931348623157e308` などを含む）
+  - [x] 結果（一致か、不一致ならその値）を設計書の 11 節に書く
+  - [x] 不一致があれば、修正を新しい項目として `BACKLOG.md` に追加する
+
+## B-017 [done|P3] 行の整形とハッシュの割り当てを減らす
+- 概要: 行ごとに `strings.Join` を 2 回する（キーなしテーブルのソート用に `source.Rows` で 1 回、`datafile.Write` で 1 回）。`datafile.Write` は行ごとに `fnv.New32a()` と `[]byte(text)` を割り当て、`text + sep` も連結して新しい文字列を作る。B-044 のストリーム化で `Rows` の形が変わるなら、そちらに合わせて一緒に直す。
+- 前提: `source.Rows` のキーなしテーブルのソート用の `strings.Join` は、B-045 がメモリ内ソートごと置き換えるので触らない（レビュー台帳 R-045）。この項目は `datafile` の行ごとの割り当てを対象にする。
+- 結果: `fileStream.add` が行を 1 フィールドずつ書きながら FNV-1a を更新するようにし、`strings.Join`・`fnv.New32a()`・`[]byte` の割り当てをなくした。`keyHash` も同じ関数 `fnvAdd` を使う。ハッシュの対象のバイト列は変わらないので、出力もバイト単位で同じ（`legacy*` との比較テストが通る）。10 万行（5 列）、`go test ./internal/datafile -bench . -benchtime 20x〜40x -count 3〜5`（中央付近の値）、linux/arm64。「前」は `origin/main`（3346727）に `bench_test.go` だけを足して測った（旧実装は残していない）:
+
+  | ベンチマーク | 前 | 後 |
+  |---|---|---|
+  | `WriteStatements` | 14.9 ms、12.8 MB、200,010 allocs | 8.4 ms、4.6 KB、10 allocs |
+  | `StreamSplit`（キーあり、1 万行ごとに分割） | 15.1 ms、12.8 MB、200,054 allocs | 8.9 ms、51.6 KB、53 allocs |
+  | `StreamSplitNoKey`（キーなし、行全体をハッシュ） | 26.2 ms、19.2 MB、300,045 allocs | 13.0 ms、43 KB、45 allocs |
+- 受け入れ条件:
+  - [x] ベンチマーク（10 万行程度）を追加し、改善前後の割り当て数と時間を記録する
+  - [x] 出力はバイト単位で変わらない（既存のテストが通る）
+
+## B-018 [done|P3] 文字列キーの ORDER BY がインデックスを使えない影響を測る
+- 概要: 文字列キー（`char` / `varchar` / `text` 系）は `ORDER BY CAST(col AS BINARY)` で並べる。列に式を掛けるので、インデックス順では返せず filesort になる可能性がある（`EXPLAIN` で未確認）。想定規模では問題ないが、B-044 の前に影響を把握しておく。
+- 前提: コードは変えない（測定と記録だけ）。測定の詳細は設計書 11 節の「文字列キーの `ORDER BY`」に書いた。
+- 結果: **filesort になるが、影響は小さい。対応は不要**。`CHAR(32)` の主キー（MD5）の表（`task sample:big` の `str_short`）を、8.4 で 10 万行と 100 万行、8.0 で 10 万行測った。`EXPLAIN` は `type=ALL, Extra=Using filesort`（予想どおり）で、素の `ORDER BY k`（`type=index`、並べ替えなし）より、10 万行で約 0.02 秒（0.09 → 0.11 秒）、100 万行で約 0.16〜0.2 秒（0.55 → 0.71 秒。約 30%）遅い。整数キーの主キーの表と `mysqldance` 全体で比べると、100 万行で 0.57 秒と 1.03 秒（行の中身も違うので、`ORDER BY` だけの差ではない）。並べ替えは既定の `sort_buffer_size` に収まらず、マージを繰り返す（`Sort_merge_passes` が 10 万行で 7、100 万行で 66。`Created_tmp_disk_tables` は 0）。ディスクの使用量とメモリの使用量は測っていない。8.0 も 8.4 と同じ傾向。
+  - 代替案: (1) `ORDER BY k COLLATE utf8mb4_bin` は、列の照合順序が違うとインデックスが使えず、同じ filesort（0.73 秒）で、改善しない。(2) 列がもともと**バイト順の NO PAD の照合順序**（`utf8mb4_0900_bin`、`binary` / `varbinary`）なら、`CAST` を省けばインデックスで返り（100 万行で 0.51 秒）、速い。ただし `utf8mb4_bin` のような **PAD SPACE の `*_bin` は不可**: `'a'`、`'a\t'`、`'a!'` を 8.4 で並べると `61` が `6109` の後ろに来て、バイト順（`61`、`6109`、`6121`）と違う。決定性（バイト順）を壊すので、省いてよいのは NO PAD のものだけ。(3) 影響が小さいので、(2) は入れない（効くのは列がすでに NO PAD の `_bin` の表だけで、列の照合順序の判定が増える）。必要になったら別項目にする。
+- 受け入れ条件:
+  - [x] 10 万行・100 万行の文字列主キーのテーブルで `EXPLAIN` と所要時間を記録する
+  - [x] 影響が大きい場合の代替案（バイナリ照合順序の指定など）を検討して結果を書く（影響は小さいので入れない。検討した案と理由を上に書いた）
+
+## B-019 [done|P3] テーブルごとのクエリ数を減らす
+- 概要: `Tables` はテーブルごとに `SHOW CREATE TABLE` と `SELECT ... LIMIT 0`（型名の取得）を実行し、`Views` は `listTables` をもう一度実行する。テーブルが数十を超えると往復の回数が目立つ。
+- 前提: 型名は mysql ドライバの `DatabaseTypeName`（`fields.go`）の値で、`sqlvalue.Literal` と SQLite / Postgres 側の出力が使う。`DATA_TYPE` と `COLUMN_TYPE`（`unsigned` の判定）から同じ名前に写像し、写像にない型は従来どおり `SELECT ... LIMIT 0` で取る（黙って別の名前にしない）。`listTables` の使い回しは `Use` で DB を切り替えたときに捨てる。
+- 結果: `listTables` の結果を `Snapshot` が DB ごとに 1 回だけ読んで持つ（`Use` で捨てる）。型名は `information_schema.COLUMNS` の `DATA_TYPE` / `COLUMN_TYPE` から写像する（`catalogTypeNames`）。1 テーブルあたりの問い合わせは `SHOW CREATE TABLE` の 1 回だけ（`TestListTablesIsReadOnce`。以前は `LIMIT 0` を含めて 2 回で、`Views` と `Defs` も一覧を読み直していた）。写像は全型の列を持つ表で、ドライバの名前と列ごとに比べた（`TestTableInfoColumnTypes`）。TEXT / BLOB は 4 つの大きさとも 1 つの名前（`TEXT` / `BLOB`）になる。写像にない型（MariaDB の `UUID` など）は、その表だけ `LIMIT 0` に戻る。詳細は設計書 11 節。MySQL 8.0 / 8.4 と MariaDB 10.11 で確認した。5.7 / 5.6 は未確認。
+- 受け入れ条件:
+  - [x] `listTables` の結果を使い回し、`Tables` / `Views`（と `Defs`）で 1 回にする
+  - [x] 型名を `information_schema` の `DATA_TYPE` / `COLUMN_TYPE` から求める。全型を含む表で、ドライバの `DatabaseTypeName` と一致することを統合テストで確かめる
+  - [x] 写像にない型は `LIMIT 0` に戻る。写像できない型があれば、その理由を設計書に書く
+
+## B-020 [done|P2] 重複した `quoteIdent` を 1 か所にまとめる
+- 概要: 同じ実装の `quoteIdent` が `source`、`datafile`、`schemafile` に 1 つずつある（3 か所）。識別子のクォートは安全性に関わるので、修正が片方だけに入る事故を防ぐ。
+- 結果: `sqlvalue.QuoteIdent` に集約した。`dump` の統合テスト用の `quote` も同じ関数に置き換えた。
+- 受け入れ条件:
+  - [x] 1 か所に集約し、3 パッケージがそれを使う
+  - [x] バッククォートを含む識別子のテストを 1 か所に集める
+
+## B-021 [done|P2] `Snapshot` の隠れた状態をなくす
+- 概要: `Warnings()` は直前の `Tables()` の呼び出し結果に依存する。`Rows` は `Tables` が埋める `s.columns` のキャッシュに依存し、無ければ読み直す。呼び出しの順序を間違えると、警告が空になったり余計なクエリが走ったりする。
+- 結果: `Tables` が `([]TableInfo, []string, error)` を返す。キーの列の型は `TableInfo.OrderByTypes` に持たせ、`Snapshot` から `warnings` と `columns` を除いた。`Rows` はカタログを読まない。キーの型が欠けていると、照合順序で並べずにエラーにする。
+- 受け入れ条件:
+  - [x] `Tables` が警告を戻り値として返す（`Warnings()` を廃止する）
+  - [x] キーの列の型を `TableInfo` に持たせ、`Rows` から `s.columns` への依存をなくす
+  - [x] 既存のテストが通る
+
+## B-023 [done|P3] 別の DB を参照するビューの復元順を検証する
+- 概要: `Views` の依存取得は `TABLE_SCHEMA = 対象 DB` に限られ、別の DB のテーブルやビューを参照するビューは依存として扱わない。複数 DB を同じディレクトリに入れると、復元はファイル名の辞書順なので、参照先の DB が後に来ると `CREATE VIEW` が失敗する可能性がある（未確認）。B-003 とは別に、この制約を確認して README に書くか、警告を出す。
+- 前提: 参照先の DB がファイル名順で先か後かは判定せず、`--target mysql` で、別の DB を読むビューごとに常に警告する（復元先の状態は分からないため）。システムスキーマ（`mysql` / `sys` / `information_schema` / `performance_schema`）の参照は対象外。復元の順は変えない。
+- 結果: 失敗することを実機で確認した（参照先が後に来ると `CREATE VIEW` が `Error 1049 Unknown database`。先なら通る。`TestViewReadingAnotherDatabase`）。`schemafile.View.Reads` に読む DB を持たせ、`MySQL` ライタが `view `v` reads database `d2`: ...` を警告する。8.0.13 以降は `VIEW_TABLE_USAGE`、MariaDB / 5.7 / 5.6 は `VIEW_DEFINITION` の文字列探索（`information_schema.SCHEMATA` の DB 名ごと）で求める。README の「Limitations」に書いた。MySQL 8.0 / 8.4、MariaDB 10.11 / 11.4、MySQL 5.7.44 で確認した。5.6 は未実行。詳細は設計書 11 節。
+- 受け入れ条件:
+  - [x] 2 つの DB にまたがるビューを実機で復元して、失敗するかを確認する
+  - [x] 失敗する場合は、ダンプ時に警告を出し、README の「Limitations」に書く
+
+## B-024 [done|P3] パスワードファイルのパーミッションを検査する
+- 概要: `--password-file` はパーミッションを見ずに読む。他のユーザーが読めるファイルなら警告を出す。環境変数 `MYSQL_PWD` は、同じホストの他のプロセスから見える場合があることを README に書く。
+- 前提: 警告だけで実行は続ける（失敗にしない）。見るのはグループ・他ユーザーの読み取りビット（`0o044`）。警告にパスワードは含めない。Windows のモードビットは意味を持たないので検査しない。
+- 結果: `readPasswordFile`（`cmd/mysqldance/main.go`）が、開いたファイルのモードを見て、グループまたは他ユーザーが読める（`0o044`）ときに `WARN` 記録を出す。ファイル名とモードだけを含み、内容は含まない。実行は続ける。Windows では検査しない。README の `--password-file` の行、使い方の注意（`MYSQL_PWD` は同じホストの他のプロセスから見える場合がある）、「Warnings」節に書いた。`TestParseArgsPasswordFileMode`。
+- 受け入れ条件:
+  - [x] グループまたは他ユーザーが読めるパスワードファイルを指定したときに警告（`WARN` 記録）を出し、実行は続ける
+  - [x] 所有者だけが読めるファイルでは警告を出さない
+  - [x] README の使い方に `MYSQL_PWD` の注意を追記する
+
+## B-025 [done|P1] GitHub Actions で lint とテストを実行する CI を作る
+- 概要: `wtnb75/mcprt` の `branch.yml` / `main.yml` と同じ構成にする。`.github/workflows/branch.yml`（`main` 以外へのプッシュ）と `main.yml`（`main` へのプッシュ）を作り、`wtnb75/actions/golang@v1`（gofmt、`go vet`、golangci-lint）と `wtnb75/actions/gotest@v1`（カバレッジ付きの `go test`、レポート）を使う。他の action は参照元と同じく SHA で固定し、`permissions` は `contents: read` から始める。`workflow_dispatch` も付ける。
+- 前提: 参照元の `docker` / `deploy` ジョブは含めない（B-028、B-029 で扱う）。`wtnb75/actions/*` は参照元と同じく `@v1` で参照し、直接使う外部 action（`actions/checkout`）は SHA で固定する。Go のバージョンは `wtnb75/actions/golang` の既定（stable）に任せる。ブランチ用と `main` 用は、後で `main` 用にだけ公開処理（B-029）を足すため、別ファイルにする。
+- 受け入れ条件:
+  - [x] ブランチへのプッシュで、フォーマット・`go vet`・lint・単体テストが実行され、失敗したら CI が失敗する
+  - [x] カバレッジの要約がジョブのサマリーに出る
+  - [x] action は SHA で固定し、バージョンをコメントに残す
+  - [x] README にバッジを追加する
+
+## B-026 [done|P1] CI で MySQL 8.0 / 8.4 に対する統合テストを実行する
+- 依存: B-025
+- 概要: 統合テストは `MYSQLDANCE_TEST_DSN` があるときだけ動く。手元では `task test:integration` が Docker で起動するが、CI ではジョブの `services`（またはマトリクス）で MySQL 8.0 と 8.4 を起動して同じテストを実行する。参照元の `mcprt` には統合テストがないため、この部分は参照できず、新規に設計する。
+- 前提: 再利用可能な workflow（`.github/workflows/integration.yml`、`workflow_call`）に統合テストのジョブを置き、`branch.yml` と `main.yml` の両方から呼ぶ。MySQL は `services` で起動し、`mysqladmin ping` のヘルスチェックで待つ。統合テストが skip されたら（`MYSQLDANCE_TEST_DSN is not set`）ジョブを失敗させる。
+- 受け入れ条件:
+  - [x] 8.0 と 8.4 のそれぞれで統合テストが実行される（マトリクス）
+  - [x] MySQL の起動を待ってからテストを始める（ヘルスチェック）
+  - [x] 統合テストが skip されていないことを CI のログで確認できる
+
+## B-027 [done|P2] タグでリリースする workflow を作る
+- 概要: `mcprt` の `tag.yml` に倣う。`v*` タグのプッシュで `goreleaser release --clean` を実行し、B-032 の設定に従ってバイナリ、チェックサム、変更履歴を GitHub Releases に出す。`permissions` は `contents: write` が必要。`fetch-depth: 0` で履歴を全部取る（変更履歴の生成に必要）。他の action は SHA で固定する。
+- 前提: Docker 関連の step（buildx、ghcr.io へのログイン）と `packages: write` は B-028 で決めるので入れない。Go のバージョンは `go.mod` から取る（`actions/setup-go` の `go-version-file`）。goreleaser は `goreleaser/goreleaser-action` で、バージョンを `2.17.0` に固定する。テストタグ `v0.0.0-test` を push して Releases に 6 つのアーカイブと `checksums.txt` が出ること、チェックサムが一致することを確かめ、タグとリリースを削除した。
+- 受け入れ条件:
+  - [x] `v*` タグのプッシュで Releases にバイナリとチェックサムが出る
+  - [x] テスト用のタグ（例: `v0.0.0-test`）で動作を確認してから、そのタグとリリースを削除する
+
+## B-028 [done|P3] コンテナイメージを GitHub Container Registry に公開する
+- 依存: B-027
+- 概要: `mcprt` は `Dockerfile` と goreleaser の `dockers_v2`（linux/amd64、linux/arm64、`ghcr.io`）で公開している。mysqldance も同じ形にするか、そもそもイメージが必要かを決める。必要なら、ブランチと `main` では `branch.yml` / `main.yml` のように `goreleaser build --snapshot` の成果物からイメージを作って push し、タグではリリースと同時に push する。
+- 確定した仕様:
+  - 結論: イメージは公開する（`docker run` で CLI を使え、`docker-entrypoint-initdb.d` 向けの出力を作る用途に合う）。
+  - 名前は `ghcr.io/wtnb75/mysqldance`。ベースは `gcr.io/distroless/static:nonroot`（CA 証明書入り・シェルなし。静的バイナリなので足りる）。goreleaser の `dockers_v2` で linux/amd64・linux/arm64 を作る。
+  - push は `main` とタグのみ。`main` は `:main`、タグは `:<version>` と `:latest`（プレリリースには `:latest` を付けない）。ブランチでは push せず、イメージのビルドだけ確認する。
+  - 認証は `GITHUB_TOKEN`（`packages: write`）。`main` の公開は、OSS 版の goreleaser に `--nightly` が無いため、`goreleaser release --snapshot` が作るアーキテクチャ別のイメージに `:main-<arch>` を付けて push し、`docker buildx imagetools create` で `:main` にまとめる（`image.yml`、`branch.yml` と `main.yml` から呼ぶ再利用 workflow）。
+- 受け入れ条件:
+  - [x] イメージが必要かどうかを決めて、この項目に結論を書く（不要なら削除する）
+  - [x] 必要な場合、マルチアーキテクチャのイメージが `ghcr.io` に出る
+  - [x] ブランチへのプッシュで、イメージのビルドが確認される（push はしない）
+  - [x] README にイメージの使い方を書く
+- 結果: `Dockerfile`（distroless/static:nonroot）、`.goreleaser.yaml` の `dockers_v2`、再利用 workflow `image.yml` を追加した。このブランチから一時的に `:b028-test` を push し、マニフェストに linux/amd64 と linux/arm64 が入ること、pull して `--version` が動くことを確かめた（`main` 用の経路）。**実際の `:main` と、タグ（`:<version>` / `:latest`）の push は、マージ時点では GitHub 上で動かしていない**。最初の `main` への push と最初のタグで確かめる。
+
+## B-029 [done|P3] カバレッジを GitHub Pages で公開する
+- 依存: B-025
+- 概要: `mcprt` の `main.yml` のように、`gotest` の `html-output-dir` に出した HTML を `wtnb75/actions/merge-pages@v1` でまとめ、`actions/deploy-pages` で `main` へのプッシュのたびに公開する。Pages の有効化はリポジトリの設定で行う。
+- 前提: Pages は有効化済み（`build_type: workflow`）。`main.yml` の `test` ジョブに `merge-pages` / `configure-pages` を足し、`test` に依存する `deploy` ジョブで公開する（統合テストは待たない）。カバレッジは単体テストのもの。公開先は `https://wtnb75.github.io/mysqldance/coverage/`。README にバッジやリンクは置かない（外部サービスに頼らず、ページは URL で直接開く）。
+- 受け入れ条件:
+  - [x] `main` へのプッシュでカバレッジの HTML が Pages に公開される（ブランチからの `workflow_dispatch` で公開まで通ることを確認した。`main` のプッシュでの実行は未確認）
+
+## B-030 [done|P3] 手動実行の自動修正・依存更新 workflow を作る
+- 依存: B-025
+- 概要: `mcprt` の `fix.yml`（`wtnb75/actions/gofix@v1`）と `update-deps.yml`（`wtnb75/actions/goupdate@v1`）に倣い、`workflow_dispatch` で手動実行する。実行するとテストを通したうえで PR を作る（`contents: write` と `pull-requests: write` が必要）。`update-deps.yml` は #78 で追加済みなので、残りは `fix.yml`。既定の `GITHUB_TOKEN` で作った PR のブランチは push イベントを起こさず `branch.yml` が自動では走らないため、PR 上の CI は自動起動にしない（PAT や `workflow_dispatch` の連鎖は入れない）。PR を開いたら、そのブランチで `branch.yml` を手動実行して、統合テストを含む CI を確かめる。
+- 受け入れ条件:
+  - [x] `fix.yml` を `workflow_dispatch` で手動実行でき、`contents: write` と `pull-requests: write` だけを持つ
+  - [x] `fix.yml` は、`go fix` / `gofmt` / `go vet` / lint / 単体テスト（`-v ./...`）を通ったときだけ PR を作る
+  - [x] PR 上の CI は自動起動しない。統合テストが必要な更新は、PR のブランチで `branch.yml`（B-026 の統合テストを呼ぶ）を手動実行して検証する。この手順を `README.md` か `CLAUDE.md` に書く
+
+## B-032 [done|P2] goreleaser の設定ファイルを作る
+- 概要: `mcprt` の `.goreleaser.yaml` に倣って、リポジトリ直下に `.goreleaser.yaml`（version 2）を作る。`project_name: mysqldance`、`main: ./cmd/mysqldance`、`CGO_ENABLED=0`、linux・darwin・windows × amd64・arm64、`ldflags: -s -w`、アーカイブは tar.gz（windows は zip）、`checksums.txt`、スナップショットのバージョン名（`{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}`）、変更履歴（`feat:` は Features、`fix:` は Bug fixes、その他は Others。`docs:` `test:` `chore:` は除外）。`before` で `go mod tidy` を実行する。バージョンを表示するため、`main` に `version` / `commit` の変数と `--version` を追加し、`ldflags` の `-X main.version=...` で渡す（現状は無い）。コンテナイメージ（`dockers_v2`）は B-028 で決めるので、この項目には入れない。
+- 前提: `--version` は stdout に `mysqldance <version> (commit <commit>)` を 1 行出して終了コード 0 で終わる。ldflags を渡さないビルドの既定値は `dev` と `unknown`。
+- 受け入れ条件:
+  - [x] `goreleaser check` が通る
+  - [x] `goreleaser build --snapshot --clean` で、全ての OS・アーキテクチャのバイナリが `dist/` にできる
+  - [x] `mysqldance --version` で、ビルド時に渡したバージョンとコミットが表示される
+  - [x] ローカルで試せるよう、`Taskfile.yml` に `task snapshot`（`goreleaser build --snapshot --clean`）を追加する
+
+## B-033 [done|P2] `source` が型付きのレコード値を返すようにする
+- 概要: MVP の `source.Rows` は値を SQL リテラル文字列にして返す（設計書 8 節の「型付きのレコード値」からの意図的な逸脱）。他 DBMS 出力の前提として、列の型情報つきの型付き値を返す形にする。MySQL 向けのリテラル化は `sqlvalue` に残し、出力のバイト列は変えない。
+- 結果: `sqlvalue.Value`（型名・バイト列のコピー・NULL）を足し、`Rows` が `[][]sqlvalue.Value` を返す。`dump` が `sqlvalue.Literals` で MySQL のリテラルにしてから `datafile` に渡す。`datafile` のテストは変更なし。コンパイルのため、テストのヘルパー `rowsOf` だけがリテラルに変換するようにした。
+- 受け入れ条件:
+  - [x] `source.Rows` が型付き値を返し、`sqlvalue` がそれを MySQL のリテラルにする
+  - [x] 既存の単体・統合テストが変更なしで通り、出力はバイト単位で同一である
+
+## B-034 [done|P2] ライタをインターフェースにして差し替えられるようにする
+- 依存: B-033
+- 概要: ライタは MySQL 向けの `datafile` / `schemafile` だけで、`dump` がそれを直接呼ぶ。出力ライタをインターフェースにし、MySQL 向けをその実装の 1 つにする（設計書 8 節）。他 DBMS のライタは別項目（B-035、B-036）で足す。
+- 結果: 新パッケージ `internal/writer` に `Writer`（`WriteSchema`、`DataParts`）と MySQL 向けの実装 `MySQL` を置いた。`dump` は `Options.Writer`（nil なら `Options.Data` から作る MySQL 向け）経由で書く。両方を指定するとエラー、`DataParts` が 0 件を返してもエラー。MySQL 向けの出力はバイト単位で同一。
+- 前提: インターフェースと MySQL 向けの実装は新パッケージ `internal/writer` に置く。値のリテラル化、行の分割、ビューの並べ替え、`AUTO_INCREMENT` / `DEFINER` の除去は MySQL 向けの実装に移し、`dump` には残さない。ファイル名・暗黙のステージング・古いファイルの削除は `dump` に残す。フラグは変えない（DBMS を選ぶフラグは B-035）。
+- 受け入れ条件:
+  - [x] ライタのインターフェースを定義し、`dump` がそれ経由で書く
+  - [x] MySQL 向けの出力はバイト単位で変わらない（既存のテストが通る）
+
+## B-035 [done|P2] PostgreSQL 向けの出力に対応する
+- 依存: B-034
+- 概要: PostgreSQL 向けのライタを足す。boolean への変換、外部キーを後付けする順序、識別子のクォートなどの方言差を扱う（設計書 12 節）。
+- 前提（仕様確定）: フラグは既存の `--target` に値 `postgres` を足す。MySQL の DB 1 つは PostgreSQL の同名スキーマ 1 つに対応させる（`CREATE SCHEMA IF NOT EXISTS` と `SET search_path`）。`TINYINT(1)` は `boolean`（0/1 以外の値があればエラーにする）、他の `TINYINT` は `smallint`。テーブル定義は SQLite と同じく `Schema.Defs` の構造から組み立てる。ビューは SQLite と同様に警告して出力しない（変換は別項目）。PostgreSQL に写せない定義は黙って落とさず警告かエラーにする。外部キーは全データの後に適用する（復元順に依存しないよう、データファイルの後ろに並ぶファイルへ分ける）。検証は Docker の `postgres:17` と、テスト専用の依存 `pgx`（環境変数 `MYSQLDANCE_TEST_PG_DSN` があるときだけ動く）で行い、`task test:integration` に含める。
+- 結果: `--target postgres` を足した。`writer.Postgres` が MySQL の DB 1 つを同名のスキーマに写し、`<db>.00-schema.sql`（`CREATE SCHEMA` とテーブル、インデックス）、`<db>.10-data.<table>.sql`（1 ファイル 1 トランザクション）、`<db>.90-constraints.sql`（外部キー）を書く。外部キーは全データの後に適用するため、`naming.ConstraintsFile` と、`writer.ConstraintWriter`（任意のインターフェース）を足し、`dump` が書き出す。各ファイルは単独のセッションで動くよう自分で `search_path` などを設定する。定義は `TableInfo.Def`（`dump` が `NeedsDefs` のライタにだけ渡す）から組み立てる。`datafile.WriteStatements` は識別子のクォートを引数で受ける。PostgreSQL に入らない値（`TINYINT(1)` の 0/1 以外、NUL、0 や欠けた日付、年 0）と 63 バイトを超える名前はエラーにする。実機の確認は Docker の `postgres:17` とテスト専用の `pgx`（`MYSQLDANCE_TEST_PG_DSN`）で行い、`task test:integration` が MySQL ごとに PostgreSQL も起動する。公式イメージの `/docker-entrypoint-initdb.d` での復元も手で確かめた。
+- 確認: `TINYINT(1) UNSIGNED` は MySQL 8.0 / 8.4 が `tinyint unsigned` と報告するため `smallint` になる（`boolean` は素の `TINYINT(1)` / `BOOLEAN` のみ）。
+- 受け入れ条件:
+  - [x] `--target postgres` で PostgreSQL 向けに出力でき、実機にリストアして行数と値が一致する
+  - [x] 出力は決定的である（2 回の出力がバイト単位で一致する）
+  - [x] `--target` の値 `postgres` を追加し、README に書く（ビューを出力しないことなども書く）
+
+## B-036 [done|P2] SQLite 向けの出力に対応する
+- 依存: B-034
+- 概要: SQLite 向けのライタを足す。型の変換や、制約の書き方などの方言差を扱う（設計書 12 節）。出力先を選ぶフラグは B-035 で追加するものを使う。B-035 と並行して進めるなら、先に入ったほうのフラグ定義に合わせる。
+- 前提（仕様確定）: フラグは `--target mysql|sqlite`（既定 `mysql`、不明な値はエラー）。B-035 は値 `postgres` を足す。テーブル定義は `information_schema` から構造（列の型・NULL 可否・既定値、主キー、UNIQUE、外部キー、通常のインデックス）で読み、SQLite の DDL を組み立てる（`SHOW CREATE TABLE` は解析しない）。ビューは MySQL の `SELECT` 文が SQLite でそのまま通らないため、警告を出して出力しない（変換は B-062）。SQLite に写せない定義（生成列など）は黙って落とさず、警告かエラーにする。実機の検証には純 Go の `modernc.org/sqlite` をテスト専用の依存として足す（`sqlite3` コマンドはこの環境にない）。
+- 結果: `--target mysql|sqlite` を足した。`source.Snapshot.Defs` が `information_schema` から列・インデックス・外部キー・CHECK の名前を構造で読み、`writer.SQLite` が SQLite の DDL と `INSERT` を書く。構造が要るライタだけが `Writer.NeedsDefs()` で `true` を返し、MySQL の出力と読み出しは変わらない。値は `sqlvalue.SQLiteLiteral` で書く（`DECIMAL`・`BIGINT UNSIGNED`・`BIT(64)` は `TEXT`、行の途中の改行は `char(10)` の連結、改行が 100 を超える値は 16 進の `CAST`）。警告は `Schema.Warn` 経由で `dump` のログに出る。実機の SQLite は純 Go の `modernc.org/sqlite`（テスト専用）で確認した。
+- 受け入れ条件:
+  - [x] `--target sqlite` で SQLite 向けに出力でき、実機の SQLite にリストアして行数と値が一致する
+  - [x] 出力は決定的である（2 回の出力がバイト単位で一致する）
+  - [x] `--target` のフラグを追加し、README に書く（ビューを出力しないことも書く）
+
+## B-037 [done|P2] MariaDB の MySQL との差異を実機で確かめる
+- 概要: 設計書 12 節に挙げた MariaDB の差異（`SHOW CREATE TABLE` の既定値の書式、照合順序、JSON が `LONGTEXT` + `CHECK`、シーケンス、`VIEW_TABLE_USAGE` がないことなど）は記憶ベースで未確認。実機で確かめ、対応の方針を決める。この項目はコードを変えず、調査結果を設計書に書く。
+- 結果: MariaDB 10.11.19 と 11.4.13 を、MySQL 8.4.13 と並べて確認し、設計書 11 節に書いた。現在のバイナリは `show_create_table_verbosity` で失敗する。`VIEW_TABLE_USAGE` は両方ない。`COLUMN_DEFAULT` の読み方（`"NULL"` の文字列、引用符つき、式）が違い、`SEQUENCE` / `SYSTEM VERSIONED` のテーブルは黙って落ちる。方針は `dialect` に集約する。B-038 の受け入れ条件を結果に合わせて直した。
+- 受け入れ条件:
+  - [x] MariaDB の実機（LTS 版 1 つ以上）で、各差異が実際にあるかを確かめる
+  - [x] 結果と、`dialect` に集約する方針を設計書に書く
+  - [x] 実装の項目（B-038）の受け入れ条件を、結果に合わせて直す
+
+## B-038 [done|P2] MariaDB に対応する
+- 依存: B-037
+- 概要: B-037 の調査結果（設計書 11 節）に基づき、MariaDB 向けの `dialect` を足して `dialectFor` の「MariaDB は対象外」のエラーを外す。「バージョン差」ではなく「DBMS の方言差」として扱い、バージョン依存の処理を 1 か所にまとめる方針を方言差にも広げる（設計書 10.5 節）。`dialect` は SQL 文字列だけでなく、セッション設定、ビュー依存の取得、既定値の読み方も持つように広げる。
+- 確定した仕様: MariaDB の最小バージョンは設けない（MariaDB と名乗るサーバーはバージョンで拒否しない。確認したのは 10.11 と 11.4 だけで、README に書いた）。`SELECT VERSION()` と `dialectFor` を `SET` より先に行い、セッション設定は `dialect` が持つ。`SEQUENCE` / `SYSTEM VERSIONED` はエラーにする（出力しない）。
+- 受け入れ条件:
+  - [x] `SET SESSION show_create_table_verbosity` を MySQL だけに適用し、MariaDB 10.11 と 11.4 の両方でスナップショットを開始できる（今は `Unknown system variable` で失敗する）
+  - [x] ビュー依存を `VIEW_TABLE_USAGE` なしで取得できる（`VIEW_DEFINITION` の解析など。方式は実装者が決める）。依存したビューが先に来ない並びにならない
+  - [x] `COLUMN_DEFAULT` を方言ごとに読む。MariaDB の文字列 `"NULL"` は既定値なし、引用符つきの文字列は引用を外す、式（`current_timestamp()`、`uuid()` など）は式として扱う。SQLite / PostgreSQL 向けの出力に反映される
+  - [x] `TABLE_TYPE` が `BASE TABLE` / `VIEW` 以外（`SEQUENCE` / `SYSTEM VERSIONED`）のものを黙って落とさない。方針は「エラーにする」（出力はしない）。ダンプの検査の段階で、古いファイルを消す前に失敗し、テーブル名と種別をエラーに書く。README に書く
+  - [x] MariaDB の実機（10.11 と 11.4）で、既存の統合テスト全体（MySQL 固有のテキストを前提にするものは、テスト専用の判定で skip）と、MariaDB 専用の往復テスト（ダンプ → MariaDB への復元 → 行数・値の一致）が通る。`task test:integration:mariadb` で実行する（`task test:integration` の既定には含めない）
+  - [x] `dialect` 以外のコードに MariaDB 固有の分岐を入れない
+  - [x] README の対象バージョンと、MariaDB の出力は MySQL に流せない（照合順序など）注意を更新する
+
+## B-039 [done|P2] MySQL 5.7 の 8.0 との差異を実機で確かめる
+- 概要: 5.7 には `VIEW_TABLE_USAGE` と `INVISIBLE` 列がなく、`CREATE TABLE` の出力形式にも差がある（`dialect.go` のコメントにも記載）。古いバージョンのデータを持ってきたい意向がある（設計書 10.5 節）。実機で差異を確かめ、対応の方針を決める。この項目はコードを変えず、調査結果を設計書に書く。
+- 結果: MySQL 5.7.44 を 8.4.13 と並べて確認し（`show_create_table_verbosity` だけ 5.7.21 でも）、設計書 11 節に書いた。`VIEW_TABLE_USAGE` がなく、B-038 の `viewDefinitions` がそのまま使える。`EXTRA` に `DEFAULT_GENERATED` が付かないので、`DEFAULT CURRENT_TIMESTAMP` が SQLite 向けでは固定の文字列 `'CURRENT_TIMESTAMP'` になり、PostgreSQL 向けでは落ちる。外部キーの規則が `RESTRICT`（8.x は `NO ACTION`）。`show_create_table_verbosity` は 5.7.22 から。データはバイト単位で一致し、5.7 の出力は 5.7 と 8.4 に復元できた。方針は `dialect` に集約する。B-040 の受け入れ条件を結果に合わせて直した。
+- 受け入れ条件:
+  - [x] 5.7 の実機で、ビュー依存の取得、生成列、`SHOW CREATE TABLE` の差異を確かめる
+  - [x] 結果と対応の方針（ビュー依存解決のフォールバックなど）を設計書に書く
+  - [x] 実装の項目（B-040）の受け入れ条件を、結果に合わせて直す
+
+## B-040 [done|P2] MySQL 5.7 に対応する
+- 依存: B-039
+- 概要: B-039 の調査結果（設計書 11 節）に基づき、5.7 向けの `dialect`（`mysql57`。`mysql8` を元にした差し替え）を足して `dialectFor` の「8.0 以上が必要」のエラーを 5.7 まで緩める。確認した版は 5.7.44 だけ。5.6 以前は対象外のまま拒否する。
+- 受け入れ条件:
+  - [x] `viewDeps` を `viewDefinitions` にして、5.7 の実機（5.7.44）で `VIEW_TABLE_USAGE` なしにビューの依存順が取れる（2 段のビューで確認する）
+  - [x] セッション設定から `show_create_table_verbosity` を外し、5.7.21 以前（`Unknown system variable`）でもスナップショットを開始できる（5.7.21 と 5.7.44 で確認する）
+  - [x] `TIMESTAMP` / `DATETIME` の `DEFAULT CURRENT_TIMESTAMP[(n)]` を式として読む（5.7 は `EXTRA` に `DEFAULT_GENERATED` が付かない）。`--target sqlite` / `postgres` の出力が、8.4 と同じ `DEFAULT CURRENT_TIMESTAMP` になる。`varchar` の `DEFAULT 'CURRENT_TIMESTAMP'` は文字列のまま
+  - [x] 外部キーの `ON UPDATE` / `ON DELETE` を書かない場合の規則（5.7 は `RESTRICT`、8.x は `NO ACTION`）は、**揃えずにサーバーの報告をそのまま出す**（決定。どちらも SQLite と PostgreSQL でロードできる）。5.7 の `RESTRICT` が `--target sqlite` / `postgres` の出力にそのまま出るテストと、「同じスキーマでも版で出力が変わる」旨の README の記述を足す
+  - [x] 5.7.44 の実機で統合テストが通る（`task test:integration:mysql57` のような専用タスクで実行する。イメージは amd64 のみなので `--platform linux/amd64` で起動する。`task test:integration` の既定には含めない）。MySQL 固有のテキストを前提にするテストは、テスト専用の判定で skip する（MariaDB と同じ）
+  - [x] 5.7 の出力（`--target mysql`）を新しい 5.7 と 8.4 に復元して、行数と値が一致する往復テストがある
+  - [x] `dialect` 以外のコードにバージョン固有の分岐を入れない
+  - [x] README の対象バージョンと、5.7 の注意（`int(11)` や `latin1` など書式がそのまま出ること、確認した版が 5.7.44 だけであること）を更新する
+
+## B-041 [done|P2] 複数接続で同一スナップショットを揃える方式を実機で検証する
+- 概要: 並列取得では複数接続が同じ時点を見る必要がある。設計書 6 節の案（`FLUSH TABLES WITH READ LOCK` で位置を固定してから、各接続でスナップショットを開始する）が、必要な権限やロック時間を含めて実用になるかを実機で確かめる。この項目は方式の検証だけで、並列化はしない。
+- 結果: MySQL 8.0 と 8.4 で確かめ、設計書 6.1 に書いた。ロック中に全接続でスナップショットを開始すると同一時点になる（ロックなしの対照実験では食い違う）。権限は `RELOAD`（ロック）と `SELECT`（スナップショットと読み出し）。止める時間は、ロックの取得待ち（実行中の長い文を待つ）と開始時間で、InnoDB だけなら全接続の開始後に解放できる。MyISAM などはスナップショットに入らないので、ロックを持ち続ける。検証は `internal/source/parallel_snapshot_test.go`（統合テスト）。
+- 受け入れ条件:
+  - [x] 8.0 と 8.4 の実機で、複数接続が同一時点の内容を読めることを確かめる
+  - [x] 必要な権限、書き込みを止める時間、InnoDB 以外のテーブルへの影響を記録する
+  - [x] 採用する方式を設計書に書く
+
+## B-042 [done|P2] テーブル単位の並列取得に対応する
+- 依存: B-041
+- 概要: B-041 で決めた方式で、テーブルを複数の接続で並列に取得する。取得部はテーブル単位で独立に呼び出せる構造にしてあることが前提（設計書 8 節）。
+- 確定した仕様:
+  - フラグは `-j, --jobs N`（1〜64）。既定は 1 で、今の `source.Open` と同じ経路・同じ権限（RELOAD 不要）。
+  - 2 以上のときは、ロック用 1 接続と読み出し N 接続（設計書 6.1）。InnoDB だけならスナップショット開始後に `UNLOCK TABLES`、非 InnoDB があれば `Close` まで保つ。常に `FLUSH TABLES WITH READ LOCK` を使うので RELOAD が要る。無いときは、RELOAD と `--jobs 1` を挙げたエラーで失敗する。
+  - 2 以上と `--no-lock` の併用は使い方のエラー（黙って不整合にも、黙って直列にもしない）。
+  - 並列にするのは行の読み出し・描画・一時ファイルへの書き出しだけ。スキーマ・メタデータ・警告は今までどおり直列で、出力は並列度によらず同じ（検証は B-043）。
+  - N 本のテーブルの全行が同時にメモリに載る（README に書く）。
+- 結果: `source.Config.Jobs` と `Snapshot.Readers()`、`dump` のテーブル単位の並列化、`-j/--jobs` を実装した。README の「Parallel reads」に方式・権限・影響を書いた。統合テストは `internal/source/jobs_test.go` と `internal/dump/jobs_test.go`。
+- 受け入れ条件:
+  - [x] 並列度を指定するフラグを追加し、既定値を決める（既定は 1 か、複数かを README に書く）
+  - [x] 並列度を上げても、全テーブルが同一時点の内容になる
+  - [x] 失敗または Ctrl-C のときに、全ての接続とトランザクションが閉じる
+
+## B-043 [done|P2] 並列取得の出力が決定的であることをテストする
+- 依存: B-042
+- 概要: 並列取得でも、出力が並列度によらずバイト単位で同一であることをテストで保証する。ファイルの書き出し順や、警告の出力順が並列度で変わらないことも確認する。
+- 仕様:
+  - テストの追加だけで、本体の挙動は変えない（挙動が違うと分かった場合だけ、失敗するテストを先に書いて直す）。
+  - 対象は MySQL・SQLite・PostgreSQL の全ライタ、複数 DB、`--rows-per-file` での分割、キーなしのテーブル。並列度は 1、2、8。タイミング依存の差を拾うため、並列度 2 以上は複数回ダンプする。
+  - 「ファイルの書き出し順」は、出力ディレクトリに現れるファイルの集合と中身で確かめる。一時ファイルの rename 順は、成功したダンプでは観測できないので対象外。
+  - 警告は `Options.Log` の全文を並列度ごとに比べる。警告を出すのは SQLite・PostgreSQL ライタの変換警告（ビュー）。`source.Tables` の大きなテーブルの警告は `largeTableRows` が非公開で `dump` から変えられないため、並列度に依らず先頭の接続で直列に出ることの確認は `internal/source` 側のテストにする。
+- 結果: 本体は変えていない。`internal/dump/jobs_determinism_test.go`（全ライタ × 並列度 1/2/8、2 DB、分割、キーなし、ビューの警告。並列度 2 以上は 3 回）と、`internal/source/jobs_test.go` の `TestJobsTablesAndWarningsSameAsSerial` を追加した。
+- 受け入れ条件:
+  - [x] 並列度 1、2、8 で同じ DB をダンプし、全ファイルがバイト単位で一致するテストを追加する
+  - [x] 警告の出力順が並列度によらず同じである
+
+## B-044 [done|P2] キーのあるテーブルを行ストリームで書き出す
+- 概要: 今は `source.Rows` が全行を `[][]string` に載せてから書く。主キーまたは NOT NULL のユニークキーがあるテーブルは、サーバーが `ORDER BY` で並べるので、読みながら書けるはず。メモリ使用量が行数に比例しないようにする（設計書 12 節）。キーなしのテーブルは別項目（B-045）で、これまでどおり全行をメモリに載せる。
+- 確定した仕様: `Writer.DataParts` を、行をストリームで受けて、ファイルが必要になるたびに dump へ頼む形に替える（MySQL・SQLite・PostgreSQL の 3 ライタ）。`--rows-per-file` のときの部品の名前は、総数が分かってから付ける（一時ファイルに書き、テーブルの終わりでリネーム先を決める）ので、名前も内容も変わらない。キーのないテーブルは `Rows` で全行を並べ替えてから同じ書き出しに流す（B-045 で置き換える）。推定 50 万行超の警告は、キーのないテーブルだけに出す。100 万行の実機確認は、環境変数で選んだときだけ走る統合テストにする。合成データの単体テスト（100 万行をライタとステージに流してヒープの上限を確認）は常に走らせる。
+- 受け入れ条件:
+  - [x] キーのあるテーブルで、メモリ使用量が行数に比例して増えない（100 万行のテーブルで確認する）
+  - [x] 出力はバイト単位で変わらない（既存のテストが通る。旧実装との差分テストで、空のテーブル・ファイル境界・INSERT 境界の端も確かめる）
+  - [x] 書き込みの途中で読み出しが失敗したときの挙動（部分ファイルの削除）が変わらない（1 ファイルと複数ファイルの両方）
+  - [x] 推定 50 万行超の警告は、キーのないテーブルだけに出る。README と設計書の該当箇所を合わせる
+- 結果: `source.EachRow` が行を 1 行ずつ渡し、`Writer.NewRowWriter`（`DataParts` の後継）が受けて、`datafile.Stream` が INSERT とファイルの区切りを行の内容だけで決める。`--rows-per-file` の部品は一時ファイルに書き、テーブルの終わりに名前を決める。出力は旧実装と同じバイト列（`internal/datafile/stream_test.go` の差分テスト）。メモリは 100 万行で、合成データの単体テストでは増加ほぼ 0、実機の 100 万行（`MYSQLDANCE_TEST_BIGROWS=1000000`、MySQL 8.0 / 8.4）でもピークが 8.0 で約 4.0 MB、8.4 で約 4.6 MB（行を保持すると約 150 MB）。
+
+## B-045 [done|P3] キーのないテーブルを外部ソートで扱う
+- 依存: B-044
+- 概要: キーのないテーブルは各行の出力文字列のバイト順で並べるため、全行をメモリに載せてソートしている。大きなテーブルでもメモリを使い切らないように、一時ファイルを使った外部ソートにする（設計書 12 節）。
+- 確定した仕様: 新パッケージ `internal/extsort` が、(キー, 値) の組をメモリ上限まで集めて並べ替え、超えたら並べ替え済みの塊（run）を一時ファイルに書き、最後に k 路マージで返す（塊が多すぎるときは多段にマージする）。キーは今までと同じ「各セルの MySQL リテラルをカンマでつないだ文字列」のバイト順で、値は行をそのまま直列化したもの。`source.EachRow` のキーなしの経路をこれに置き換える。一時ファイルは出力ディレクトリ内の `.mysqldance-sort-NNNN.tmp`（`--file-mode` と同じモード。未指定は 0666 を umask で絞る）で、使い終わったらすぐ削除し、失敗時と中断時は `stage.discard` が消す。KILL で残ったものは次の実行の掃き出しが消す。メモリ上限は新フラグ `--sort-memory`（既定 64MiB）で、1 回にメモリへ載せる行のバイト数（キー + 値 + 固定のオーバーヘッド）の目安。`--jobs N` のときは N 本が同時に使うので、全体の上限は最大 N 倍。
+- 前提: `--sort-memory` は `64MiB`・`256MiB`・`1GiB` のような単位つきの値と、単位なしのバイト数を受ける。下限は 1MiB（それ未満は使い方のエラー）。推定 50 万行超の警告は、全行をメモリに載せなくなるので、文面を「ディスクにあふれさせて並べ替える」に変える（B-044 で決めた、キーなしのテーブルだけに出す条件は変えない）。100 万行の実機確認は、B-044 と同じく環境変数 `MYSQLDANCE_TEST_BIGROWS` で選んだときだけ走る統合テスト。合成データの単体テストは常に走らせる。
+- 結果: `internal/extsort`（メモリ上限まで集めて並べ替え、超えたら塊を一時ファイルに書き、k 路マージで返す。塊が 64 を超えるときは多段）を足し、`source.EachRow` のキーなしの経路をこれに置き換えた。設定は `source.Config.SortFile` / `SortMemory`、`dump.Options.SortMemory`（0 以下は既定の 64MiB）、フラグ `--sort-memory`（1MiB 以上。空は未指定）。一時ファイルは `stage.newScratch`（出力ディレクトリ内の `.mysqldance-sort-NNNN.tmp`、`--file-mode` と同じモード）で、マージし終えた塊からすぐ消し、失敗・中断時は `stage.discard`（ハンドルも閉じる）、KILL で残ったものは次の実行の `sweepTemps` が消す。推定 50 万行超の警告の文面を、一時ファイルを使う内容に変えた。メモリは、合成データの単体テスト（`internal/extsort`、100 万件・上限 4MiB、ヒープのピーク約 3.4MB）と、実機の 100 万行（`MYSQLDANCE_TEST_BIGROWS=1000000`、上限 16MiB、MySQL 8.4、ピーク約 26MB。行を保持すると数百 MB）で確かめた。出力は `TestExternalSortOutputMatchesInMemory`（上限 4KiB で数十個の塊）がメモリ内ソートとバイト単位で一致し、`TestEachRowNoKeySpillsAndMatchesInMemory` が NULL・空文字・バイナリ・重複を含めて一致することを確かめた。失敗時の削除は `TestExternalSortFailureLeavesNoScratchFiles` と `TestStageDiscardClosesScratchFiles`、モードは `TestStageScratchFile`。
+- 受け入れ条件:
+  - [x] キーのない 100 万行のテーブルで、メモリ使用量に上限がある
+  - [x] 出力は従来のメモリ内ソートとバイト単位で同一である
+  - [x] 一時ファイルは失敗時にも削除され、パーミッションは出力ファイルより緩くない
+  - [x] `--sort-memory` を README の使い方に書き、キーなしのテーブルに関する README と設計書の記述（Limitations、Parallel reads の Memory、50 万行の警告）を合わせる
+
+## B-046 [done|P2] トリガーをダンプする
+- 概要: MVP はテーブルとビューだけが対象（設計書 2 節・12 節）。トリガーを `SHOW CREATE TRIGGER` から出力する。出力先のファイル名（例: `<db>.20-triggers.sql`）と、辞書順で「スキーマ → データ → トリガー」の順になる命名を決める。トリガーはデータのロード後に作る（ロード中に動かさないため）。`DEFINER` の扱いはビューに合わせて決める。
+- 前提: 出力するのは `--target mysql` だけ。SQLite・PostgreSQL は本体が MySQL の構文なので出力せず、トリガーごとに警告する（README は「どのターゲットでも出さない」としていた）。トリガーのない DB はファイルを作らない。作成時の `sql_mode` はトリガーごとに `SET SQL_MODE` で残し、接続の文字コードは残さない。本体の `;` は `DELIMITER` で区切る（`mysql` クライアント向け。`docker-entrypoint-initdb.d` はこれで流す）。同じテーブル・タイミング・イベントのトリガーは実行順（作成順）に出す。
+- 受け入れ条件:
+  - [x] トリガーを出力し、復元して定義が一致する
+  - [x] ファイル名が辞書順でデータの後ろになり、`naming` の所有判定（`IsOwnedBy`）に含まれる
+  - [x] 出力は決定的で、`DEFINER` の扱いを README に書く
+- 結果: `naming.TriggersFile`（`<db>.20-triggers.sql`）、`source.Snapshot.Triggers`、`schemafile.WriteTriggers`、任意のインターフェース `writer.TriggerWriter`（MySQL ライタだけが実装）を足し、`dump` が書き出す。`DEFINER` はビューと同じく除く。README と設計書に節を足した。実機の確認は MySQL の統合テスト（復元して `information_schema.TRIGGERS` の定義・実行順・`sql_mode` が一致し、ロード中にトリガーが動かないこと）で行った。
+
+## B-047 [done|P3] ストアドルーチンをダンプする
+- 依存: B-046
+- 概要: ストアドプロシージャとストアドファンクションを `SHOW CREATE PROCEDURE` / `SHOW CREATE FUNCTION` から出力する。ファイル名の方針は B-046 に合わせる。`DELIMITER` が必要な本体の書き方を決める。
+- 前提: ファイル名は `<db>.15-routines.sql`（データの後、トリガーの前。トリガーがルーチンを呼べるため）。出力するのは `--target mysql` だけで、SQLite・PostgreSQL はルーチンごとに警告する。ルーチンのない DB はファイルを作らない。`DEFINER` は除き、作成時の `sql_mode` はルーチンごとに `SET SQL_MODE` で残し、接続の文字コードは残さない（トリガーと同じ）。本体の `;` は `DELIMITER` で区切る（トリガーと部品を共有）。順序はプロシージャ → ファンクション、各々名前のバイト順。
+- 受け入れ条件:
+  - [x] プロシージャとファンクションを出力し、復元して定義が一致する
+  - [x] 本体に `;` を含むルーチンを復元できる
+  - [x] 出力は決定的である
+- 結果: `naming.RoutinesFile`、`source.Snapshot.Routines`、`schemafile.WriteRoutines`、任意のインターフェース `writer.RoutineWriter`（MySQL ライタだけが実装）を足し、`dump` が書き出す。`DELIMITER` の選び方などは `schemafile` でトリガーと共有した。README と設計書に節を足した。実機の確認は MySQL 8.0 / 8.4 の統合テスト（復元して `information_schema.ROUTINES` / `PARAMETERS` の定義が一致し、`;` を含む本体と `$$` を含む文字列が通り、復元後に呼べること）。5.7 / 5.6 / MariaDB は未確認。
+
+## B-048 [done|P3] イベントをダンプする
+- 依存: B-046
+- 概要: イベントを `SHOW CREATE EVENT` から出力する。ファイル名の方針は B-046 に合わせる。復元先でイベントスケジューラが動いていると、復元と同時に実行される点の扱い（無効な状態で作るかなど）を決めて README に書く。
+- 前提: ファイルは `<db>.25-events.sql`（データ・ルーチン・トリガーの後、制約ファイルの前）。ルーチン・トリガーと同じ作り方（`DROP EVENT IF EXISTS`、`SET SQL_MODE`、`SHOW CREATE EVENT`、`DEFINER` は書かない、`DELIMITER` 区切り、`--target mysql` のみで他は警告）。作成時の `time_zone` をイベントごとに `SET TIME_ZONE` で残す（スケジュールと実行がそのゾーンで読まれるため）。イベントの状態（`ENABLE` / `DISABLE` / `DISABLE ON SLAVE`）は元のまま出力し、復元と同時に実行される点は README に明記する（止めたい場合は復元先で `event_scheduler=OFF`）。順序は名前のバイト順。
+- 受け入れ条件:
+  - [x] イベントを出力し、復元して定義が一致する
+  - [x] 復元時にイベントが勝手に実行されないようにするか、その扱いを README に書く
+  - [x] 出力は決定的である
+- 結果: `naming.EventsFile`、`source.Snapshot.Events`、`schemafile.WriteEvents`、任意のインターフェース `writer.EventWriter`（MySQL ライタだけが実装）を足し、`dump` が書き出す。`SHOW CREATE` の読み出しは `showCreateColumns` にまとめ、`time_zone` 列も読めるようにした。README に「Events」節を足し、設計書 12 節に記録した。実機の確認は MySQL 8.0 / 8.4 の統合テスト（復元して `information_schema.EVENTS` の定義と状態が一致し、`;` を含む本体、`$$` を含む文字列、別のタイムゾーンと `sql_mode` で作ったイベントが通ること）。5.7 / 5.6 / MariaDB は未確認。権限がなくて列挙されないイベントは B-110 に足した。
+
+## B-049 [done|P3] `source.go` を役割ごとのファイルに分ける
+- 依存: B-020, B-021
+- 概要: `source.go`（着手時は 1242 行）は、接続の確立、カタログの問い合わせ、行の読み出しが 1 つのファイルにある。`connect.go`、`catalog.go`、`rows.go` などに分ける。関数の中身は変えない。B-020 と B-021 が同じファイルを触るので、その後に行う。
+- 前提: `source.go` には型（`TableInfo`、`Snapshot`）と `Readers` だけを残す。`connect.go` は `Config` と定数、接続・ロック・スナップショットの開始、`Use`、`Close`。`catalog.go` は `CreateDatabase` から `Views` まで（カタログの問い合わせ、`SHOW CREATE`、`largeTableRows`）。`rows.go` は `Rows`、`EachRow`、`ORDER BY` と選択リストの組み立て。
+- 受け入れ条件:
+  - [x] `source` パッケージを役割ごとのファイルに分ける
+  - [x] 関数の中身を変えない（差分は移動だけ）
+  - [x] 既存のテストが通る
+- 結果: `connect.go`、`catalog.go`、`rows.go` を足した。分割の前後で、空行・`package`・`import` を除いた行の多重集合が一致することを確かめた（移動だけで、行の追加・削除・変更はない）。
+
+## B-050 [done|P3] `dumpDB` を段階ごとの関数に分ける
+- 依存: B-021
+- 概要: `dump.dumpDB` は、検査、古いファイルの削除、スキーマの書き出し、データの書き出しを 1 つの関数で行う。段階ごとの関数に分けて、読みやすく、テストしやすくする。B-021 で `Tables` が警告を返すようになった後に行う。
+- 前提: 段階は `readSchema`（読み出しと、ライタが出せないものの警告）、`planFiles`（出力ファイル名の決定と確保）、スキーマファイルの書き出し、`writeTables`（データファイル）、`writeExtraFiles`（ルーチン・トリガー・イベント・制約）。ルーチン以下の 4 種類は `extraFiles` の一覧で、名前の確保と書き出しが共有する。挙動と出力は変えない。
+- 受け入れ条件:
+  - [x] `dumpDB` を段階ごとの関数に分ける
+  - [x] 挙動と出力は変わらない（既存のテストが通る）
+- 結果: `dumpDB` は段階を順に呼ぶだけになった。確保の順序（スキーマ、ルーチン、トリガー、イベント、制約、データ）と警告の順序は元のまま。`task check` と、MySQL 8.0 / 8.4 の `task test:integration` が通った。
+
+## B-051 [done|P3] テスト用のグローバル変数を `Options` に置き換える
+- 依存: B-049, B-050
+- 概要: `dump.fileWriter` と `source.largeTableRows` はテストが書き換えるためのグローバル変数で、並列実行のテストを妨げる。`Options` のフィールドとして渡す形にする。B-049 と B-050 で触るファイルが変わった後に行う。
+- 前提: `fileWriter` は `dump.Options.FileWriter`、`largeTableRows` は `source.Config.LargeTableRows`（0 は既定の 500000、負の値は鍵のない全テーブルで警告）にする。`t.Parallel()` は、この 2 つのグローバルを書き換えていたテストに付ける。MySQL 全体のグローバルリードロックを取るテスト（`reloadUser` を使う `TestJobsWriteFailureEndsEverySession` と `TestJobsCancelEndsEverySession`）は、他のテストの書き込みを止めるので並列にしない。
+- 受け入れ条件:
+  - [x] 2 つのグローバル変数がなくなり、`Options` のフィールドで渡す
+  - [x] 該当するテストが `t.Parallel()` で動く
+- 結果: `fileWriter` と `largeTableRows` は無くなった。`failOn` は `Options.FileWriter` に渡す関数を返し、`hookFileWriter` は削除した。`t.Parallel()` を、`internal/source` の 2 テストと `internal/dump` の 7 テストに付けた。`task check` と、MySQL 8.0 / 8.4 の `task test:integration` が通った。
+
+## B-052 [done|P2] ロガーを標準の `log/slog` にする
+- 概要: 今のログは `dump.Options.Log`（`io.Writer`）に `fmt.Fprintf` で書く警告だけで、レベルがない。`Options.Log` を `*slog.Logger` にし（nil なら出力を捨てる）、既存の警告（非 InnoDB、大きなテーブル）を `Warn` にして DB 名・テーブル名を属性で渡す。ログは標準エラー出力に出す（README の「エラーと警告は標準エラー出力」は維持する）。進捗ログは B-053 で足す。
+- 前提: 警告の本文は変えず、`database` を属性で渡す（トリガーの警告は `table`・`trigger` も）。テーブル名は元の警告の本文に含まれる。`--log-level` / `--log-format` の不正な値は使い方のエラー。
+- 受け入れ条件:
+  - [x] `--log-level`（debug / info / warn / error、既定は info）と `--log-format`（text / json、既定は text）を追加する
+  - [x] 既存の警告が `Warn` で出て、標準出力には何も出ない
+  - [x] 既存の警告のテストを新しい形式に合わせて更新する
+  - [x] README の使い方にフラグを追記する
+
+## B-053 [done|P3] 進捗を `slog` で出力する
+- 依存: B-052
+- 概要: DB の開始と終了、テーブルごとの行数・バイト数・所要時間を `Info` で出す。パスワード、接続文字列、行の値はログに出さない。
+- 前提: メッセージは `dumping database`（`database`）、`table dumped`（`database`、`table`、`rows`、`bytes`、`files`、`duration`）、`database dumped`（`database`、`tables`、`rows`、`bytes`、`files`、`duration`）。`bytes` と `files` はデータファイルだけを数える（スキーマ・ルーチン・トリガー・イベント・制約のファイルは含めない）。`table dumped` は書き終えた順に出る（`--jobs` が 2 以上だとテーブルの順と違う）。`database dumped` はファイルを仮の名前で書き終えた時点で、入れ替えの前に出る。失敗した DB には出ない。
+- 受け入れ条件:
+  - [x] DB とテーブルの進捗が `Info` で出る
+  - [x] ログにパスワード・接続文字列・行の値が出ないことをテストで確認する
+- 結果: `writeTable` が行数とデータファイルのバイト数を数えて `table dumped` を出し、`Run` が `dumping database` / `database dumped` を出す（`dbTotals` が DB ごとの集計で、B-091 の要約はこれを足し合わせる）。README に「Progress」節を足した。統合テスト `TestProgressLog`（`--jobs` 1 と 3）で、件数が実際のファイルの大きさと一致すること、`Debug` レベルのログにも行の値・パスワード・接続文字列が出ないことを確かめた。
+
+## B-054 [done|P2] 動作確認用のサンプルデータを作る
+- 概要: 手元で `mysqldance` を試したり、出力の差分を見たりするための、小さくて多様なサンプルデータを SQL ファイルで用意する。設計書 9 節のテスト方針にある形を網羅する: 改行・引用符・バックスラッシュ・NUL・日本語・絵文字を含む文字列、BLOB / VARBINARY / BIT、外部キー（循環参照を含む）、2 段のビュー、主キーなしのテーブル、生成列と `INVISIBLE` 列、非 ASCII の DB 名、複数 DB。追加のツールを増やさないよう、SQL ファイル（`scripts/sample/`）と `Taskfile.yml` のタスクだけで作る。値は固定にし（`NOW()` や `RAND()` を使わない）、何度作っても同じデータになる。
+- 結果: `scripts/sample/` の SQL 3 本（`sample_main`、`sample_second`、`サンプル`）と、`Taskfile.yml` の `sample:up` / `sample:down` / `sample:verify`。8.0 と 8.4 で投入でき、2 回作ったダンプ 15 ファイルがバイト単位で一致することを `task sample:verify` で確かめた。
+- 前提: 既定のバージョンは 8.4、既定のポートは 33071（統合テストの 33061〜33063 と重ならない）。コンテナ名は `mysqldance-sample`。SQL は `docker exec -i` の標準入力から流す（Docker デーモンが別ホストでも動く）。2 回作って一致を確かめる手順は `task sample:verify` として用意する。
+- 受け入れ条件:
+  - [x] `task sample:up` で Docker の MySQL（バージョンは `VERSION=8.0` / `8.4` で選べる）を起動してサンプルを投入し、`task sample:down` で片付ける
+  - [x] 上に挙げた形がすべて入っている
+  - [x] 同じ手順で 2 回作って `mysqldance` でダンプし、全ファイルがバイト単位で一致する（`task sample:verify`）
+  - [x] README の「Development」に使い方を書く
+
+## B-055 [done|P2] 性能測定用の大量データを作る
+- 依存: B-054
+- 概要: 行数を指定して大きなテーブルを作る。B-017（割り当て削減）、B-018（`ORDER BY` の影響）、B-044・B-045（ストリーム化）の測定に使う。サーバー側で生成する（`scripts/sample-big/big.sql`）ので、データを送る手間がなく速い。キーの種類（整数の主キー、文字列の主キー、キーなし）と、行の大きさ（短い行、BLOB を含む大きい行）を選べる。値は固定で、同じ指定なら同じデータになる。
+- 結果: `task sample:big`（`ROWS`、`ROWSIZE=short|large|both`、`BLOB_BYTES`）が DB `sample_big` に 6 テーブル（`int_` / `str_` / `nokey_` × `short` / `large`）を作る。8.4 で 100 万行を測った: `short` のみ 17 秒（約 0.2 GB）、`both` は 264 秒（約 4.2 GB）。同じ指定で 2 回作り、`CHECKSUM TABLE` が一致することを確かめた。
+- 前提: 既定の行数は 100000（誤って大きく作らない）、`BLOB_BYTES` は 1024、ポートは 33072、コンテナ名は `mysqldance-sample-big`（`sample:up` と同時に動かせる）。再帰 CTE は使わず、`seq` 表を倍々で作ってチャンク（1 万行）ごとに挿入する（トランザクションが行数に比例して大きくならない）。文字列の主キーは行番号の MD5（挿入順にならない）。コンテナの起動は `sample:up` と共通の内部タスク `sample:start` に切り出した。
+- 受け入れ条件:
+  - [x] `task sample:big ROWS=1000000` のように行数を指定して作れる
+  - [x] 整数の主キー、文字列の主キー、キーなしの 3 種類のテーブルが作られる
+  - [x] 100 万行を作る所要時間の目安を README に書く
+
+## B-056 [done|P2] 複数 DB の指定を、出力に触る前にすべて検証する
+- 概要: `--db a --db typo` や `--db a --db mysql` では、2 つ目の不備が 1 つ目の DB のファイルを書き換えた後に見つかり、出力先が中途半端になる。B-003 で全 DB が 1 つの接続になったので、`Use` で全 DB の存在とシステム DB でないことを先に確かめられる（B-003 のレビューで指摘。README の「Failure handling」の「Multiple databases」の挙動が変わる）。
+- 結果: 調べると、README の「Failure handling」どおり、コミット前の失敗では最終パスのファイルは元から変わらなかった。残っていた不備は、2 つ目以降の DB の不備が 1 つ目の読み出しの後に見つかることと、出力先の作成と一時ファイルの掃除が検証より先に走ることだった。`source.Open` がロックを取る前に全 DB の存在とシステム DB でないことを確かめ、`dump.Run` は `Open` を出力先の準備より前に呼ぶようにした（`--jobs` 2 以上の経路も同じ）。テストは `TestBadDatabaseTouchesNothing` と `TestSameDatabasesTwiceSameChecksum`（`internal/dump`）。
+- 受け入れ条件:
+  - [x] 存在しない DB やシステム DB が 1 つでも含まれるとき、どの DB のファイルも削除・作成されない
+  - [x] README の「Failure handling」を新しい挙動に合わせて更新する
+  - [x] 同じ指定で 2 回作ったデータが一致する（行のチェックサムで確認する）
+
+## B-057 [done|P2] FLUSH TABLES WITH READ LOCK の待ち時間に上限を設ける
+- 概要: B-005 で非 InnoDB のテーブルがあるとき `FLUSH TABLES WITH READ LOCK` を取るようにしたが、実行中の長い文を待つ間、後続の文もすべて待たされ、待ちの上限がない（B-005 のレビューで指摘）。上限を設け、超えたらエラーで終了する。
+- 確定した仕様: フラグは `--lock-timeout <duration>`（既定 `30s`、`0` は上限なし＝サーバーの `lock_wait_timeout` に従う）。ロック用の接続に `SET SESSION lock_wait_timeout` を設定してから `FLUSH TABLES WITH READ LOCK` を実行する（秒未満は切り上げ）。超えたらエラー 1205 を包み、`--lock-timeout` を延ばす・長い文の終了を待つ・`--no-lock` を挙げて終了する（再試行はしない）。`--no-lock` のときは使わない。
+- 結果: `source.Config.LockTimeout`（`--lock-timeout`、既定 30s）を追加した。`lockGlobal` がロック用の接続に `lock_wait_timeout` を秒単位（切り上げ）で設定してから FTWRL を実行し、超えたら 1205 を包んだエラーで終了する。テストは `TestLockTimeout`（`--jobs` 1 と 2、`internal/source`）ほか。
+- 受け入れ条件:
+  - [x] ロック取得の待ち時間を指定するフラグ `--lock-timeout` を追加し、超えたらエラーにする（`--jobs` 1 と 2 以上の両方）
+  - [x] 長いクエリが動いているサーバーで、上限内に失敗して他の文を巻き込み続けないことを統合テストで確かめる
+  - [x] README に書く
+
+## B-058 [done|P3] INSERT の区切りのハッシュを混ぜて、偶数の RowsPerInsert でも偏らないようにする
+- 概要: `datafile.Write` の区切りは FNV-1a 32 ビットの生の値を `RowsPerInsert` で割った余りで決める。FNV-1a の下位ビットは入力の下位ビットにしか依存しないため、行が同じ末尾（`')` など）を持つと、偶数の値（50、100 など）で余りが 0 になる行が極端に少なくなりうる（B-009 で `--rows-per-file` の実装中に、末尾が共通のキーで 0 件になることを確認した。B-009 の `Split` はハッシュを混ぜて解決した）。その場合は `MaxInsertBytes` でしか区切られない。ただし、出力を変えると既存のダンプの差分が一度だけ大きく出る。
+- 前提: `Split` と同じ `mix32`（MurmurHash3 の finalizer）を、`fileStream.add` の判定に使う。
+- 受け入れ条件:
+  - [x] `RowsPerInsert` が偶数のときも、区切りの間隔が平均 `RowsPerInsert` 行に近いことを、末尾が共通の行でテストする
+  - [x] 出力が変わることを README に書く
+- 結果: 区切りの判定を `mix32(h)%RowsPerInsert` にした。テストは、行のパリティが全行で同じ（修正前は全行で区切る、または 1 件も区切らない）行を、`RowsPerInsert` が 2〜128 の偶数で書いて、文の数が行数/N の 0.7〜1.3 倍に収まることを確かめる。README の「Determinism and ordering」に、初回のダンプだけ区切りが変わることを書いた。
+
+## B-059 [done|P2] FLOAT と -0 を復元後も同じビットに戻るように出力する
+- 概要: B-016 の検証で、`FLOAT` 列がダンプ → 復元でビット単位では戻らないこと、`FLOAT` / `DOUBLE` とも `-0` が `0` になることが分かった（8.0.x / 8.4.x の両方）。サーバーのテキストプロトコルは `FLOAT` を有効数字 6 桁で出すため、7〜9 桁が必要な値で下位ビットが落ちる（例: `3.4028235e38` → `3.40282e+38`、`16777216` → `1.67772e+07`）。`DOUBLE` のその他の値（サブノーマル数を含む）は一致した。詳細は設計書 11 節。出力の表記が変わると既存のダンプの差分が一度だけ大きく出る。
+- 結果: 実機（8.0 / 8.4）で、`TestFloatDoubleRoundTrip` の `FLOAT` と `DOUBLE`（`-0` を含む 300 行）が skip なしでビット単位で一致した。表記が変わるのは、6 桁を超える桁が要る `FLOAT`、指数表記になる大きい / 小さい `FLOAT`、`-0`（`-0e0`）で、README の「Determinism and ordering」に書いた。同じテストは MySQL 5.7.44 と MariaDB 10.11 / 11.4 でも skip なしで通った。
+- 確定した仕様（実機 8.4 で確認）:
+  - `-0` が落ちる原因は出力のリテラル。サーバーは `-0` と出力するが、`-0` は整数 `0` の単項マイナスなので `0` になる。`-0e0` と書けば `-0` のまま入る。`FLOAT` / `DOUBLE` の値が `-0` のときは `-0e0` と出力する。
+  - `FLOAT` は `SELECT` で `` `f` * 1e0 `` として読む（`CAST(f AS DOUBLE)` は 8.0.17 より前と 5.7 で使えない。`* 1e0` は `-0` を保ち、`FLOAT` の正確な値を `DOUBLE` で返す）。Go で `float32` にして最短表記（`strconv` の `'g'`、`-1`、32 ビット）にする。`0.1` は `0.1` のまま。`FLOAT` の範囲を超える表記（`3.4028235e38` はサーバーが範囲外として拒否する）になるときは、正確な `DOUBLE` の最短表記（`3.4028234663852886e38`）にする。
+- 受け入れ条件:
+  - [x] `FLOAT` の値と `-0` が、復元後にビット単位で元と一致する（`internal/dump` の `TestFloatDoubleRoundTrip` の `FLOAT` と `DOUBLE` が skip でなく通る。8.0 と 8.4。テストの既知の不一致の許容は外す）
+  - [x] 6 桁以下で往復できる値と `DOUBLE` の出力は、できるだけ変えない（変わるなら README に書く）
+  - [x] 出力の表記が変わることを README に書く（決定性は保つ）
+
+## B-060 [done|P2] 統合テストの接続先ホストを環境変数で指定できるようにする
+- 概要: `task test:integration` が MySQL に接続するホストは `HOST` 引数（既定 `127.0.0.1`）でしか変えられない。Docker デーモンが別の場所にある環境では `host.docker.internal` が要り、毎回引数を付けるか worktree ごとに設定が要る。環境変数 `MYSQLDANCE_TEST_HOST` でも指定できるようにし、ユーザー単位の設定（`~/.claude/settings.json` の `env` やシェルの profile）に置けば worktree を作り直しても引き継がれるようにする。既定値は変えない。
+- 受け入れ条件:
+  - [x] 優先順位は `HOST` 引数 > `MYSQLDANCE_TEST_HOST` > `127.0.0.1` にする
+  - [x] `MYSQLDANCE_TEST_HOST` だけを指定して `task test:integration` が通る（8.0 と 8.4）
+  - [x] Taskfile のコメントに環境変数と優先順位を書く
+
+## B-061 [done|P3] `go install` でも `--version` が意味のある値を出すようにする
+- 概要: `--version` の `version` / `commit` は ldflags でしか入らず、`go install ...@vX.Y.Z` や `go build` で作ったバイナリは `dev (commit unknown)` と出る。ldflags が空のときに限り、`runtime/debug.ReadBuildInfo()` の `Main.Version` と `vcs.revision` に切り替える。B-032 のレビューで指摘された。
+- 前提: 値ごとに判断する（`version` が `dev` のときだけ `Main.Version` を、`commit` が `unknown` のときだけ `vcs.revision` を使う）。`Main.Version` が空か `(devel)` のときは既定値のまま。作業ツリーに変更があれば `vcs.modified` を見てコミットに `-dirty` を付ける。
+- 受け入れ条件:
+  - [x] ldflags を渡さずに `go build` したバイナリが、VCS の情報があればコミットを表示する
+  - [x] ldflags を渡したビルドの表示は変わらない
+
+## B-062 [done|P3] SQLite 向けの出力でビューを変換する
+- 依存: B-036
+- 概要: B-036 の SQLite 向け出力はビューを出力しない（警告のみ）。MySQL の `SHOW CREATE VIEW` は `ALGORITHM` / `DEFINER` / `SQL SECURITY` 句、文字コード指定子（`_utf8mb4'x'`）、`db`.`t` 形式の修飾名、SQLite にない関数（`IF()`、`CONCAT()`、`DATE_FORMAT()` など）を含むため、変換の範囲を決める（単純な `SELECT` だけを通して残りは警告する、など）。
+- 前提（仕様確定）: `SHOW CREATE VIEW` の本文をトークン分割し、許可リスト方式で変換する。`ALGORITHM` / `DEFINER` / `SQL SECURITY` 句、同じ DB の `db`. 修飾、文字コード指定子を除く。列・JOIN・WHERE・GROUP BY・ORDER BY・LIMIT と許可した関数だけを通す。関数は MySQL と意味が同じものだけ許可する（`COUNT` / `SUM` / `MIN` / `MAX` / `AVG` / `COALESCE` / `IFNULL` / `NULLIF` / `ABS` / `ROUND` / `UPPER` / `LOWER` / `SUBSTR` / `TRIM` / `REPLACE` など）。`IF(a,b,c)` は `CASE WHEN`、`CONCAT(a,b)` は `(a || b)` に書き換える。それ以外（`DATE_FORMAT` など未知の関数、`WITH CHECK OPTION`、別 DB の参照など）は理由つきの警告にして出力しない。MySQL と意味が変わりうる式（`/`、文字列リテラルとの比較、`ORDER BY` の照合順序）を含むビューは出力するが、変換したビューごとに「結果が MySQL と異なりうる」と理由つきの警告を出す。README に書く。
+- 結果: `internal/writer/sqliteview.go` に許可リスト方式の変換を足した。ビューは依存順にテーブルの後へ書く。出力しなかったビューや別 DB を読むビューを読むビューも出力しない（理由つきの警告）。`CONCAT` の引数は括弧で包み、`COUNT(DISTINCT a, b)` は出力しない。意味が変わりうる式を含むビューは出力して注意の警告を出す。列の型を使う警告は B-113。
+- 受け入れ条件:
+  - [x] 変換できるビューが SQLite にリストアでき、できないビューは理由つきの警告になる
+  - [x] 意味が変わりうる式を含むビューは、出力したうえで注意の警告になる
+  - [x] 出力は決定的である
+  - [x] README の SQLite の節を、ビューの扱いに合わせて更新する
+
+## B-063 [done|P3] SQLite 向けの出力で、外部キーの参照先が UNIQUE / 主キーでないときに警告する
+- 依存: B-036
+- 概要: InnoDB は、外部キーが参照する列に UNIQUE でない通常のインデックスがあれば足りるが、SQLite は参照先の列が主キーか UNIQUE インデックスであることを求める。B-036 の出力はこの外部キーをそのまま書くので、リストアは通る（`foreign_keys=OFF`）が、利用者が外部キーを有効にすると、子テーブルへの書き込みが `foreign key mismatch` で失敗する。B-036 のレビューで指摘された。
+- 前提（仕様確定）: 参照先の列が、親テーブルの主キーまたは UNIQUE インデックスの列と（順序を問わず）一致しない外部キーは、出力せず、理由つきの警告にする（SQLite で外部キーを有効にしても子テーブルへ書き込めるようにするため）。SQLite 向けに出力しない索引（FULLTEXT / SPATIAL、式、生成列）は UNIQUE とみなさない。親テーブルを読んでいない場合は判定せず、そのまま出力する。README に書く。
+- 結果: `internal/writer/sqlite.go` の `isSQLiteParentKey` で判定する。
+- 受け入れ条件:
+  - [x] 参照先の列が親テーブルの主キーでも UNIQUE インデックスでもない外部キーは、理由つきの警告になる（外部キーを出力するか落とすかは実装時に決める）
+  - [x] 参照先が主キーまたは UNIQUE の外部キーの出力は変わらない
+
+## B-064 [done|P3] PostgreSQL 向けの出力でビューを変換する
+- 依存: B-035
+- 概要: B-035 の PostgreSQL 向け出力はビューを出力しない（警告のみ）。MySQL の `SHOW CREATE VIEW` は `ALGORITHM` / `DEFINER` / `SQL SECURITY` 句、文字コード指定子、`db`.`t` 形式の修飾名、PostgreSQL にない関数（`IF()`、`CONCAT()` の挙動、`DATE_FORMAT()` など）を含むため、変換の範囲を決める（単純な `SELECT` だけを通して残りは警告する、など）。B-062（SQLite 向け）と方針を揃える。
+- 仕様（確定）: B-062 と同じ許可リスト方式（`SHOW CREATE VIEW` の本文をトークン分割し、既知の語だけ通す）。識別子は `"` で囲み直し、`IF` は `CASE WHEN`、`IFNULL` は `COALESCE`、`CONCAT` は `||` に書き換える。PostgreSQL は `CREATE VIEW` の時点で型・`GROUP BY` を検査し、通らないとリストア全体が止まるため、確実に通らない形（boolean 列（`TINYINT(1)`）を整数と比べる式、主キー以外の非集約列を `SELECT` する `GROUP BY` など）は列定義とトークンから静的に検出し、理由つきの警告にして出力しない。別 DB を参照するビュー・出力しなかったビューを読むビューも出力しない。意味が変わりうる式（文字列の比較・並び順、整数の `/` など）を含むビューは、出力したうえで注意の警告を出す。
+- 受け入れ条件:
+  - [x] 変換できるビューが PostgreSQL にリストアでき、できないビューは理由つきの警告になる
+  - [x] boolean 列の整数比較と非集約列の `GROUP BY` を含むビューは、出力せず理由つきの警告になる
+  - [x] 実機の PostgreSQL（統合テスト）で、出力したビューが MySQL と同じ行を返す
+  - [x] 出力は決定的である
+  - [x] `README.md` の `--target postgres` の節と設計書を更新する
+
+## B-066 [done|P2] 5.7 のゼロ日付の既定値を 8.x へ復元できるようにする
+- 依存: B-040
+- 概要: 5.7 で `explicit_defaults_for_timestamp=OFF`（5.7 の既定）のとき、`TIMESTAMP NOT NULL` の列は `SHOW CREATE TABLE` に `DEFAULT '0000-00-00 00:00:00'` と出る。`--target mysql` はこれをそのまま出すので、`NO_ZERO_DATE` を含む既定の `sql_mode` の 8.x では、復元時に `Invalid default value` で失敗しうる（B-040 のコードレビューで指摘。実機では未確認）。まず実機で確かめ、失敗するなら、出力する方法（復元ファイルの `sql_mode` 設定など）を決める。
+- 結果: 実機（5.7.44 → 8.4）で確かめた。**失敗しない**。8.4 自身の `sql_mode` では `CREATE TABLE ... DEFAULT '0000-00-00 00:00:00'` は拒否されるが、各ファイルのヘッダーの `SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO'` がセッションの mode を置き換え、`NO_ZERO_DATE` と strict が外れるため復元できる。出力は変えない。回帰テスト `TestMySQL57ZeroDateDefault`（`internal/dump`、`test:integration:mysql57`）を追加した。ヘッダーを省いた復元（`CREATE TABLE` だけを流す）は 8.x で失敗する。
+- 受け入れ条件:
+  - [x] 5.7.44 の `TIMESTAMP NOT NULL`（`explicit_defaults_for_timestamp=OFF`）の出力を、8.4 に復元した結果が分かる（失敗するか、しないか）
+  - [x] 失敗する場合、復元できる出力になる。5.7 から 5.7 への復元は変わらない（失敗しないため出力は変更なし。5.7 → 5.7 も同テストで確認）
+  - [x] README の「MySQL 5.7」節を結果に合わせる
+
+## B-067 [done|P2] README に互換性の表（読み出し元 × 出力形式 × 復元先）を書く
+- 概要: 対応状況が README の冒頭、MariaDB 節、5.7 節、Limitations に散っていて、「どのサーバーのダンプをどの版に復元できるか」がどこにもまとまっていない。今ある知見だけで表を書く。コードは変えない。表は 2 つ: (1) 読み出し元（MySQL 5.7.44 / 8.0 / 8.4 / MariaDB 10.11 / 11.4。5.6 と 5.5 は未確認の行として入れ、B-079 と B-080 の結果で更新する）× `--target`（mysql / sqlite / postgres）、(2) 出力 × 復元先の版（MySQL 系の復元先、PostgreSQL 17、SQLite は `modernc.org/sqlite` 内蔵の版）。凡例は「テスト済み / 条件つき / 失敗を確認 / 未確認」の 4 段階にし、テストの裏が取れていないマスを「テスト済み」にしない。
+- 結果: README の「Compatibility」節（冒頭の近く）に、凡例（Tested / Conditional / Fails / Unverified）と 2 つの表を書いた。表 2 は、`--target mysql` の出力 × MySQL 系の復元先の表と、`sqlite` / `postgres` の復元先（`modernc.org/sqlite` v1.62.0 は SQLite 3.54.1、`sqlite3` コマンド 3.46.1 / 3.8.2 / 3.7.9、PostgreSQL 14〜18）の表に分けた。
+- 前提: 5.6 は B-079 で手動で確かめたが、本ツールが拒否する版なので「未確認」のままにした（B-095 の後に更新する）。MySQL 8.4 の出力を MariaDB に流すと失敗する件は、設計書 11 節（B-037）の記録に基づく。
+- 受け入れ条件:
+  - [x] 2 つの表と凡例が README の冒頭近くにあり、各サーバーの節からリンクされている
+  - [x] 「テスト済み」のマスは、それを確かめるテストまたは設計書の記録に対応する（B-066 の件は「条件つき」にする）
+  - [x] `CLAUDE.md` に「対応するサーバーや復元先が変わったら、README の表を同じ変更で更新する」を足す
+
+## B-068 [done|P2] PostgreSQL の複数の版で統合テストを実行する
+- 概要: `--target postgres` の統合テストは `postgres:17` だけで確かめている。現行のサポート版（14〜18）で実行できるようにし、通らない版があれば、原因と、出力の構文が要求する最低の版を記録する。直すかどうかは別項目にする。
+- 前提: 出力の元は MySQL 8.4 だけにする（版の組み合わせを増やさない）。専用タスクは `-run Postgres` で `TestPostgres*` だけを実行する（`TESTFLAGS` で変えられる）。
+- 結果: 14.24 / 15.19 / 16.15 / 17.11 / 18.6 のすべてで 6 つの統合テストが通った。通らない版はなく、README の変更は不要。詳細は設計書 11 節。
+- 受け入れ条件:
+  - [x] `Taskfile.yml` に PostgreSQL のイメージを選ぶ変数（`PG_IMAGE`）を足し、`task test:integration:postgres` で 14〜18 を順に実行できる（`task test:integration` の既定には含めない）
+  - [x] 各版の結果（通る / 通らない、通らない場合は失敗したテストと原因）を設計書 11 節に記録する
+  - [x] 通らない版があれば、その構文と最低の版を README の PostgreSQL 節に書く（通らない版が無かったので、書くものは無い）
+
+## B-069 [done|P2] SQLite の復元を `sqlite3` コマンドで確かめる
+- 概要: SQLite 向けの出力は `cat dir/*.sql | sqlite3` で復元する使い方を想定しているが、テストは Go 組み込みの `modernc.org/sqlite`（v1.62.0）で復元していて、実際の `sqlite3` コマンドは使っていない。コマンドでの復元を確かめ、出力が要求する最低の版を調べる。
+- 前提: テストは README と同じ `LC_ALL=C cat dir/*.sql | sqlite3 db` の形で復元し、`modernc` の復元と同じ表・同じ問い合わせで値を比べる。`sqlite3` が `PATH` に無い環境では skip する。CI は `integration.yml` と同じく、ログに skip の文言が残ったら失敗にする（`ubuntu-latest` に `sqlite3` が入っている）。最低の版は、古い `sqlite3` を載せた Docker イメージで実機に流して確かめる。
+- 結果: 手元と CI（`ubuntu-latest`）の `sqlite3` 3.46.1 で、MySQL 8.0 / 8.4 とも行数と値が一致した。最低の版は 3.7.16（実機で通ったのは 3.8.2 から。3.7.9 は失敗）。詳細は設計書 11 節。
+- 受け入れ条件:
+  - [x] `sqlite3` コマンドで出力を復元するテストを追加する（`sqlite3` が無い環境では skip し、CI では skip を失敗にするかを決めて書く）
+  - [x] 手元と CI の `sqlite3` の版で、行数と値が一致する
+  - [x] 出力が使う構文のうち、新しい版で入った機能と、その最低の版を設計書 11 節に記録する
+
+## B-078 [done|P2] 読み出し元の互換性を検査し、推奨オプションを示す機能を設計する
+- 概要: 接続先のサーバーを検査して、「このサーバーはこのオプションで読める」「この設定は要注意」と報告する機能（例: `mysqldance check` のようなサブコマンド）の案を設計書に書く。読み出し元は本ツールが接続して調べられるので、利用者が問題に気づく前に示せる。復元先はこのツールが接続しないので、同じことは難しい。代わりに、読み出したデータと選んだ `--target` の組み合わせで復元できない値（PostgreSQL に入らないゼロ日付や NUL など）を、読み出し元の検査として前もって示す案を含める。古い版（5.6 以前。B-079 から B-082）で分かったこと（ゼロ日付、`latin1` に入った UTF-8、TLS の下限）も検査の対象に入れる。コードは変えない。実装は、案を見てから別項目にする。
+- 受け入れ条件:
+  - [x] 検査する項目の一覧を作り、各項目について「何を調べるか」「見つかったときの推奨オプションまたは対処」を書く。少なくとも次を含める: 版と方言の判定、`RELOAD` 権限と `--no-lock`、`SHOW VIEW` 権限、全列への `SELECT` 権限、非 InnoDB のテーブル、対応しない `TABLE_TYPE`、TLS の可否と `--ssl-mode`（5.7 の暗号スイートの件を含む）、`show_create_table_verbosity` のグローバル設定、`explicit_defaults_for_timestamp` とゼロ日付、`lower_case_table_names`、`--target` ごとに入らない値
+  - [x] 出力の形（人が読む表と、機械が読める形式）と、終了コードの案を書く
+  - [x] 検査が読み取りだけで、サーバーの状態を変えないことを保証する方法を書く（ロックを取らない、など）
+  - [x] 既存のダンプの失敗やエラーメッセージと重複する部分を整理し、検査とダンプで判定のコードを共有する案を書く
+  - [x] 復元先の検査を本ツールで扱わない理由と、代わりに README の互換性の表（B-067）で示す範囲を書く
+- 結果: 設計書 13 節に案を書いた。`mysqldance check` サブコマンド、16 の検査項目（C01 から C16）、表と JSON Lines の出力、終了コード（0 / 1 / 2）、読み取りだけの保証（許可する文の限定、`READ ONLY` のトランザクション、文の記録、`Com_%` カウンタ）、ダンプと判定を共有する方式、復元先を検査しない理由を決めた。実機（8.4、5.7.44、5.6.51、MariaDB 10.11）で、権限の読み方（ロール経由は `SHOW GRANTS`）、`FLUSH_TABLES` だけで FTWRL が通ること、変数の有無、値の検出の問い合わせを確かめた。別件は B-104。
+
+## B-079 [done|P2] MySQL 5.6 と 5.7 の差異を調べる
+- 概要: 古い MySQL を新しい MySQL や MariaDB に移したい利用者のために、読み出し元の下限を下げる第一歩として、5.6 の挙動を実機で確かめる（B-037 の MariaDB、B-039 の 5.7 と同じ流れ）。`dialect` の全クエリの結果と `SHOW CREATE` を 5.7 と並べて比べ、現在のバイナリが 5.6 のどこで失敗するかを確かめる。コードは変えない。対応は、結果を見てから別項目にする。
+- 前提: 検証は Docker の `mysql:5.6`（公式イメージ。amd64 のみなので、5.7 と同じく `--platform linux/amd64` で起動する）で行う。
+- 受け入れ条件:
+  - [x] 現在のバイナリを 5.6 につないだときの挙動（拒否、`SET` の失敗、クエリの失敗のうち、どこで止まるか）を記録する
+  - [x] `dialect` の全クエリが 5.6 で動くか、列の形が 5.7 と同じかを確かめる。動かないものと、代替を書く
+  - [x] `SHOW CREATE` の書式の差、ゼロ日付、小数秒（5.6.4 以降）、TLS の可否（本ツールの下限は TLS 1.2）を記録する
+  - [x] 5.6 の出力（`--target mysql`）を、新しい 8.4 と MariaDB に復元できるかを確かめる
+  - [x] 結果と、対応する場合の方針を設計書 11 節に書く
+- 結果: 設計書 11 節に記録した。5.6.51 は、拒否を外すだけで 5.7 向けの `dialect`（`mysql57`）のままダンプでき、`dialect` の全クエリの結果と `--target mysql` の出力が 5.7.44 と一致した。出力は新しい 8.4・MariaDB 10.11・11.4 に復元できた。5.6 だけの注意は TLS（公式イメージは無効。証明書を設定すれば TLS 1.2 でつながる）とゼロ日付。対応は B-095。
+
+## B-081 [done|P2] `latin1` の列に入った UTF-8 の扱いを設計する
+- 概要: 古いシステムでは、`latin1` の列に UTF-8 のバイト列をそのまま入れているものがある。本ツールは `SET NAMES utf8mb4` で読むので、`latin1` として変換し、二重エンコードの文字化けにしてしまう。列の実体が UTF-8 のときに、バイト列を変えずに移す方法と、利用者に選ばせる方法（フラグ、列の指定、検出と推奨）を設計書に書く。版を問わず効くので、古い版への対応（B-079、B-080）とは独立に進められる。コードは変えない。
+- 受け入れ条件:
+  - [x] `latin1` の列に UTF-8 のバイト列を入れたテーブルを、現在のバイナリでダンプして復元すると、どう壊れるかを実機で再現して記録する（8.4 で確かめる）
+  - [x] バイト列を保つ読み方（`SET NAMES binary` で読む、`CONVERT` を使う、など）を実機で確かめ、復元先で正しい文字になる条件を書く
+  - [x] 実体が UTF-8 か `latin1` かを、データから検出できる範囲を調べる（検出して推奨するか、利用者に指定させるかの案を書く）
+  - [x] 決定性と差分の局所性を保てるか、`--target sqlite` / `postgres` ではどう表すかを書く
+- 結果: 設計書 14 節に案を書いた（8.4.13 で確認。5.7 / 5.6 / MariaDB は未確認）。今の既定の出力は、`latin1` の列のまま復元する限りバイト単位で正しい（255 バイトの往復でも一致）。壊れるのは `utf8mb4` へ移す、SQLite / PostgreSQL へ移す、ファイルを読む場合。UTF-8 の文字列を `latin1` の列に（非厳格な `sql_mode` で）入れると `???` に静かに化けるので、値を直すなら列の宣言も `utf8mb4` にする。案は、既定は変えず、オプトインの `--latin1-as-utf8 DB.TABLE.COLUMN`（`CAST(col AS BINARY)` で読み、不正な UTF-8 はエラー）。検出は `check` の C12 の集計問い合わせ（4 分類）で、ダンプは自動で切り替えない。別件は B-105。
+
+## B-083 [done|P2] ダンプの差分の要約を出す機能を設計する
+- 概要: 出力は 1 レコード 1 行で、`INSERT` は行の内容で区切るので、前回の出力との差を行の単位で数えられる。ダンプの終了時に「3 ファイルが変更、`orders` に +120 / −5 行、`users` は変更なし」のような要約を出す機能の案を設計書に書く。git に依存しない。コードは変えない。実装は、案を見てから別項目にする。
+- 受け入れ条件:
+  - [x] 要約の内容（ファイルの追加・削除・変更、テーブルごとの追加・削除の行数、変更なしの扱い）と、出力の形（人が読む形と、機械が読める形）の案を書く
+  - [x] 比べる相手（書き換える前の出力ディレクトリ）の読み方と、大きなテーブルで時間とメモリを増やさない方法を書く
+  - [x] 要約を出すフラグの名前と既定（既定で出すか、`--summary` のように明示するか）の案を書く
+  - [x] 失敗したときに、前のダンプが残る（README の「Failure handling」）ことと矛盾しないかを確かめる
+- 前提: 既定は出さず `--summary` を付けたときだけ出す。人が読む形は標準出力（ログは標準エラー出力）、機械が読める形は `--summary-format json`（JSON Lines）。終了コードは変えない。
+- 結果: 設計書 15 節に案を書いた。単位（`schema` / `data`（部品をつないで 1 つ）/ `triggers` / `constraints`）と状態（added / removed / changed / unchanged）、更新は −1 +1 と数えること、行末の `,` と `;` を除いて行を比べること（模擬で、除かないと +2 −3、除くと本来の +2 −2）、前回のファイルを commit の前に読み取りだけで、窓つきの先頭からの同時走査（メモリはテーブルの大きさによらない。窓を超えたら `exact: false`）で比べること、比較の失敗は commit の前の失敗として扱い、要約は commit が成功してから出すこと（Failure handling と矛盾しない）、を決めた。巨大テーブルでの実測は未確認（15.8）。コードは変えていない。
+
+## B-087 [done|P2] 最終エラーを `slog.Error` で出す
+- 依存: B-052
+- 概要: 失敗時のエラーだけ `main.go` が `fmt.Fprintf` で標準エラーに書くので、`--log-format json` でも素のテキストが混ざり、`--log-level` も効かない。`dump.Run` が返したエラーを `Error` で出す。メッセージ本文は変えず、終了コードも変えない。使い方のエラー（フラグの不正）は従来どおり usage を出す。
+- 受け入れ条件:
+  - [x] `dump.Run` の失敗が `Error` で出る（text / json）
+  - [x] 失敗時に標準出力には何も出ず、終了コードは 1 のまま
+  - [x] README の使い方に、エラーも `--log-format` に従うと書く
+
+## B-088 [done|P2] 接続・スナップショット・ロックの方式をログに出す
+- 依存: B-052
+- 概要: 起動後に何が起きているか分からない。接続先（host と port か socket。パスワードは出さない）、一貫性の取り方（`FLUSH TABLES WITH READ LOCK` を取ったか、InnoDB のみの一貫性スナップショットか）、`--jobs` で開いた接続数、ロックの取得待ちと保持の時間を `Info` で出す。詳細（実行した文の種類など）は `Debug`。
+- 結果: `source.Config.Log`（`dump.Run` が `Options.Log` を渡す）に、`connected`（接続先、`jobs`、`connections`）、`global read lock acquired`（`duration` は待ち時間）、`consistent snapshot started`（`global_lock`）、`global read lock released`（`duration` は保持時間）を `Info` で出す。`Debug` は `FLUSH TABLES WITH READ LOCK`、`START TRANSACTION WITH CONSISTENT SNAPSHOT`、`UNLOCK TABLES`。README に「How the snapshot is made」節を足した。
+- 前提: ロックの取得待ちと保持の時間は、どちらも属性 `duration` で渡す（メッセージで区別する）。ロックを取らないときは `acquired` / `released` を出さない。
+- 受け入れ条件:
+  - [x] 上の項目が `Info` で出て、パスワードと接続文字列は出ない
+  - [x] ロックを取った場合と取らない場合の両方をテストで確認する（統合テスト）
+  - [x] 時間は属性（`duration`）で渡し、出力ファイルの内容には影響しない
+
+## B-094 [done|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
+- 概要: B-069 の PR（#43）の CI で、MySQL 8.0 の `TestLockTimeout/jobs=2`（`internal/source/lock_test.go`）が `lock_test.go:114: Open succeeded although the lock could not be taken within the timeout` で失敗した。同じコードの 1 回目の run は 8.0 / 8.4 とも通り、2 回目は 8.4 が通って 8.0 だけが失敗した。6 秒の `SLEEP` の文と 1 秒の `--lock-timeout` を、時間で競わせる作りが原因と推測している（未確認）。原因を調べ、再現させてから、安定させる。
+- 結果: 原因はテストの作りで、実装（`lockGlobal`）は正しい。元の失敗は手元では再現できず（修正前に 8.0 / 8.4 で `-count=20` ずつ）、読みで特定した。別の失敗を 8.4 の `jobs=2` で 1 回再現した（`1 session(s) of ... are left on the server after the failed Open`）。(1) `Open` 失敗時の `sdb.Close` はクライアントのソケットを閉じるだけで、サーバーのセッション削除は非同期なのに、直後に `PROCESSLIST` を数えていた。(2) `waitFor` は `PROCESSLIST` に行が出れば進むが、その時点では文がテーブルを開いておらず、読み取りを止めない `FLUSH TABLES WITH READ LOCK` が先に取れて `Open` が成功しうる（元の失敗はこれと、6 秒対 1 秒の固定の競争と推測。再現はしていない）。直し方: 長い文を `SELECT id, SLEEP(60)` にして `KILL QUERY` で止め、`STATE = 'User sleep'` を待ってから `Open` し、残りセッションは期限つきでポーリングする。20 回の実行は 245 秒から 47 秒に縮んだ。
+- 受け入れ条件:
+  - [x] 失敗の原因を、再現するか、ログと `lock_test.go` の読みで特定する（テストの作りか、`FLUSH TABLES WITH READ LOCK` の取得の実装か）
+  - [x] 原因がテストの作りなら、時間への依存を減らして直す。実装なら、失敗するテストを先に書いて直す
+  - [x] `TestLockTimeout` を `-count=20` で、8.0 と 8.4 の両方で繰り返して全て通る
+
+## B-095 [done|P2] MySQL 5.6 に対応する
+- 依存: B-079
+- 概要: B-079 の調査結果（設計書 11 節）に基づき、`dialectFor` の「5.7 以上が必要」の拒否を 5.6 まで緩め、5.6 は 5.7 向けの `dialect`（`mysql57`）をそのまま使う。`dialect` の中身は変えない。確認した版は 5.6.51 だけ。5.5 以前は対象外のまま拒否する（B-080 の結果を見てから別項目にする）。TLS の下限を下げる件は B-082。
+- 前提: テストは `mysql:5.6`（5.6.51）。イメージは amd64 のみなので `--platform linux/amd64` で起動する。公式イメージの 5.6 は TLS 無効で起動する（証明書を自動生成しない）ので、既定の統合テストは `--ssl-mode` を `disabled` か `preferred`（平文に落ちる）で動かす。専用タスクは `test:integration:mysql56`。復元先は 8.4 と MariaDB 10.11 の 2 つで、タスクを 2 回に分けて走らせる（1 回目は全テストを 8.4 へ、2 回目は 5.6 の往復テストだけを MariaDB へ）。`--ssl-mode` は既定（`preferred`）のまま、平文で動かす（5.6 は TLS 1.2 を持つが、イメージは無効なので `disabled` にはしない）。
+- 結果: `dialectFor` が `5.6.` を `mysql57` にした（`dialect` の中身は変えていない）。5.5 以前は `MySQL 5.6 or later (or MariaDB) is required` で拒否する。`task test:integration:mysql56` を足した（8.4 への 1 回目は全テスト、MariaDB 10.11 への 2 回目は `-run MySQL56`）。5.6 にない機能（JSON、生成列、同じイベントの複数トリガー）を使うテストの fixture は 5.6 で skip するか 5.6 向けにし、ユーザー名は 16 文字に収めた。往復テストは `TestMySQL56RoundTrip`。README に「MySQL 5.6」節と互換性の表の行を足した。5.7.44 の統合テストで落ちる `TestTriggers` / `TestTriggersRoundTrip` は、`origin/main` でも落ちる既存の失敗で、B-106 に積んだ。
+- 受け入れ条件:
+  - [x] `dialectFor` が 5.6 を `mysql57` にし、5.5 以前は拒否のまま。拒否のメッセージを「MySQL 5.6 or later」にする。`dialect` 以外のコードにバージョン固有の分岐を入れない
+  - [x] 5.6.51 の実機で統合テストが通る（`task test:integration:mysql57` と同じ形の専用タスクで実行し、`task test:integration` の既定には含めない。MySQL 8 固有のテキストを前提にするテストは、テスト専用の判定で skip する）
+  - [x] 5.6 の出力（`--target mysql`）を新しい 8.4 と MariaDB に復元して、行数と値が一致する往復テストがある（ゼロ日付、`DATETIME(3)` / `TIMESTAMP(6)`、暗黙の `TIMESTAMP` の既定値を含む）
+  - [x] README の対象バージョンと、5.6 の注意（確認した版が 5.6.51 だけであること、TLS を有効にしないと `--ssl-mode preferred` が平文になること、ゼロ日付は `--target postgres` で失敗すること）を更新する
+
+## B-096 [done|P2] PostgreSQL 向けの出力で、長すぎるインデックス名を決定的に短縮する
+- 概要: `--target postgres` はインデックスと主キー制約を `<table>__<index>` と名付けるため、MySQL では有効な名前（テーブル名・インデックス名とも最大 64 文字）でも、PostgreSQL の上限（63 バイト）を超えて `pgIdent` でエラーになる。63 バイトを超えるときだけ、名前を決定的に短縮して出力を続ける。テーブル名・列名など、インデックス以外の名前が長すぎる場合は今まで通りエラー（対象外）。
+- 方針: 超えたときだけ、`<table>__<index>` の先頭を UTF-8 の文字境界で切り、末尾に元の完全な名前（`<table>__<index>`）の短いハッシュ（固定長の 16 進）を付けて 63 バイト以内にする。名前が上限以内なら変えない（既存の出力は 1 バイトも変わらない）。時刻・乱数・マップの反復順は使わない。短縮した名前が他の名前と衝突したら、今まで通りエラーにする。
+- 前提: ハッシュは元の完全な名前の SHA-256 の先頭 8 桁（16 進、小文字）で、`_` で区切って付ける（付ける部分は 9 バイト、先頭は最大 54 バイト）。
+- 結果: `internal/writer/postgres.go` の `pgShortName` が、63 バイトを超える `<table>__<index>` を「先頭（文字境界で切る）+ `_` + 元の名前の SHA-256 の先頭 8 桁」に短縮する。主キー制約と通常・UNIQUE のインデックスに適用し、警告に元の名前と短縮後の名前を出す。短縮後の名前が他の名前と衝突したときは、元の名前を含むメッセージでエラーにする（失敗時は警告が出ないため）。テーブル名・列名・DB 名はこれまで通りエラー。統合テストは `TestPostgresLongIndexNames`（PostgreSQL 14〜18、MySQL 8.4）。README の PostgreSQL の節を更新した。
+- 受け入れ条件:
+  - [x] 63 バイトを超える `<table>__<index>` が、63 バイト以内の決定的な名前になる（同じ入力で複数回実行しても同じ。切り口が UTF-8 の途中にならない。マルチバイトの名前のテストを含む）。上限以内の名前は変わらない
+  - [x] 主キー制約（`<table>__PRIMARY`）と通常・UNIQUE のインデックスの両方に適用される。短縮したときは、元の名前と短縮後の名前を警告に出す
+  - [x] 短縮前の名前が違うのに、短縮後が同じになる場合（先頭が同じで長い名前の 2 つ）はハッシュで区別でき、他のテーブル・インデックスの名前と衝突するときだけエラーになる
+  - [x] 実機の PostgreSQL で、長い名前のインデックスを持つテーブルを復元でき、`pg_indexes` で短縮後の名前が確認できる統合テストがある
+  - [x] README の PostgreSQL の節（名前が 63 バイトを超えるとエラーになるという記述）を、インデックス名は短縮、それ以外はエラーに更新する
+
+## B-097 [done|P2] PostgreSQL 向けの出力で、長すぎる外部キー制約名を決定的に短縮する
+- 依存: B-096
+- 概要: `--target postgres` は外部キー制約名（`fk.Name`、`internal/writer/postgres.go` の `pgIdent("foreign key", ...)`）が 63 バイトを超えるとエラーにする。MySQL の制約名は最大 64 文字なので、MySQL では有効な名前で失敗する。B-096 で作る短縮の関数をそのまま使い、制約名を短縮して出力を続ける。
+- 方針: B-096 と同じ規則（超えたときだけ、文字境界で切って完全な名前のハッシュを付ける。上限以内は不変）。制約名は PostgreSQL ではテーブル単位でユニークなので、衝突の判定はテーブルの中で行う。
+- 前提（実装時に確定）: 短縮と警告は、実際に出力する外部キーだけが対象（スキップする外部キーは今まで通り警告なしで名前を見ない）。衝突の判定は、同じテーブルの他の外部キーと、そのテーブルの主キー制約名（`<table>__PRIMARY` を B-096 の規則で短縮した名前）との間で行う。主キー以外の制約名は `pg_constraint` に入らない（UNIQUE は `CREATE UNIQUE INDEX` で作る）ので対象外。エラーには、短縮前の名前を含める（失敗した実行は警告を出さないため）。
+- 結果: `internal/writer/postgres.go` の `WriteConstraints` が、出力する外部キーの名前を `pgShortName`（B-096 と同じ規則）で短縮し、警告に元の名前と短縮後の名前を出す。同じテーブルの他の外部キーと主キー制約名（`<table>__PRIMARY`）との衝突だけをエラーにし、エラーには短縮前の名前を含める。スキップする外部キーは名前を見ない。統合テストは `TestPostgresLongForeignKeyName`（MySQL 8.0 / 8.4、PostgreSQL 17）。README の PostgreSQL の節を更新した。
+- 受け入れ条件:
+  - [x] 63 バイトを超える外部キー制約名が、B-096 と同じ関数で決定的に短縮され、上限以内の名前は変わらない。短縮したときは、元の名前と短縮後の名前を警告に出す
+  - [x] 同じテーブル内で短縮後の名前が衝突するときだけエラーになる
+  - [x] 実機の PostgreSQL で、長い名前の外部キーを持つテーブルを復元でき、`pg_constraint` で短縮後の名前が確認できる統合テストがある
+  - [x] README の PostgreSQL の節を更新する
+
+## B-101 [done|P2] 255 バイトを超える出力ファイル名を決定的に短縮する
+- 概要: エスケープ後のファイル名が 255 バイトを超えると全ターゲットで実行が失敗する（`maxFileNameBytes`、`internal/dump/dump.go`）。非 ASCII の名前は 1 文字約 9 バイトに膨らむので、30 文字ほどの日本語のテーブル名で超える。超えたときだけ名前を短縮して続ける。
+- 方針: 超えたときだけ、エスケープ後の DB 名・テーブル名のうち長い方の先頭を `%XX` の途中で切らずに切り、元のエスケープ済みの名前のハッシュ（固定長の 16 進）を付けて 255 バイト以内にする。上限以内の名前は変えない。ファイルの中身（SQL の中の名前）は変えない。
+- 前提（実装時に確定）: DB 部分は DB 単位で 1 つに決める（DB のどれかのファイルが上限を超え、そのファイルで DB 部分が表部分以上に長いか、表部分を短縮する余地が無いとき、100 バイトに短縮する）。ファイルごとに決めると、同じ DB のファイルが別の接頭辞になり、辞書順が崩れるため。表部分は、DB 部分を決めた後で、残りに収まるよう短縮する（分割した表のパート番号も数える）。ハッシュは完全なエスケープ済みの名前の SHA-256 の先頭 16 桁、区切りは `~`（実名では常に `%7E` になるので、短縮した名前が短縮していない名前と一致しない）。古い出力の削除は、短縮した名前と短縮していない名前の両方の接頭辞を所有とみなす（表の増減で短縮の有無が変わっても古いファイルが残らない）。
+- 結果: `internal/naming` に `Plan`（DB と表の一覧から、全ファイル名を決める）を足し、`internal/dump` が使う。短縮した DB 部分・表部分は警告に元の名前と短縮後の名前を出す。統合テストは `TestOddNamesAndCaseCollision` の「file name too long is shortened」「long database name keeps schema first」（MySQL 8.0 / 8.4、往復と再実行で古いファイルが残らないことを含む）。単体テストは `internal/naming/plan_test.go`。README の「File name escaping」と「Failure handling」を更新した。
+- 受け入れ条件:
+  - [x] 255 バイトを超えるファイル名が、255 バイト以内の決定的な名前になる（`%XX` の途中で切れない）。上限以内の名前と既存の出力は変わらない
+  - [x] 短縮後のファイル名が別のファイル名と衝突するときだけエラーになる。短縮したときは、元の名前と短縮後の名前を警告に出す
+  - [x] ファイル名の辞書順が、DB ごとの「スキーマ → データ」の順を壊さない（`cat dump/<db>.*.sql` で復元できる）ことをテストで確かめる
+  - [x] README の「255-byte limit」の記述と、ファイル名の節を更新する
+
+## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
+- 概要: `task test:integration:mysql57` で、`internal/source` の `TestTriggers` と `internal/dump` の `TestTriggersRoundTrip` が失敗する（B-095 の作業中に、`origin/main`（117d4c7）でも同じ失敗を確認した既存の失敗）。5.7 の `SHOW CREATE TRIGGER` は、書いたとおりの名前を返し、`CREATE DEFINER=`root`@`%` TRIGGER z_first ...` のように名前が逆引用符で囲まれない。そのため、作成順を確かめる判定（`` CREATE TRIGGER `z_first` `` を探す）に合わない。テストが 5.7 の形を想定していないのか、5.7 でのトリガーの出力が実際に正しくないのかを確かめて直す。
+- 前提: `task test:integration:mysql57` で再現する。MySQL 5.6 は同じイベントに複数のトリガーを作れないので、この 2 つのテストは 5.6 では skip する（B-095）。
+- 結果: 原因はテストの想定の誤りで、出力は正しい。5.7 の `SHOW CREATE TRIGGER` は書いた文をそのまま返すので名前が囲まれないが、囲まれていない名前もそのまま復元できる。両テストの判定を、名前が逆引用符で囲まれていてもいなくても合うようにした（実装は変えていない）。往復テストは、5.7 でも `information_schema.TRIGGERS` の `ACTION_ORDER` を含む定義が復元の前後で一致する。5.7 では、DB 名で修飾して書かれたトリガーが修飾付きのまま出力に入ることを見つけたので、B-107 に積んだ。
+- 受け入れ条件:
+  - [x] 失敗の原因を、テストの想定の誤りか、出力の誤りかに分けて記録する
+  - [x] `task test:integration:mysql57` で `TestTriggers` と `TestTriggersRoundTrip` が通る
+  - [x] 5.7 のトリガーの出力が、作成順どおりに復元できることを往復で確かめる（8.0 / 8.4 と同じ条件で）
