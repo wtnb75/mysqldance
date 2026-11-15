@@ -37,6 +37,16 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - uses: wtnb75/actions/golang@v1
+    - name: Find the MySQL container
+      # The service container has a generated name. The tests run the mysql
+      # client inside it (docker exec) to restore a dump.
+      run: |
+        ids=$(docker ps -q --filter ancestor=mysql:${{ matrix.mysql }})
+        if [ "$(echo "$ids" | wc -w)" -ne 1 ]; then
+          echo "::error::expected one mysql:${{ matrix.mysql }} container, found: ${ids:-none}"
+          exit 1
+        fi
+        echo "MYSQLDANCE_TEST_CONTAINER=$ids" >> "$GITHUB_ENV"
     - name: Run integration tests
       run: |
         set -o pipefail
@@ -51,6 +61,10 @@ jobs:
         fi
         if grep -q 'sqlite3 is not installed' integration.log; then
           echo "::error::the sqlite3 restore tests were skipped (sqlite3 is not installed)"
+          exit 1
+        fi
+        if grep -q 'mysql client is not available' integration.log; then
+          echo "::error::the mysql client restore tests were skipped (mysql client is not available)"
           exit 1
         fi
         echo "MySQL ${{ matrix.mysql }}: $(grep -c '^--- PASS' integration.log) top-level tests passed," \

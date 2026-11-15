@@ -458,6 +458,7 @@ task lint                                   # golangci-lint
 ```
 
 Integration tests run only when the `MYSQLDANCE_TEST_DSN` environment variable is set (for example `root:root@tcp(127.0.0.1:33061)/`).
+The tests that restore a dump with the real `mysql` client (`TestMySQLRestoreWithClient`) also need `docker` and the `MYSQLDANCE_TEST_CONTAINER` environment variable, the name or ID of the container that runs the server of `MYSQLDANCE_TEST_DSN`. The test pipes each file to `docker exec -i <container> mysql`, and fails on any output on stderr. `task test:integration` sets the variable for MySQL 8.0 and 8.4 only; for the other servers (`:mariadb`, `:mysql57`, `:mysql56`) and without it the test is skipped. The tests that restore SQLite output need the `sqlite3` command.
 CI (`.github/workflows/integration.yml`) runs them against MySQL 8.0 and 8.4 on every push and fails the job if they are skipped.
 
 The `fix` and `update-deps` workflows are run by hand (`workflow_dispatch`). Each runs `go fix` or `go get -u`, then the unit tests, and opens a PR only if they pass. A PR created with the default `GITHUB_TOKEN` does not trigger the `branch` workflow, so CI does not start by itself. Before merging, run `branch` on the PR's branch (`chore/go-fix` or `chore/update-deps`) from the Actions tab, or with `gh workflow run branch.yml --ref chore/update-deps`, to run the integration tests as well.

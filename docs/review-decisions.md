@@ -659,7 +659,7 @@
 ## R-091 テストの `clientStatements` が mysql クライアントの近似でしかない
 - 対象: internal/dump/dump_test.go の clientStatements
 - 指摘: 文字列やコメントの中の区切り文字など、本物のクライアントと違う扱いがあり、テストが通っても実際の復元が失敗しうる。
-- 却下の理由: ヘルパーはダンプが出す形（`DELIMITER` の行と、文の末尾の区切り）だけを扱う。文字列やコメントの中の区切り文字は、`chooseDelimiter` が文の中に現れない区切りを選ぶので起きない（`TestWriteTriggersDelimiterAvoidsBody`）。本物の `mysql` クライアントでの復元は、検証（完了前）で手で確かめる。
+- 却下の理由: ヘルパーはダンプが出す形（`DELIMITER` の行と、文の末尾の区切り）だけを扱う。文字列やコメントの中の区切り文字は、`chooseDelimiter` が文の中に現れない区切りを選ぶので起きない（`TestWriteTriggersDelimiterAvoidsBody`）。本物の `mysql` クライアントでの復元は、統合テスト `TestMySQLRestoreWithClient`（B-140）が、コンテナの中の `mysql` に各ファイルを流して確かめる。`clientStatements` は他のテストの近似のまま残る。
 - 初出: B-046
 - 再出: 0
 
