@@ -5,4 +5,6 @@
 FROM gcr.io/distroless/static:nonroot
 ARG TARGETPLATFORM
 COPY $TARGETPLATFORM/mysqldance /usr/local/bin/mysqldance
+# The MIT License requires the notice to travel with copies of the binary.
+COPY LICENSE /licenses/mysqldance/LICENSE
 ENTRYPOINT ["/usr/local/bin/mysqldance"]

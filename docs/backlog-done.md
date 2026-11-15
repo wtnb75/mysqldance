@@ -746,6 +746,18 @@
   - [x] linux / darwin / windows でビルドでき、`task check` が通る
   - [x] README の「Failure handling」と、台帳の R-012・R-013 を更新する
 
+## B-139 [done|P2] リポジトリに LICENSE を置く
+- 概要: 却下した指摘 R-043 の見直し。リポジトリ直下に LICENSE が無く、README にもライセンスの記述が無いまま、goreleaser がバイナリと `ghcr.io` のイメージを配布している。LICENSE を置き、README に書く。goreleaser の既定の glob は `LICENSE*` をアーカイブに入れる（R-043）。
+- 仕様:
+  - ライセンスは MIT。LICENSE の Copyright 行は `Copyright (c) 2026 Watanabe AI Takashi`。本文は MIT License の標準の文言（SPDX の `MIT`）のまま、手を加えない。
+  - README の末尾に `## License` 節を足し、MIT であることと LICENSE への参照を書く。
+  - 前提: `.goreleaser.yaml` の `archives` に `files` の指定は無く、既定の glob（`LICENSE*`）で LICENSE が入る。入らなければ `files` を足す。
+  - 前提: コンテナのイメージ（`dockers`）にも LICENSE を入れる必要があるかは、`.goreleaser.yaml` を読んで確かめ、要るなら `extra_files` で足す。
+- 受け入れ条件:
+  - [x] リポジトリ直下に MIT の LICENSE があり、README にライセンスの節がある
+  - [x] `task snapshot` のアーカイブに LICENSE が入っている
+  - [x] 台帳の R-043 を更新する
+
 ## B-146 [done|P3] コメントの言い過ぎと、台帳の根拠が弱い項目を直す
 - 概要: コメントを根拠にせずにコードを読み直した結果（B-144 / B-145 のほか）の、挙動を変えない修正。(1) `datafile.Write` と `Stream` のコメントは「行の内容だけで区切りが決まる」と言うが、`MaxInsertBytes` の区切りは累積サイズに依存する。`keyColumns` が生成列のキーで行全体のハッシュに戻ると、非キー列の更新でファイルの境界が動き、`Split` の説明と食い違う。実際の挙動に合わせて書く。(2) `internal/writer/writer.go` の `Schema` の「別の DBMS のライタが構造を必要とするのは別の項目」と、`internal/writer/sqlite.go` の「SQLite で表せないもの」の `views` は、B-062 以降は古い。(3) 台帳の R-087（作成時の文字セットと照合順序を捨てる理由が「環境依存になる」だが、値はオブジェクトごとに保存されていて決定性は損なわない。本体のリテラルの照合順序が変わりうる）と R-062（偽の循環で順序が崩れると復元で `CREATE VIEW` が失敗する）の理由を、実際の影響まで書いて見直す。結論（仕様）は変えない。(4) `checkGroupBy` の冒頭のコメントと README の「確実に拒否される形」は、列だけでできた式（`a + 1`）を拒否する今の挙動と合っていない（方針は B-115）。`WITH ROLLUP` の拒否理由が誤誘導であることも書く。
 - 仕様:

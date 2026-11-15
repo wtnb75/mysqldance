@@ -42,6 +42,8 @@ dockers_v2:
     ids:
       - mysqldance
     dockerfile: Dockerfile
+    extra_files:
+      - LICENSE
     images:
       - ghcr.io/wtnb75/mysqldance
     platforms:
