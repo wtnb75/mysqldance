@@ -1,13 +1,23 @@
 # Backlog
 
-## B-065 [todo|P3] PostgreSQL 向けの出力で、別の DB を参照する外部キーを出力する
+## B-065 [ready|P3] PostgreSQL 向けの出力で、別の DB を参照する外部キーを出力する
 - 依存: B-035
-- 概要: B-035 の PostgreSQL 向け出力は、DB ごとの制約ファイル（`<db>.90-constraints.sql`）を後ろに置くため、別の DB（別のスキーマ）を参照する外部キーを警告して出力しない（`a.90-constraints.sql` は `b.00-schema.sql` より前に動く）。全 DB の後に動く制約ファイルを足すなど、復元順を保ったまま出力する方法を決める。
+- 概要: B-035 の PostgreSQL 向け出力は、DB ごとの制約ファイル（`<db>.90-constraints.sql`）を後ろに置くため、別の DB（別のスキーマ）を参照する外部キーを警告して出力しない（`a.90-constraints.sql` は `b.00-schema.sql` より前に動く）。復元順を保ったまま出力する。
+- 仕様:
+  - 別の DB を参照する外部キーは、元の DB と参照先の DB のうち、**ファイル名の順（`LC_ALL=C` のバイト順）で後ろの DB** の `<db>.90-constraints.sql` に出す。後ろの DB の制約ファイルは、両方の DB のスキーマとデータの後に動くので、外部キーを追加できる。新しいファイルは足さない。
+  - 参照先の DB が今回のダンプに含まれないときは、今のとおり警告して出力しない（理由は「ダンプしない DB を参照する」と分かる文言にする）。参照先の表や列が出力されない・一意キーでないなどの既存の理由も、今のとおり警告して出力しない。
+  - 1 つの DB だけをダンプしたときと、別の DB を参照する外部キーが無いときは、出力が 1 バイトも変わらない。
+  - 「どの DB の制約ファイルか」は、DB の読み出し順（`opt.DBs` の順）ではなく、ファイル名の順で決める。ダンプの結果が、DB の指定順で変わってはならない（決定性）。
+  - 前提: `internal/writer/postgres.go` の `WriteConstraints(w, s Schema)` は 1 つの DB の `Schema` だけを受け取り、`fk.RefSchema != s.DB` で別の DB の外部キーを捨てている。別の DB の外部キーを書くには、他の DB のスキーマが要る。`internal/dump/dump.go` の `dumpDB` は DB ごとに制約ファイルを作っているので、全 DB を読み終えた後で制約ファイルを作る形に変える（または、別の DB の外部キーの情報を `Run` が集めて渡す）。
+  - 前提: 別の DB を参照する外部キーの検査（参照先の表・列が出力される、一意キー）は、参照先の DB の `Schema` を使って行う。メモリには、外部キーの検査に要る定義だけを保持する（全行は持たない）。
 - 受け入れ条件:
-  - [ ] 別の DB を参照する外部キーが PostgreSQL にリストアされる
+  - [ ] 2 つの DB（`a` と `b`）のうち `a` から `b` へ、`b` から `a` へ外部キーがある構成を、PostgreSQL にリストアでき、外部キーが働く（統合テスト。失敗するテストを先に書く）
+  - [ ] DB の指定順（`a b` と `b a`）が違っても、出力が 1 バイトも変わらない
   - [ ] 1 つの DB だけをダンプしたときの出力は変わらない
+  - [ ] 参照先の DB をダンプしないときは、警告して出力しない
+  - [ ] README の PostgreSQL の節の「foreign keys into another database」の記述を、新しい動作に合わせる
 
-## B-070 [todo|P3] TiDB を読み出し元・復元先にできるか調べる
+## B-070 [ready|P3] TiDB を読み出し元・復元先にできるか調べる
 - 概要: TiDB は MySQL プロトコルと MySQL 8.0 の SQL に互換がある。TiDB を読み出し元にしたときと、`--target mysql` の出力の復元先にしたときの差異を実機で確かめて、設計書に記録する。コードは変えない。対応するかどうかの判断と実装は、結果を見てから別項目にする（B-037 の MariaDB、B-039 の 5.7 と同じ流れ）。
 - 前提: 検証は Docker の `pingcap/tidb`（amd64 / arm64 のイメージがあることを確認済み。単体で起動する構成を使う）で行う。
 - 受け入れ条件:
@@ -17,7 +27,7 @@
   - [ ] MySQL 8.4 の出力を TiDB に復元できるかを確かめる
   - [ ] 結果と、対応する場合の方針を設計書 11 節に書く
 
-## B-071 [todo|P3] CockroachDB を `--target postgres` の復元先にできるか調べる
+## B-071 [ready|P3] CockroachDB を `--target postgres` の復元先にできるか調べる
 - 概要: CockroachDB は PostgreSQL のワイヤプロトコルと SQL に互換がある。本ツールは MySQL 系のサーバーしか読まないので、読み出し元にはならず、`--target postgres` の出力の復元先として確かめる。実機で復元を試し、通らない構文を設計書に記録する。コードは変えない。対応するかどうかの判断と実装は、結果を見てから別項目にする。
 - 前提: 検証は Docker の `cockroachdb/cockroach`（amd64 / arm64 のイメージがあることを確認済み。単一ノードの非セキュア構成を使う）で行う。
 - 受け入れ条件:
@@ -272,13 +282,24 @@
   - [ ] 上の形を含むビューが、出力されず理由つきの警告になる（または、通ると確かめて出力される）
   - [ ] 実機の PostgreSQL（統合テスト）で、出力したビューがリストアできる
 
-## B-116 [todo|P2] ストアド関数を呼ぶビューを復元できるようにする
-- 概要: ビューは `<db>.00-schema.sql`、ルーチンは `<db>.15-routines.sql` に出るので、復元ではビューが先に作られる。MySQL は `CREATE VIEW` の時点で、本文が呼ぶストアド関数があるかを確かめる（無いとエラー 1305 になると思われる。コードレビューでの指摘で、実機では未確認）。ストアド関数を呼ぶビューがあると、`docker-entrypoint-initdb.d` の復元がそこで止まる。8.0 / 8.4 で再現させてから、ビューをルーチンの後に作る形にする（ビューを別のファイルに出す、など。ファイルの構成は仕様の確定で決める）。
+## B-116 [ready|P2] ストアド関数を呼ぶビューを復元できるようにする
+- 概要: ビューは `<db>.00-schema.sql`、ルーチンは `<db>.15-routines.sql` に出るので、復元ではビューが先に作られる。MySQL は `CREATE VIEW` の時点で、本文が呼ぶストアド関数があるかを確かめる。ストアド関数を呼ぶビューがあると、`docker-entrypoint-initdb.d` の復元がそこで止まる。ビューをルーチンの後に作る形にする。
+- 仕様:
+  - 実機で確認済み（MySQL 8.4）: 存在しない関数を呼ぶビューの `CREATE VIEW` は `ERROR 1305 (42000): FUNCTION db.f does not exist` で失敗する。8.0 は統合テストで確かめる。
+  - ビューは、`--target mysql` では全 DB で `<db>.17-views.sql` に分ける。`00-schema.sql` にはテーブルだけを残す。ビューが無い DB には 17 のファイルを作らず、前回のものは古いファイルとして消す。
+  - ファイル名の順は `10-data` < `15-routines` < `17-views` < `20-triggers` < `25-events`。ビューの依存順（`CREATE VIEW` の並び）は今のまま。
+  - 17 のファイルの先頭は、他のファイルと同じ固定のヘッダー（`SET` 群と `USE`）にする。
+  - `--target sqlite` / `--target postgres` は変えない（ルーチンを出さず、ビューは今のスキーマファイルのまま）。
+  - 既存のダンプは、ビューが `00-schema.sql` から `17-views.sql` へ移るため、一度だけ大きな差分が出る。README に書く。
+  - 前提: ビューの出力は `internal/writer/mysql.go` の `WriteSchema` が担い、ファイル名は `internal/naming/plan.go` の `Plan` が持つ（`RoutinesFile` と同じ形で `ViewsFile` を足す）。`TriggerWriter` などと同じく、任意のインターフェース（例: `ViewWriter`）で `dump.go` の `writeExtraFiles` に載せる。
+  - 前提: `Unknown database` など、ビューが他の DB を読む場合の警告（README「No order between databases」）は、ファイルの名前を変えるだけで内容は変えない。
 - 受け入れ条件:
-  - [ ] ストアド関数を呼ぶビューを持つ DB を、ダンプして復元する統合テストがある（失敗するテストを先に書く）
+  - [ ] ストアド関数を呼ぶビューを持つ DB を、ダンプして復元する統合テストがある（失敗するテストを先に書く。8.0 / 8.4）
   - [ ] 復元したビューが、元のサーバーと同じ行を返す
+  - [ ] `--target mysql` の出力で、ビューは `<db>.17-views.sql` にあり、`00-schema.sql` に `CREATE VIEW` が無い。ビューが無い DB に 17 のファイルは無い
   - [ ] ビューの依存順と、古いファイルの削除（ビューやルーチンが無くなったとき）が、今と同じく正しい
-  - [ ] README の「Output format」と「Stored routines」を出力に合わせる
+  - [ ] `--target sqlite` / `--target postgres` の出力は 1 バイトも変わらない
+  - [ ] README の「Output format」「Stored routines」「Re-dumping and removing stale files」を出力に合わせ、ビューの移動で差分が出ることを書く
 
 ## B-117 [todo|P3] ドライバのログを `slog` に通す
 - 概要: `go-sql-driver/mysql` は、読み取りタイムアウトなどを自前のロガーで標準エラー出力に書く（README の `--read-timeout` の説明にある `i/o timeout` の行）。この行は `--log-format json` でも素のテキストで、`--log-level` も効かない。`mysql.Config.Logger` に、`slog` へ渡すアダプタを設定する。
@@ -294,8 +315,15 @@
   - [ ] 化ける場合、ダンプ中に検出する方法の案（`CONVERT` の往復の比較、`CAST(col AS BINARY)` で読む、など）と、読み出しの速度への影響を書く
   - [ ] 結果を設計書 11 節に書く
 
-## B-119 [todo|P2] `--exclude-table` でテーブルを出力から外せるようにする
+## B-119 [ready|P2] `--exclude-table` でテーブルを出力から外せるようにする
 - 概要: 出力を Git で管理すると、セッションの表、ログの表、個人情報の表を外したい場面があるが、今は DB 単位でしか選べない。`--exclude-table DB.TABLE`（繰り返し指定できる。完全一致で、ワイルドカードなし）を足し、その表のスキーマとデータを出力しない。前回のダンプにあったその表のデータファイルは、古いファイルとして消える（今の動作のまま）。
+- 仕様:
+  - 形式は `--exclude-table DB.TABLE`。最初の `.` で DB と表に分ける（DB 名に `.` を含むものは対象外とし、README に書く）。繰り返し指定できる。大文字小文字は、サーバーの `lower_case_table_names` に従った表の名前の比較（既存のカタログのクエリの比較）に合わせる。
+  - 検証は `source.Open` の中（出力先に触る前）で、`DB.TABLE` が dump 対象の DB の実在する基底表であることを確かめる。存在しない表、ダンプしない DB の表、ビューは、使い方のエラー（`errUsage`）にする。エラーの文言は、どの指定が原因かを含める。
+  - 外した表のトリガーは出力しない。外した表を読むビューと、外した表を参照する外部キーは、理由つきの `WARN`（`database=` 属性つき）にし、ダンプは続ける。出力の扱いは今のライタの規則に従い、ビューと外部キーは `--target mysql` ではそのまま出す（復元で失敗しうることを警告の文言と README に書く）。
+  - ロックの判断（非 InnoDB の表があれば `FLUSH TABLES WITH READ LOCK`）は、外した表を数えたままにする。外した表が非 InnoDB でも、判断は変えない（README に書く）。
+  - 前提: 表の一覧は `internal/source` の `Snapshot.Tables` が返し、DB の検査は `source.Open` が行う（`internal/dump/dump.go` の `Run` が呼ぶ）。除外は `Tables` の結果の後、`dump.Options` に新しい欄（例: `ExcludeTables`）を足して渡す。`cmd/mysqldance/main.go` のフラグ解析は繰り返し指定できる形（`flag.Value`）で足す。
+  - 前提: 外した表のデータファイルの名前は、`naming.Plan` に渡さない。前回の出力の古いファイルは、既存の `removeStale` が消す。
 - 受け入れ条件:
   - [ ] 指定した表は、`CREATE TABLE` もデータファイルも出力されず、その表のトリガーも出力されない。指定しない実行の出力は 1 バイトも変わらない
   - [ ] 存在しない表、ダンプしない DB の表、ビューの指定は、出力先に触る前に使い方のエラーになる（打ち間違いを黙って通さない）
@@ -456,8 +484,16 @@
   - [ ] `--jobs 1` の動作は変わらない
   - [ ] README の「Parallel reads」に、読む順を書く
 
-## B-138 [todo|P2] 同じ出力先への並行実行を、出力ディレクトリのロックで拒否する
+## B-138 [ready|P2] 同じ出力先への並行実行を、出力ディレクトリのロックで拒否する
 - 概要: 却下した指摘 R-012 の見直し。一時ファイルの名前は実行ごとに `.mysqldance-0001.tmp` から振り直され、開始時の `sweepTemps` は他の実行の一時ファイルも消す。実行 B が実行 A の一時ファイルを消して同じ名前で作り直すと、A の `commit` の rename が B の書きかけのファイルを A の最終名に置き、A は終了コード 0 で終わると思われる（コードを読んだ推論で、未再現）。cron の間隔より 1 回のダンプが長引くだけで起きる。出力ディレクトリに排他ロック（プロセスが終われば OS が解放する勧告ロック。Unix は `flock`、Windows は `LockFileEx`）を取り、取れなければ出力先に触る前にエラーにする。README の「同時に実行しない」は、拒否される旨に書き換える。
+- 仕様:
+  - ロックのファイルは出力ディレクトリ直下の `.mysqldance.lock`。取れなければ待たず、すぐエラーにする（待つフラグは足さない）。エラーの文言は、出力先が使用中で、別の実行が終わるのを待つよう伝える。
+  - ロックは正常終了でも失敗でも解放するが、ファイルは消さない（消す瞬間の競合を避ける）。次の実行は残ったファイルをそのまま開いてロックを取る。KILL でも OS が解放する。
+  - 取る順序: `source.Open`（設定と DB の検査）→ `prepareOutDir`（無ければ作る）→ ロック → `sweepTemps`。ロックが要るのでディレクトリは先に作られる。ロックの失敗の前に、出力先の既存のファイルには触らない。
+  - ロックは同じプロセスの 2 つの `Run` の間でも効く（テストのため）。
+  - 出力先が読み取り専用でロックのファイルを作れないときは、そのエラーで失敗する（今も一時ファイルを作れず失敗する）。
+  - 前提: Unix は `syscall.Flock`（`LOCK_EX|LOCK_NB`）、Windows は `golang.org/x/sys/windows` の `LockFileEx`（`go.mod` に間接依存で `golang.org/x/sys` がある。直接依存に昇格する）。ビルドタグで `lock_unix.go` / `lock_windows.go` に分ける。NFS などロックの効かないファイルシステムでの保証はしない（README に書く）。
+  - 前提: Git で管理する出力先には `.mysqldance.lock` が未追跡で 1 つ残る。README に、`.gitignore` へ足すよう書く。
 - 受け入れ条件:
   - [ ] 同じ出力先に 2 つ目の実行を始めると、出力先のファイル（一時ファイルを含む）に触る前に、理由の分かるエラーで終わる（失敗するテストを先に書く）
   - [ ] ロックを持つプロセスが KILL で終わっても、次の実行は成功する（残ったロックファイルで止まらない）
@@ -465,15 +501,26 @@
   - [ ] linux / darwin / windows でビルドでき、`task check` が通る
   - [ ] README の「Failure handling」と、台帳の R-012・R-013 を更新する
 
-## B-139 [todo|P2] リポジトリに LICENSE を置く
-- 概要: 却下した指摘 R-043 の見直し。リポジトリ直下に LICENSE が無く、README にもライセンスの記述が無いまま、goreleaser がバイナリと `ghcr.io` のイメージを配布している。LICENSE を置き、README に書く。ライセンスの種類は、仕様の確定でユーザーが決める。goreleaser の既定の glob は `LICENSE*` をアーカイブに入れる（R-043）。
+## B-139 [ready|P2] リポジトリに LICENSE を置く
+- 概要: 却下した指摘 R-043 の見直し。リポジトリ直下に LICENSE が無く、README にもライセンスの記述が無いまま、goreleaser がバイナリと `ghcr.io` のイメージを配布している。LICENSE を置き、README に書く。goreleaser の既定の glob は `LICENSE*` をアーカイブに入れる（R-043）。
+- 仕様:
+  - ライセンスは MIT。LICENSE の Copyright 行は `Copyright (c) 2026 Watanabe AI Takashi`。本文は MIT License の標準の文言（SPDX の `MIT`）のまま、手を加えない。
+  - README の末尾に `## License` 節を足し、MIT であることと LICENSE への参照を書く。
+  - 前提: `.goreleaser.yaml` の `archives` に `files` の指定は無く、既定の glob（`LICENSE*`）で LICENSE が入る。入らなければ `files` を足す。
+  - 前提: コンテナのイメージ（`dockers`）にも LICENSE を入れる必要があるかは、`.goreleaser.yaml` を読んで確かめ、要るなら `extra_files` で足す。
 - 受け入れ条件:
-  - [ ] リポジトリ直下に LICENSE があり、README にライセンスの節がある
+  - [ ] リポジトリ直下に MIT の LICENSE があり、README にライセンスの節がある
   - [ ] `task snapshot` のアーカイブに LICENSE が入っている
   - [ ] 台帳の R-043 を更新する
 
-## B-140 [todo|P2] 本物の `mysql` クライアントで復元する統合テストを足す
+## B-140 [ready|P2] 本物の `mysql` クライアントで復元する統合テストを足す
 - 概要: 却下した指摘 R-091 の見直し。MySQL 向けの復元のテストは、Go のドライバの複数文の実行と、クライアントを近似した `clientStatements` だけで、`mysql` クライアントでの復元は完了前に手で確かめている。主な用途は `/docker-entrypoint-initdb.d` での復元で、`DELIMITER` を使うトリガー・ルーチン・イベントのファイルは、クライアントを通さないと正しさが決まらない。SQLite には `sqlite3` コマンドを通すテスト（B-069）がある。統合テストのコンテナの中の `mysql` クライアント（`docker exec -i`）にファイルを名前順に流して復元し、元の DB と比べるテストを足す。
+- 仕様:
+  - 復元先は、統合テストのコンテナ（`test:integration:one` の `{{.NAME}}`、8.0 / 8.4）自身。ダンプのファイルは DB 名を持つ（`CREATE DATABASE IF NOT EXISTS` と `USE`）ので、元の DB を比べ終えた後に `DROP` し、同じ名前で復元して、復元前に控えた定義と行と比べる。
+  - テストにコンテナ名を伝える環境変数 `MYSQLDANCE_TEST_CONTAINER` を `Taskfile.yml` の `test:integration:one` が `go test` に渡す。未設定のとき（`task test` など）は skip する。skip のメッセージは、CI の `.github/workflows/integration.yml` が見つける定数（`sqliteCLISkip` と同じ形、例: `mysql client is not available`）にし、CI は skip を失敗にする。
+  - 流し方は README の復元の手順と同じ（ファイルを名前順に `docker exec -i <name> mysql -uroot -proot --default-character-set=utf8mb4` へ）。標準エラーに 1 行でも出たら失敗にする。
+  - 前提: `sqlite_cli_test.go` の `restoreSQLiteCLI` と同じ形のヘルパーを `internal/dump` に置く。`mariadb` / `mysql57` / `mysql56` のタスクは対象外（`test:integration` の 8.0 / 8.4 だけ）。
+- 受け入れ条件:
 - 受け入れ条件:
   - [ ] テーブル・ビュー・トリガー・ルーチン・イベントを持つ DB を、`mysql` クライアントで復元して、元の DB と定義・行が一致することを確かめる統合テストがある（8.0 / 8.4）
   - [ ] `mysql` クライアントを使えない環境では skip し、CI では skip を失敗にする（B-069 の `sqlite3` と同じ扱い）
