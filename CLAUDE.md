@@ -56,7 +56,7 @@ task fmt                # go fmt と go fix
 `BACKLOG.md`（リポジトリ直下）で管理する。操作は専用スキルを使う。項目の status は `todo`（仕様が未確定）→ `ready`（仕様を確定済み）→ `done`。
 
 - 追加 / 削除 / 更新 / 一覧: `mgmt-backlog`
-- 仕様の確定: `refine-backlog`（調べて、ユーザーにまとめて聞き、`ready` にする。コードは変えない）
+- 仕様の確定: `refine-backlog`（調べて、ユーザーにまとめて聞き、`ready` にする。コードは変えない。指定が無ければ todo の上位 3 件をまとめて提案する）
 - 実装: `impl-backlog`（ブランチ名は `backlog/B-NNN-<slug>`。PR タイトルの先頭に `B-NNN:` を付ける）
   - `ready` の項目は、質問なしで commit・push・PR の作成まで自動で進める。`todo` の項目は、先に仕様の確定だけユーザーに聞く。マージはしない。
   - コードレビューの指摘は自動で受け入れ・範囲外・却下を判断する。仕様や挙動の確認を根拠に却下した指摘は `docs/review-decisions.md` に残し、同じ指摘を繰り返さない。
