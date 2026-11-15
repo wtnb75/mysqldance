@@ -57,7 +57,7 @@ func TestPlanShortensLongDatabaseForAllFiles(t *testing.T) {
 	if !p.DBShortened() || p.TableShortened(tbl, 1) {
 		t.Fatalf("DBShortened = %v, TableShortened = %v", p.DBShortened(), p.TableShortened(tbl, 1))
 	}
-	names := []string{p.SchemaFile(), p.RoutinesFile(), p.TriggersFile(), p.EventsFile(), p.ConstraintsFile(), p.DataFile(tbl), p.DataFile("s")}
+	names := []string{p.SchemaFile(), p.RoutinesFile(), p.ViewsFile(), p.TriggersFile(), p.EventsFile(), p.ConstraintsFile(), p.DataFile(tbl), p.DataFile("s")}
 	names = append(names, p.DataFileParts(tbl, 3)...)
 	for _, n := range names {
 		if len(n) > MaxFileNameBytes {
@@ -67,12 +67,12 @@ func TestPlanShortensLongDatabaseForAllFiles(t *testing.T) {
 			t.Errorf("%s is not owned by its own plan", n)
 		}
 	}
-	// Schema < data < routines < triggers < events < constraints in lexicographic order.
+	// Schema < data < routines < views < triggers < events < constraints in lexicographic order.
 	sorted := append([]string(nil), names...)
 	sort.Strings(sorted)
 	n := len(sorted)
 	if sorted[0] != p.SchemaFile() || sorted[n-1] != p.ConstraintsFile() || sorted[n-2] != p.EventsFile() ||
-		sorted[n-3] != p.TriggersFile() || sorted[n-4] != p.RoutinesFile() {
+		sorted[n-3] != p.TriggersFile() || sorted[n-4] != p.ViewsFile() || sorted[n-5] != p.RoutinesFile() {
 		t.Errorf("order broken: %v", sorted)
 	}
 }

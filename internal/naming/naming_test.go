@@ -120,6 +120,33 @@ func TestRoutinesFile(t *testing.T) {
 	}
 }
 
+func TestViewsFile(t *testing.T) {
+	if got := ViewsFile("my db"); got != "my%20db.17-views.sql" {
+		t.Errorf("ViewsFile = %q", got)
+	}
+	if !IsOwnedBy("a.17-views.sql", "a") || IsOwnedBy("a-b.17-views.sql", "a") {
+		t.Error("IsOwnedBy does not recognize exactly the views file of its database")
+	}
+	// Restoring runs the files in name order: a view may call a stored function,
+	// so the views go in after every data file and the routines (B-116), and
+	// before the triggers and the events.
+	for _, db := range []string{"a", "a-b", "a_b", "a.b"} {
+		for _, tbl := range []string{"t", "0", "-", "A", "a.b", "~"} {
+			for _, d := range DataFileParts(db, tbl, 12345) {
+				if v := ViewsFile(db); v <= d {
+					t.Errorf("ViewsFile(%q)=%q not > data file %q", db, v, d)
+				}
+			}
+		}
+		if ViewsFile(db) <= RoutinesFile(db) {
+			t.Errorf("ViewsFile(%q) is not after the routines file", db)
+		}
+		if ViewsFile(db) >= TriggersFile(db) || ViewsFile(db) >= EventsFile(db) {
+			t.Errorf("ViewsFile(%q) is not before the triggers and events files", db)
+		}
+	}
+}
+
 func TestEventsFile(t *testing.T) {
 	if got := EventsFile("my db"); got != "my%20db.25-events.sql" {
 		t.Errorf("EventsFile = %q", got)

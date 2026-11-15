@@ -28,6 +28,14 @@ func (m *MySQL) WriteSchema(w io.Writer, s Schema) error {
 	for i, t := range s.Tables {
 		tables[i] = schemafile.Table{Name: t.Name, Create: schemafile.StripAutoIncrement(t.Create)}
 	}
+	return schemafile.Write(w, s.DB, s.CreateDatabase, tables)
+}
+
+// WriteViews implements ViewWriter. The views are in their own file, after the
+// routines, because CREATE VIEW fails when the view calls a stored function that
+// does not exist yet (B-116). The DEFINER clause is removed, as for the other
+// objects.
+func (m *MySQL) WriteViews(w io.Writer, s Schema) error {
 	byName := make(map[string]schemafile.View, len(s.Views))
 	names := make([]string, len(s.Views))
 	for i, v := range s.Views {
@@ -47,7 +55,7 @@ func (m *MySQL) WriteSchema(w io.Writer, s Schema) error {
 		v := byName[n]
 		ordered = append(ordered, schemafile.View{Name: v.Name, Create: schemafile.StripDefiner(v.Create)})
 	}
-	return schemafile.Write(w, s.DB, s.CreateDatabase, tables, ordered)
+	return schemafile.WriteViews(w, s.DB, ordered)
 }
 
 // WriteRoutines implements RoutineWriter. The DEFINER clause is removed, as for

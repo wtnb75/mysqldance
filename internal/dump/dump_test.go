@@ -456,10 +456,16 @@ func TestRoundTrip(t *testing.T) {
 	if got, want := files[naming.DataFile(db, "empty_t")], datafile.Header(db); got != want {
 		t.Errorf("data file of the zero-row table = %q, want the header only %q", got, want)
 	}
-	schema := files[naming.SchemaFile(db)]
-	for _, s := range []string{"DEFINER=", "AUTO_INCREMENT="} {
-		if strings.Contains(schema, s) {
-			t.Errorf("schema file contains %q:\n%s", s, schema)
+	// The views are in their own file (B-116), so check it too.
+	for _, name := range []string{naming.SchemaFile(db), naming.ViewsFile(db)} {
+		text, ok := files[name]
+		if !ok {
+			t.Fatalf("no %s in the output", name)
+		}
+		for _, s := range []string{"DEFINER=", "AUTO_INCREMENT="} {
+			if strings.Contains(text, s) {
+				t.Errorf("%s contains %q:\n%s", name, s, text)
+			}
 		}
 	}
 	e.roundTrip(t, dir, db)

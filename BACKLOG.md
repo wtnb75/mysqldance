@@ -282,25 +282,6 @@
   - [ ] 上の形を含むビューが、出力されず理由つきの警告になる（または、通ると確かめて出力される）
   - [ ] 実機の PostgreSQL（統合テスト）で、出力したビューがリストアできる
 
-## B-116 [ready|P2] ストアド関数を呼ぶビューを復元できるようにする
-- 概要: ビューは `<db>.00-schema.sql`、ルーチンは `<db>.15-routines.sql` に出るので、復元ではビューが先に作られる。MySQL は `CREATE VIEW` の時点で、本文が呼ぶストアド関数があるかを確かめる。ストアド関数を呼ぶビューがあると、`docker-entrypoint-initdb.d` の復元がそこで止まる。ビューをルーチンの後に作る形にする。
-- 仕様:
-  - 実機で確認済み（MySQL 8.4）: 存在しない関数を呼ぶビューの `CREATE VIEW` は `ERROR 1305 (42000): FUNCTION db.f does not exist` で失敗する。8.0 は統合テストで確かめる。
-  - ビューは、`--target mysql` では全 DB で `<db>.17-views.sql` に分ける。`00-schema.sql` にはテーブルだけを残す。ビューが無い DB には 17 のファイルを作らず、前回のものは古いファイルとして消す。
-  - ファイル名の順は `10-data` < `15-routines` < `17-views` < `20-triggers` < `25-events`。ビューの依存順（`CREATE VIEW` の並び）は今のまま。
-  - 17 のファイルの先頭は、他のファイルと同じ固定のヘッダー（`SET` 群と `USE`）にする。
-  - `--target sqlite` / `--target postgres` は変えない（ルーチンを出さず、ビューは今のスキーマファイルのまま）。
-  - 既存のダンプは、ビューが `00-schema.sql` から `17-views.sql` へ移るため、一度だけ大きな差分が出る。README に書く。
-  - 前提: ビューの出力は `internal/writer/mysql.go` の `WriteSchema` が担い、ファイル名は `internal/naming/plan.go` の `Plan` が持つ（`RoutinesFile` と同じ形で `ViewsFile` を足す）。`TriggerWriter` などと同じく、任意のインターフェース（例: `ViewWriter`）で `dump.go` の `writeExtraFiles` に載せる。
-  - 前提: `Unknown database` など、ビューが他の DB を読む場合の警告（README「No order between databases」）は、ファイルの名前を変えるだけで内容は変えない。
-- 受け入れ条件:
-  - [ ] ストアド関数を呼ぶビューを持つ DB を、ダンプして復元する統合テストがある（失敗するテストを先に書く。8.0 / 8.4）
-  - [ ] 復元したビューが、元のサーバーと同じ行を返す
-  - [ ] `--target mysql` の出力で、ビューは `<db>.17-views.sql` にあり、`00-schema.sql` に `CREATE VIEW` が無い。ビューが無い DB に 17 のファイルは無い
-  - [ ] ビューの依存順と、古いファイルの削除（ビューやルーチンが無くなったとき）が、今と同じく正しい
-  - [ ] `--target sqlite` / `--target postgres` の出力は 1 バイトも変わらない
-  - [ ] README の「Output format」「Stored routines」「Re-dumping and removing stale files」を出力に合わせ、ビューの移動で差分が出ることを書く
-
 ## B-117 [todo|P3] ドライバのログを `slog` に通す
 - 概要: `go-sql-driver/mysql` は、読み取りタイムアウトなどを自前のロガーで標準エラー出力に書く（README の `--read-timeout` の説明にある `i/o timeout` の行）。この行は `--log-format json` でも素のテキストで、`--log-level` も効かない。`mysql.Config.Logger` に、`slog` へ渡すアダプタを設定する。
 - 受け入れ条件:
@@ -624,3 +605,4 @@
 ## B-097 [done|P2] PostgreSQL 向けの出力で、長すぎる外部キー制約名を決定的に短縮する
 ## B-101 [done|P2] 255 バイトを超える出力ファイル名を決定的に短縮する
 ## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
+## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする

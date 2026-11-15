@@ -210,8 +210,7 @@ func TestWrite(t *testing.T) {
 	var buf bytes.Buffer
 	err := Write(&buf, "my`db",
 		"CREATE DATABASE `my``db` /*!40100 DEFAULT CHARACTER SET utf8mb4 */",
-		[]Table{{"b", "CREATE TABLE `b` (x int)"}, {"a", "CREATE TABLE `a` (x int)"}},
-		[]View{{Name: "v", Create: "CREATE VIEW `v` AS select 1"}})
+		[]Table{{"b", "CREATE TABLE `b` (x int)"}, {"a", "CREATE TABLE `a` (x int)"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,8 +225,30 @@ func TestWrite(t *testing.T) {
 	}
 	ia := strings.Index(out, "DROP TABLE IF EXISTS `a`;\nCREATE TABLE `a` (x int);")
 	ib := strings.Index(out, "DROP TABLE IF EXISTS `b`;\nCREATE TABLE `b` (x int);")
-	iv := strings.Index(out, "DROP VIEW IF EXISTS `v`;\nCREATE VIEW `v` AS select 1;")
-	if ia < 0 || ib < 0 || iv < 0 || ia >= ib || ib >= iv {
-		t.Errorf("bad ordering (a=%d b=%d v=%d): %q", ia, ib, iv, out)
+	if ia < 0 || ib < 0 || ia >= ib {
+		t.Errorf("bad ordering (a=%d b=%d): %q", ia, ib, out)
+	}
+	// The views are in their own file (B-116).
+	if strings.Contains(out, "VIEW") {
+		t.Errorf("the schema file has a view: %q", out)
+	}
+}
+
+func TestWriteViews(t *testing.T) {
+	var buf bytes.Buffer
+	err := WriteViews(&buf, "my`db", []View{
+		{Name: "b", Create: "CREATE VIEW `b` AS select * from `a`"},
+		{Name: "a", Create: "CREATE VIEW `a` AS select 1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same fixed header as the other files (SET group and USE), then the
+	// views in the given order (the caller has put them in dependency order).
+	want := datafile.Header("my`db") +
+		"\nDROP VIEW IF EXISTS `b`;\nCREATE VIEW `b` AS select * from `a`;\n" +
+		"\nDROP VIEW IF EXISTS `a`;\nCREATE VIEW `a` AS select 1;\n"
+	if buf.String() != want {
+		t.Errorf("got %q\nwant %q", buf.String(), want)
 	}
 }

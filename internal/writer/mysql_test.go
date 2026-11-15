@@ -34,26 +34,55 @@ func TestMySQLSchemaMatchesSchemafile(t *testing.T) {
 		{Name: "a", Create: "CREATE DEFINER=`x`@`%` VIEW `a` AS select 1"},
 	}
 	deps := map[string][]string{"b": {"a"}}
+	s := Schema{DB: "d", CreateDatabase: "CREATE DATABASE `d`", Tables: tables, Views: views, ViewDeps: deps}
 
+	// The schema file has the tables only; the views are in their own file
+	// that restores after the routines (B-116).
 	var got bytes.Buffer
-	if err := w.WriteSchema(&got, Schema{DB: "d", CreateDatabase: "CREATE DATABASE `d`", Tables: tables, Views: views, ViewDeps: deps}); err != nil {
+	if err := w.WriteSchema(&got, s); err != nil {
 		t.Fatal(err)
 	}
 	var want bytes.Buffer
 	err := schemafile.Write(&want, "d", "CREATE DATABASE `d`",
-		[]schemafile.Table{{Name: "t", Create: schemafile.StripAutoIncrement(tables[0].Create)}},
-		[]schemafile.View{
-			{Name: "a", Create: schemafile.StripDefiner(views[1].Create)},
-			{Name: "b", Create: schemafile.StripDefiner(views[0].Create)},
-		})
+		[]schemafile.Table{{Name: "t", Create: schemafile.StripAutoIncrement(tables[0].Create)}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.String() != want.String() {
 		t.Errorf("schema differs:\n got: %q\nwant: %q", got.String(), want.String())
 	}
-	if strings.Contains(got.String(), "AUTO_INCREMENT=7") || strings.Contains(got.String(), "DEFINER") {
-		t.Errorf("AUTO_INCREMENT or DEFINER left in %q", got.String())
+	if strings.Contains(got.String(), "AUTO_INCREMENT=7") || strings.Contains(got.String(), "VIEW") {
+		t.Errorf("AUTO_INCREMENT or a view left in %q", got.String())
+	}
+
+	var gotViews, wantViews bytes.Buffer
+	if err := w.WriteViews(&gotViews, s); err != nil {
+		t.Fatal(err)
+	}
+	err = schemafile.WriteViews(&wantViews, "d", []schemafile.View{
+		{Name: "a", Create: schemafile.StripDefiner(views[1].Create)},
+		{Name: "b", Create: schemafile.StripDefiner(views[0].Create)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotViews.String() != wantViews.String() {
+		t.Errorf("views differ:\n got: %q\nwant: %q", gotViews.String(), wantViews.String())
+	}
+	if strings.Contains(gotViews.String(), "DEFINER") {
+		t.Errorf("DEFINER left in %q", gotViews.String())
+	}
+}
+
+// The MySQL writer writes views to their own file; the others keep theirs in
+// the schema file.
+var _ ViewWriter = (*MySQL)(nil)
+
+func TestOnlyMySQLWritesViewsFile(t *testing.T) {
+	for name, w := range map[string]Writer{"postgres": NewPostgres(datafile.Options{}), "sqlite": NewSQLite(datafile.Options{})} {
+		if _, ok := w.(ViewWriter); ok {
+			t.Errorf("%s writer implements ViewWriter", name)
+		}
 	}
 }
 
@@ -68,7 +97,7 @@ func TestMySQLWarnsAboutViewsReadingAnotherDatabase(t *testing.T) {
 	}
 	var warns []string
 	var got bytes.Buffer
-	err := w.WriteSchema(&got, Schema{DB: "d", CreateDatabase: "CREATE DATABASE `d`", Views: views,
+	err := w.WriteViews(&got, Schema{DB: "d", CreateDatabase: "CREATE DATABASE `d`", Views: views,
 		Warn: func(msg string) { warns = append(warns, msg) }})
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +113,7 @@ func TestMySQLWarnsAboutViewsReadingAnotherDatabase(t *testing.T) {
 
 	// The warnings do not change the file, and a nil Warn is allowed.
 	var quiet bytes.Buffer
-	if err := w.WriteSchema(&quiet, Schema{DB: "d", CreateDatabase: "CREATE DATABASE `d`", Views: views}); err != nil {
+	if err := w.WriteViews(&quiet, Schema{DB: "d", CreateDatabase: "CREATE DATABASE `d`", Views: views}); err != nil {
 		t.Fatal(err)
 	}
 	if got.String() != quiet.String() {
