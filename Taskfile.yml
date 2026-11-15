@@ -386,6 +386,10 @@ tasks:
       HOST: '{{.HOST | default .MYSQLDANCE_TEST_HOST | default "127.0.0.1"}}'
       NAME: '{{.NAME | default "mysqldance-test"}}'
       TIMEOUT: '{{.TIMEOUT | default "180"}}'
+      # The container whose mysql client restores a dump (TestMySQLRestoreWithClient).
+      # Only MySQL 8.0 and 8.4 are covered; for the other servers it is empty and
+      # the test is skipped.
+      CLIENT_CONTAINER: '{{if or (eq .VERSION "8.0") (eq .VERSION "8.4")}}{{.NAME}}{{end}}'
     cmds:
       # Registered first so the container is removed whether a later step
       # fails or the run is interrupted.
@@ -446,4 +450,4 @@ tasks:
         fi
         # -p 1: packages share one server, and FLUSH TABLES WITH READ LOCK in one
         # package stalls the writers of another.
-        env {{.GODEBUG_ENV}} MYSQLDANCE_TEST_SSL_MODE='{{.SSL_MODE}}' MYSQLDANCE_TEST_DSN='root:root@tcp({{.HOST}}:{{.PORT}})/' MYSQLDANCE_TEST_RESTORE_DSN="$restore_dsn" MYSQLDANCE_TEST_PG_DSN='postgres://postgres:pg@{{.HOST}}:{{.PG_PORT}}/postgres?sslmode=disable' go test -p 1 -count=1 {{.TESTFLAGS}} ./...
+        env {{.GODEBUG_ENV}} MYSQLDANCE_TEST_SSL_MODE='{{.SSL_MODE}}' MYSQLDANCE_TEST_DSN='root:root@tcp({{.HOST}}:{{.PORT}})/' MYSQLDANCE_TEST_CONTAINER='{{.CLIENT_CONTAINER}}' MYSQLDANCE_TEST_RESTORE_DSN="$restore_dsn" MYSQLDANCE_TEST_PG_DSN='postgres://postgres:pg@{{.HOST}}:{{.PG_PORT}}/postgres?sslmode=disable' go test -p 1 -count=1 {{.TESTFLAGS}} ./...

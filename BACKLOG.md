@@ -449,20 +449,6 @@
   - [ ] `--jobs 1` の動作は変わらない
   - [ ] README の「Parallel reads」に、読む順を書く
 
-## B-140 [ready|P2] 本物の `mysql` クライアントで復元する統合テストを足す
-- 概要: 却下した指摘 R-091 の見直し。MySQL 向けの復元のテストは、Go のドライバの複数文の実行と、クライアントを近似した `clientStatements` だけで、`mysql` クライアントでの復元は完了前に手で確かめている。主な用途は `/docker-entrypoint-initdb.d` での復元で、`DELIMITER` を使うトリガー・ルーチン・イベントのファイルは、クライアントを通さないと正しさが決まらない。SQLite には `sqlite3` コマンドを通すテスト（B-069）がある。統合テストのコンテナの中の `mysql` クライアント（`docker exec -i`）にファイルを名前順に流して復元し、元の DB と比べるテストを足す。
-- 仕様:
-  - 復元先は、統合テストのコンテナ（`test:integration:one` の `{{.NAME}}`、8.0 / 8.4）自身。ダンプのファイルは DB 名を持つ（`CREATE DATABASE IF NOT EXISTS` と `USE`）ので、元の DB を比べ終えた後に `DROP` し、同じ名前で復元して、復元前に控えた定義と行と比べる。
-  - テストにコンテナ名を伝える環境変数 `MYSQLDANCE_TEST_CONTAINER` を `Taskfile.yml` の `test:integration:one` が `go test` に渡す。未設定のとき（`task test` など）は skip する。skip のメッセージは、CI の `.github/workflows/integration.yml` が見つける定数（`sqliteCLISkip` と同じ形、例: `mysql client is not available`）にし、CI は skip を失敗にする。
-  - 流し方は README の復元の手順と同じ（ファイルを名前順に `docker exec -i <name> mysql -uroot -proot --default-character-set=utf8mb4` へ）。標準エラーに 1 行でも出たら失敗にする。
-  - 前提: `sqlite_cli_test.go` の `restoreSQLiteCLI` と同じ形のヘルパーを `internal/dump` に置く。`mariadb` / `mysql57` / `mysql56` のタスクは対象外（`test:integration` の 8.0 / 8.4 だけ）。
-- 受け入れ条件:
-- 受け入れ条件:
-  - [ ] テーブル・ビュー・トリガー・ルーチン・イベントを持つ DB を、`mysql` クライアントで復元して、元の DB と定義・行が一致することを確かめる統合テストがある（8.0 / 8.4）
-  - [ ] `mysql` クライアントを使えない環境では skip し、CI では skip を失敗にする（B-069 の `sqlite3` と同じ扱い）
-  - [ ] クライアントが標準エラーに出した失敗を、テストが握りつぶさない
-  - [ ] README の Development 節に、テストに必要なものを書く。台帳の R-091 を更新する
-
 ## B-141 [todo|P3] MySQL 5.7 でも `show_create_table_verbosity` を固定する
 - 概要: 却下した指摘 R-069 の見直し。5.7 はセッションで `show_create_table_verbosity` を固定しないので、5.7.22 以降でグローバルが `ON` のサーバーは `SHOW CREATE TABLE` に `ROW_FORMAT` が入り、同じスキーマでも出力が変わる（決定性の不変条件に反する）。5.7.21 以前は変数がなく `SET` が失敗するので、版を見分けずに外していた。5.7 では `SET` を送り、`Unknown system variable`（エラー 1193）だけを無視する。
 - 受け入れ条件:
@@ -578,4 +564,5 @@
 ## B-119 [done|P2] `--exclude-table` でテーブルを出力から外せるようにする
 ## B-138 [done|P2] 同じ出力先への並行実行を、出力ディレクトリのロックで拒否する
 ## B-139 [done|P2] リポジトリに LICENSE を置く
+## B-140 [done|P2] 本物の `mysql` クライアントで復元する統合テストを足す
 ## B-146 [done|P3] コメントの言い過ぎと、台帳の根拠が弱い項目を直す
