@@ -10,6 +10,7 @@ const (
 	schemaSuffix      = ".00-schema.sql"
 	dataInfix         = ".10-data."
 	routinesSuffix    = ".15-routines.sql"
+	viewsSuffix       = ".17-views.sql"
 	triggersSuffix    = ".20-triggers.sql"
 	eventsSuffix      = ".25-events.sql"
 	constraintsSuffix = ".90-constraints.sql"
@@ -48,6 +49,14 @@ func SchemaFile(db string) string {
 // routine.
 func RoutinesFile(db string) string {
 	return NewPlan(db, nil).RoutinesFile()
+}
+
+// ViewsFile returns the name of the file that holds the views of a database.
+// "17" sorts after every data file (they continue with ".10-data.") and the
+// routines file, because CREATE VIEW fails when the view calls a stored function
+// that does not exist yet, and before the triggers and events files.
+func ViewsFile(db string) string {
+	return NewPlan(db, nil).ViewsFile()
 }
 
 // TriggersFile returns the name of the file that holds the triggers of a
@@ -108,8 +117,8 @@ func dataFileParts(dbComp, tableComp string, n int) []string {
 }
 
 // IsOwnedBy reports whether file is the schema file, the routines file, the
-// triggers file, the events file, the constraints file or a data file of db, by
-// its unshortened name (see Plan.IsOwned for the names of a run).
+// views file, the triggers file, the events file, the constraints file or a
+// data file of db, by its unshortened name (see Plan.IsOwned for the names of a run).
 func IsOwnedBy(file, db string) bool {
 	return isOwned(file, EscapeName(db))
 }

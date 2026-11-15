@@ -340,10 +340,10 @@ type extraFile struct {
 	write func(io.Writer) error
 }
 
-// extraFiles lists the routines, triggers, events and constraints files db
-// gets, in the order they are claimed and staged. A database without routines,
-// triggers or events has no such file, so the file of an earlier dump does not
-// outlive them (see removeStale). The lists are nil for a writer that cannot
+// extraFiles lists the routines, views, triggers, events and constraints files
+// db gets, in the order they are claimed and staged. A database without
+// routines, views, triggers or events has no such file, so the file of an
+// earlier dump does not outlive them (see removeStale). The lists are nil for a writer that cannot
 // write them (see readSchema). The constraints file is always there for a
 // writer that has one, empty or not. It is a pure function of its inputs, so
 // planFiles (claim) and writeExtraFiles (stage) see the same list.
@@ -351,6 +351,9 @@ func extraFiles(wr writer.Writer, schema writer.Schema, plan *naming.Plan) []ext
 	var files []extraFile
 	if rw, ok := wr.(writer.RoutineWriter); ok && len(schema.Routines) > 0 {
 		files = append(files, extraFile{plan.RoutinesFile(), "routines", func(w io.Writer) error { return rw.WriteRoutines(w, schema) }})
+	}
+	if vw, ok := wr.(writer.ViewWriter); ok && len(schema.Views) > 0 {
+		files = append(files, extraFile{plan.ViewsFile(), "views", func(w io.Writer) error { return vw.WriteViews(w, schema) }})
 	}
 	if tw, ok := wr.(writer.TriggerWriter); ok && len(schema.Triggers) > 0 {
 		files = append(files, extraFile{plan.TriggersFile(), "triggers", func(w io.Writer) error { return tw.WriteTriggers(w, schema) }})

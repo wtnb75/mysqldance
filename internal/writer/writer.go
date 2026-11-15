@@ -132,6 +132,16 @@ type RoutineWriter interface {
 	WriteRoutines(w io.Writer, s Schema) error
 }
 
+// ViewWriter is implemented by a writer whose views go to a file of their own
+// (naming.ViewsFile), which sorts after every data file and the routines file
+// and before the triggers file: CREATE VIEW fails when the view calls a stored
+// function that does not exist yet. A writer without it keeps its views in the
+// schema file (WriteSchema).
+type ViewWriter interface {
+	// WriteViews writes the views file of one database.
+	WriteViews(w io.Writer, s Schema) error
+}
+
 // TriggerWriter is implemented by a writer that can carry triggers over to its
 // target. dump writes the result to the database's triggers file
 // (naming.TriggersFile), which sorts after every data file, so loading the rows

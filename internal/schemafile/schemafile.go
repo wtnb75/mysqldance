@@ -203,8 +203,10 @@ func OrderViews(views []string, deps map[string][]string) []string {
 // Write writes the schema file. createDatabase is the result of
 // SHOW CREATE DATABASE; IF NOT EXISTS is inserted into it. It goes between
 // the header's settings (so SET NAMES applies to the database name) and its
-// USE statement. Tables are written sorted by name, views in the given order.
-func Write(w io.Writer, db, createDatabase string, tables []Table, views []View) error {
+// USE statement. Tables are written sorted by name. The views are not here:
+// CREATE VIEW fails when the view calls a stored function that does not exist
+// yet, so they go to a file after the routines (see WriteViews, B-116).
+func Write(w io.Writer, db, createDatabase string, tables []Table) error {
 	var b strings.Builder
 	b.WriteString(datafile.HeaderSettings())
 	b.WriteString("\n")
@@ -217,6 +219,16 @@ func Write(w io.Writer, db, createDatabase string, tables []Table, views []View)
 	for _, t := range sorted {
 		fmt.Fprintf(&b, "\nDROP TABLE IF EXISTS %s;\n%s;\n", sqlvalue.QuoteIdent(t.Name), t.Create)
 	}
+	_, err := io.WriteString(w, b.String())
+	return err
+}
+
+// WriteViews writes the views file: the fixed header, then a DROP and the
+// CREATE of each view in the given order (the caller puts them in dependency
+// order, see OrderViews).
+func WriteViews(w io.Writer, db string, views []View) error {
+	var b strings.Builder
+	b.WriteString(datafile.Header(db))
 	for _, v := range views {
 		fmt.Fprintf(&b, "\nDROP VIEW IF EXISTS %s;\n%s;\n", sqlvalue.QuoteIdent(v.Name), v.Create)
 	}

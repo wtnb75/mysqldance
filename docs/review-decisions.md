@@ -1412,3 +1412,10 @@
 - 初出: B-064
 - 再出: 0
 
+## R-196 `Writer` を包む型が、型アサーションで調べる任意のインターフェース（`ViewWriter` など）を隠す
+- 対象: internal/writer/writer.go の ViewWriter / internal/dump/dump.go の extraFiles（型アサーション）
+- 指摘: `Writer` を埋め込むラッパーは `WriteViews` を公開しないので、`extraFiles` がビューのファイルを作らず、ビューが黙って落ちる。
+- 却下の理由: `RoutineWriter`・`TriggerWriter`・`EventWriter` と同じ既存の設計（任意のインターフェースを型アサーションで調べる。B-116 の確定した前提）。`Writer` を包む型は本番のコードに無い。あるのは `internal/dump/dump_test.go` の `recordingWriter` だけで、これは `WriteSchema` と `NewRowWriter` を記録するためのテスト用。ライタが `ViewWriter` を持たないときにビューを警告なしで落とす経路は、`--target sqlite` / `postgres` のようにスキーマファイルへ出すライタに限られ、その出力は変えていない。
+- 初出: B-116
+- 再出: 0
+
