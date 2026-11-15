@@ -119,6 +119,19 @@ func Run(ctx context.Context, opt Options) (err error) {
 	if err := prepareOutDir(opt.OutDir, opt.DirMode); err != nil {
 		return err
 	}
+	// The lock comes before anything in the directory is touched: sweepTemps
+	// would delete the temporary files of a run that is still going (R-012).
+	unlock, err := lockOutDir(opt.OutDir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// The lock file is empty, so a failed close loses nothing; it must not
+		// turn a committed dump into a failed run.
+		if uerr := unlock(); uerr != nil {
+			opt.Log.Warn("could not release the output directory lock", "error", uerr)
+		}
+	}()
 	if err := sweepTemps(opt.OutDir); err != nil {
 		return err
 	}
