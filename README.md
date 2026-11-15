@@ -500,3 +500,7 @@ Rough figures for `ROWS=1000000` on MySQL 8.4 in Docker (one machine; yours will
 | `both` (`BLOB_BYTES=1024`) | about 4.5 minutes | about 4.2 GB (6 tables) |
 
 A dump of the `both` case is larger than the data in MySQL, because `BLOB` values are written as hex (twice their size); expect roughly 6 GB (an estimate, not measured). Keep about 12 GB free for `ROWS=1000000` with both row sizes, or use `ROWSIZE=short`.
+
+## License
+
+mysqldance is released under the MIT License. See [LICENSE](LICENSE). The release archives and the container image include a copy of it.

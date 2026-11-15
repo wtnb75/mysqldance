@@ -322,7 +322,7 @@
 ## R-043 アーカイブに LICENSE が入らない可能性がある
 - 対象: .goreleaser.yaml の `archives`
 - 指摘: `files` を指定しておらず、LICENSE が無いリポジトリでは、ライセンスなしで配布される。
-- 却下の理由: リポジトリに LICENSE が無いことと、ライセンスの方針は別の話で、設定ファイルの欠陥ではない。goreleaser の既定の glob は LICENSE* と README* を含み、LICENSE を足せば自動で入る。失敗のシナリオを示せない（推測）。
+- 却下の理由: 【見直し済み: B-139 で受け入れた】当初は、リポジトリに LICENSE が無いことと設定ファイルの欠陥は別の話として却下したが、LICENSE が無いままバイナリとイメージを配布している状態そのものが問題だった。B-139 で MIT の LICENSE を置き、README に `## License` 節を足した。アーカイブは goreleaser の既定の glob（`LICENSE*`）で LICENSE を含む（`goreleaser release --snapshot` で確認した）。イメージは glob の対象でないので、`dockers_v2` の `extra_files` と Dockerfile の `COPY` で `/licenses/mysqldance/LICENSE` に入れる。
 - 初出: B-032
 - 再出: 0
 

@@ -449,18 +449,6 @@
   - [ ] `--jobs 1` の動作は変わらない
   - [ ] README の「Parallel reads」に、読む順を書く
 
-## B-139 [ready|P2] リポジトリに LICENSE を置く
-- 概要: 却下した指摘 R-043 の見直し。リポジトリ直下に LICENSE が無く、README にもライセンスの記述が無いまま、goreleaser がバイナリと `ghcr.io` のイメージを配布している。LICENSE を置き、README に書く。goreleaser の既定の glob は `LICENSE*` をアーカイブに入れる（R-043）。
-- 仕様:
-  - ライセンスは MIT。LICENSE の Copyright 行は `Copyright (c) 2026 Watanabe AI Takashi`。本文は MIT License の標準の文言（SPDX の `MIT`）のまま、手を加えない。
-  - README の末尾に `## License` 節を足し、MIT であることと LICENSE への参照を書く。
-  - 前提: `.goreleaser.yaml` の `archives` に `files` の指定は無く、既定の glob（`LICENSE*`）で LICENSE が入る。入らなければ `files` を足す。
-  - 前提: コンテナのイメージ（`dockers`）にも LICENSE を入れる必要があるかは、`.goreleaser.yaml` を読んで確かめ、要るなら `extra_files` で足す。
-- 受け入れ条件:
-  - [ ] リポジトリ直下に MIT の LICENSE があり、README にライセンスの節がある
-  - [ ] `task snapshot` のアーカイブに LICENSE が入っている
-  - [ ] 台帳の R-043 を更新する
-
 ## B-140 [ready|P2] 本物の `mysql` クライアントで復元する統合テストを足す
 - 概要: 却下した指摘 R-091 の見直し。MySQL 向けの復元のテストは、Go のドライバの複数文の実行と、クライアントを近似した `clientStatements` だけで、`mysql` クライアントでの復元は完了前に手で確かめている。主な用途は `/docker-entrypoint-initdb.d` での復元で、`DELIMITER` を使うトリガー・ルーチン・イベントのファイルは、クライアントを通さないと正しさが決まらない。SQLite には `sqlite3` コマンドを通すテスト（B-069）がある。統合テストのコンテナの中の `mysql` クライアント（`docker exec -i`）にファイルを名前順に流して復元し、元の DB と比べるテストを足す。
 - 仕様:
@@ -589,4 +577,5 @@
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 ## B-119 [done|P2] `--exclude-table` でテーブルを出力から外せるようにする
 ## B-138 [done|P2] 同じ出力先への並行実行を、出力ディレクトリのロックで拒否する
+## B-139 [done|P2] リポジトリに LICENSE を置く
 ## B-146 [done|P3] コメントの言い過ぎと、台帳の根拠が弱い項目を直す
