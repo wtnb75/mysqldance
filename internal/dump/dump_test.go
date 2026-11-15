@@ -265,6 +265,10 @@ func readFiles(t *testing.T, dir string) map[string]string {
 	}
 	out := map[string]string{}
 	for _, ent := range entries {
+		// Every run leaves the (empty) lock file behind; it is not output.
+		if ent.Name() == lockFileName {
+			continue
+		}
 		b, err := os.ReadFile(filepath.Join(dir, ent.Name()))
 		if err != nil {
 			t.Fatal(err)
