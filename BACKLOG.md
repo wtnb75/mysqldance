@@ -1,30 +1,48 @@
 # Backlog
 
-## B-072 [todo|P3] DuckDB に今の出力を復元できるか調べる
+## B-072 [ready|P3] DuckDB に今の出力を復元できるか調べる
 - 概要: DuckDB は SQL が PostgreSQL に近く、`duckdb < file.sql` で流せる。`--target postgres` と `--target sqlite` の既存の出力が、そのまま DuckDB に復元できるかを実機で確かめ、結果を設計書に書く。コードは変えない。通らない構文があれば記録し、専用の writer を足す価値があるかは、結果を見てから別項目にする。
+- 仕様:
+  - 前提: DuckDB は公式の Docker イメージがない。PyPI の `duckdb`（現行の安定版。版は着手時に確かめて設計書に書く）を `uv run --with duckdb` で使い、ファイルの DB に復元する（`duckdb` の CLI は使わず、Python の API で、出力ファイルを辞書順に 1 つずつ流す）。
+  - 前提: 元の MySQL は 8.4。値の比較は、B-071（CockroachDB）と同じ表・同じ問い合わせにする（`task test:integration:postgres` の既存の統合テストを流用または参照する）。
+  - 前提: 結果の記録先は設計書 11 節。コードとテストは変えない（調べるための一時スクリプトは、リポジトリに入れない）。
 - 受け入れ条件:
   - [ ] 現行の安定版の DuckDB に、`--target postgres` と `--target sqlite` の出力を復元して、通るか、通らない構文は何かを記録する
   - [ ] 通る範囲で、復元後の行数と値が元の MySQL と一致するかを確かめる
   - [ ] 結果と、対応する場合の方針（既存の出力を流用するか、writer を足すか）を設計書 11 節に書く
 
-## B-073 [todo|P3] ClickHouse 向けの出力に必要な対応を調べる
+## B-073 [ready|P3] ClickHouse 向けの出力に必要な対応を調べる
 - 概要: ClickHouse は `CREATE TABLE` に `ENGINE` と `ORDER BY` が必須で、型は `Nullable(...)` で包み、外部キーや CHECK がなく、文字列のエスケープも MySQL と違う。MySQL からの型の対応、主キーから `MergeTree` の `ORDER BY` を決める規則（キーなしのテーブルは `tuple()` など）、文字列リテラル、1 レコード 1 行の `INSERT` の取り込みの速さを実機で確かめ、writer の方針案を設計書に書く。コードは変えない。writer の実装は、結果を見てから別項目にする。
 - 前提: 検証は Docker の `clickhouse/clickhouse-server`（amd64 / arm64 のイメージがあることを確認済み）で行う。
+- 仕様:
+  - 前提: 設計書 11 節に書くのは、型の対応表、リテラルの書き方、主キー・キーなし・生成列の方針案、取り込みの所要時間（実行した環境と版つき）。コード、テスト、Taskfile は変えない。
+  - 前提: 10 万行の取り込みは、MySQL 8.4 から本ツール（`--target mysql`）で出した 1 レコード 1 行の `INSERT` を、ClickHouse の構文に合わせて書き換えたもの（または同じ形の手書きの SQL）を、`clickhouse-client` で流して測る。書き換えの方法も記録する。
+  - 前提: writer の方針案は「案」。実装するかどうかは、結果を見てから別項目にする。
 - 受け入れ条件:
   - [ ] 現行の安定版の ClickHouse に、手書きの `CREATE TABLE` と `INSERT` で、本ツールの型の対応表（`internal/writer` の postgres.go / sqlite.go を基にする）の全ての型を入れられるかを確かめる
   - [ ] 文字列、バイナリ、`NULL`、日時、`DECIMAL` のリテラルの書き方と、復元後の値の一致を記録する
   - [ ] 主キーのあるテーブル、ないテーブル、生成列の扱いの方針案を書く
   - [ ] 1 レコード 1 行の `INSERT` を 10 万行取り込む所要時間を記録する
 
-## B-074 [todo|P3] StarRocks / Doris を読み出し元・復元先にできるか調べる
+## B-074 [ready|P3] StarRocks / Doris を読み出し元・復元先にできるか調べる
 - 概要: StarRocks と Apache Doris は MySQL プロトコルを話す OLAP の DBMS で、TiDB（B-070）と同じく、読み出し元にも `--target mysql` の出力の復元先にもなりえる。差異を実機で確かめて設計書に記録する。コードは変えない。対応するかどうかは、結果を見てから別項目にする。
+- 仕様:
+  - 前提: 検証は Docker の `starrocks/allin1-ubuntu` と `apache/doris`（どちらも amd64 / arm64 のイメージがあることを確認済み）で、単体で起動する構成を使う。Doris は all-in-one 相当のタグを着手時に探す（FE と BE の 2 コンテナ構成でもよい）。どちらも、使った版を設計書に書く。
+  - 前提: 進め方と記録の形は B-070（TiDB。`rg -n -A 12 '^## B-070 ' docs/backlog-done.md` と設計書 11 節の該当項）に合わせる。`START TRANSACTION WITH CONSISTENT SNAPSHOT` と `FLUSH TABLES WITH READ LOCK` の挙動も、B-070 と同じく確かめて記録する。
+  - 前提: 片方が、環境（メモリなど）の都合で起動できなければ、できた側だけ記録し、できなかった理由を書く。その場合も項目は `done` にしてよいが、未確認の側を設計書に明記する。
+  - 前提: コード、テスト、Taskfile は変えない。
 - 受け入れ条件:
   - [ ] StarRocks と Doris のそれぞれで、現在のバイナリをつないだときの挙動（どこで失敗するか）と、`dialect` の全クエリの結果を MySQL 8.4 と比べる
   - [ ] MySQL 8.4 の出力を、それぞれに復元できるかを確かめる（`CREATE TABLE` に必要な `DISTRIBUTED BY` などの扱いを含む）
   - [ ] 結果と、対応する場合の方針を設計書 11 節に書く
 
-## B-075 [todo|P3] ファイル形式（CSV / JSON Lines / Parquet）の出力を設計する
+## B-075 [ready|P3] ファイル形式（CSV / JSON Lines / Parquet）の出力を設計する
 - 概要: OLAP の DBMS では、1 レコード 1 行の `INSERT` より、CSV や Parquet のほうが取り込みが速く自然なことがある。本ツールの不変条件（決定性、差分の局所性、黙って落とさない）をファイル形式でも守れるか、出力の形（テーブルごとのファイル、スキーマの置き場所、`NULL` と空文字、バイナリ、日時、型の情報）を調べて、設計書に方針を書く。コードは変えない。形式ごとの実装は、結果を見てから別項目にする。
+- 仕様:
+  - 前提: 設計書の新しい節（既存の最後の節の次の番号）に書く。11 節には書かない（調査の記録ではなく、設計の案のため）。
+  - 前提: 決定性は、同じデータから 2 回書いて `diff` で一致することを、実機（Parquet は Python の `pyarrow` か `duckdb`、`uv run --with` で）で確かめて書く。確かめていない形式は「未確認」と書く。
+  - 前提: 差分の局所性は、行を 1 つ変えたときの `git diff` の大きさで評価する。Parquet は、行グループの区切りを行の内容で決められるかも調べる。
+  - 前提: 出力を実装するかどうかは決めない。優先順位は「案」として書く。
 - 受け入れ条件:
   - [ ] CSV、JSON Lines、Parquet のそれぞれで、決定的な出力にするための条件を調べて書く（例: Parquet は書き出しの設定と作成日時などのメタデータを固定する）
   - [ ] Git で差分を見られるかを形式ごとに評価する（Parquet はバイナリなので、差分の局所性を満たせるか）
@@ -32,25 +50,39 @@
   - [ ] 型の情報（スキーマ）を出力のどこに置くかの案を、形式ごとに書く
   - [ ] 実装する形式の優先順位と、`--target` で選ぶのか別のフラグにするのかの案を書く
 
-## B-076 [todo|P3] libSQL / Cloudflare D1 に SQLite 向けの出力を復元できるか調べる
+## B-076 [ready|P3] libSQL / Cloudflare D1 に SQLite 向けの出力を復元できるか調べる
 - 概要: libSQL（Turso）と Cloudflare D1 は SQLite の SQL を受ける。`--target sqlite` の既存の出力が、そのまま復元できるかを確かめ、結果を設計書に書く。コードは変えない。通らない構文があれば記録し、対応するかどうかは結果を見てから別項目にする。B-069（`sqlite3` コマンドでの復元）と合わせて、SQLite 系の復元先の表（B-067）を埋める。
 - 前提: libSQL の検証は Docker の `ghcr.io/tursodatabase/libsql-server`（amd64 / arm64 のイメージがあることを確認済み）で行う。D1 は Cloudflare のサービスで、コンテナでは再現できない。ローカルで動かす `wrangler` の D1（`wrangler d1 execute --local`）で確かめ、実サービスは未確認と書く。
+- 仕様:
+  - 前提: `wrangler` は `pnpm dlx wrangler`（版は着手時に確かめて設計書に書く）で使う。リポジトリに依存を足さない。
+  - 前提: libSQL のサーバーへは HTTP（`sqld` の `/v2/pipeline`）か、`libsql` のクライアントで流す。どちらを使ったかを記録する。出力ファイルは辞書順に 1 つずつ流す。
+  - 前提: 元の MySQL は 8.4。値の比較の表・問い合わせは、B-069 の `sqlite3` コマンドでの復元と同じにする。
+  - 前提: コード、テスト、Taskfile は変えない。
 - 受け入れ条件:
   - [ ] libSQL のサーバーに `--target sqlite` の出力を復元して、通るか、通らない構文は何かを記録する
   - [ ] 通る範囲で、復元後の行数と値が元の MySQL と一致するかを確かめる
   - [ ] D1 は、ローカルの `wrangler` で同じ確認をした結果と、確認していない範囲（実サービスの制限）を設計書 11 節に書く
 
-## B-077 [todo|P3] 互換 DBMS の検証用コンテナを起動するタスクを作る
+## B-077 [ready|P3] 互換 DBMS の検証用コンテナを起動するタスクを作る
 - 概要: B-070（TiDB）、B-071（CockroachDB）、B-073（ClickHouse）、B-076（libSQL）、B-074（StarRocks / Doris）の調査は、それぞれ別の DBMS のコンテナを手で起動して確かめることになる。起動と待機、後始末を `Taskfile.yml` のタスクにまとめ、`task compat:up NAME=tidb` のように使えるようにする。統合テストの既定（`task test:integration`）には含めない。対象は、イメージの存在と起動方法が調査で確かめられたものから足す。
+- 仕様:
+  - 前提: `Taskfile.yml` の `test:integration:one` の作り（`PORT` / `HOST` / `TIMEOUT` の変数、`docker run`、TCP の待機、後始末）に合わせる。変数名は `test:integration` と同じにする。
+  - 前提: この項目で足す対象は、起動方法が設計書 11 節に記録済みの TiDB（`pingcap/tidb:v8.5.7`。タグを固定する）と CockroachDB（`cockroachdb/cockroach`、`start-single-node --insecure`）。ClickHouse と libSQL は、B-073 / B-076 で起動方法が分かった時点で足せるので、その時点で未完なら、足せたものだけで PR にし、残りは別項目に積む（`NAME` に未対応の名前を渡したら、対応する名前の一覧を出して失敗する）。
+  - 前提: コンテナ名は `mysqldance-compat-<NAME>`、ホストのポートは `NAME` ごとの既定値（`PORT` で上書きできる）。既存の `mysqldance-test` と衝突しない。
+  - 前提: 起動方法を変える場合に備え、タグは `Taskfile.yml` の 1 か所の変数にまとめる。
 - 受け入れ条件:
-  - [ ] TiDB、CockroachDB、ClickHouse、libSQL を、`NAME` で選んで起動し、接続できるまで待つタスクがある
+  - [ ] TiDB と CockroachDB を、`NAME` で選んで起動し、接続できるまで待つタスクがある（ClickHouse と libSQL は、起動方法が分かっていれば足す。未対応の `NAME` は、対応する名前の一覧を出して失敗する）
   - [ ] 後始末のタスクがあり、`PORT` と `HOST` は `test:integration` と同じ変数で上書きできる（Docker デーモンが別のホストにある場合を含む）
   - [ ] 各 DBMS の接続方法（DSN とクライアント）と、起動に必要な環境変数を README の Development 節に書く
 
-## B-080 [todo|P3] MySQL 5.5 と 5.6 の差異を調べる
+## B-080 [ready|P3] MySQL 5.5 と 5.6 の差異を調べる
 - 依存: B-079
 - 概要: B-079 に続き、5.5 の挙動を実機で確かめる。5.5.3 より前は `utf8mb4` がなく、`SET NAMES utf8mb4` が使えない。5.5 の中の版（5.5.3 以降と、それより前）で何が変わるかを確かめる。コードは変えない。5.1 以前は公式イメージがなく、需要が見えてから別項目にする。
-- 前提: 検証は Docker の `mysql:5.5`（公式イメージ。amd64 のみ）で行う。5.5.3 より前の版は公式イメージにあるか確かめ、なければ「未確認」と書く。
+- 仕様:
+  - 前提: 依存の B-079 は `done`（設計書 11 節に 5.6.51 の記録がある）。比べる相手は、その記録の 5.6.51 と 5.7.44 の結果。
+  - 前提: 5.5 は `--platform linux/amd64` で起動する。TLS は、B-079 と同じく、公式イメージの状態（有効か）を確かめて書く。
+  - 前提: 検証は Docker の `mysql:5.5`（公式イメージ。amd64 のみ）で行う。5.5.3 より前の版は公式イメージにあるか確かめ、なければ「未確認」と書く。
+  - 前提: コード、テスト、Taskfile は変えない。記録は設計書 11 節の、5.6 の項の次に書く。
 - 受け入れ条件:
   - [ ] 現在のバイナリを 5.5 につないだときの挙動を記録する
   - [ ] `dialect` の全クエリと `SHOW CREATE` の書式を 5.6 と比べる
@@ -58,8 +90,13 @@
   - [ ] 5.5 の出力を、新しい 8.4 と MariaDB に復元できるかを確かめる
   - [ ] 結果を設計書 11 節に書く
 
-## B-082 [todo|P3] TLS の下限を下げるオプションを設計する
+## B-082 [ready|P3] TLS の下限を下げるオプションを設計する
 - 概要: 本ツールの TLS は 1.2 以上が下限で、TLS 1.1 までのサーバー（古い MySQL。5.7.21 で確認済み）には `--ssl-mode disabled`（平文）でしか接続できない。暗号化したまま古いサーバーに接続できる選択肢（`--tls-min-version` のようなフラグ）が要るか、要るならセキュリティ上の注意をどう示すかを設計書に書く。`GODEBUG` で RSA 鍵交換を戻す方法（5.7.44 で確認済み）との関係も整理する。コードは変えない。
+- 仕様:
+  - 前提: 今の下限は `internal/source/tls.go` の `MinVersion: tls.VersionTLS12`（4 か所）。設計書 11 節の B-079 の記録のとおり、5.6.51 は証明書を設定すれば TLS 1.2 でつながるので、下限を下げる必要があるのは 5.7.21 以前（TLS 1.1 まで）と 5.5 の一部。
+  - 前提: 「5.5 のサーバーで確かめる」は、B-080 の記録（5.5 の TLS の状態）があればそれを使う。B-080 が未完なら、自分で `mysql:5.5` を起動して確かめ、確かめた範囲を書く。
+  - 前提: Go の `crypto/tls` が TLS 1.0 / 1.1 を許す条件（`MinVersion` と `GODEBUG` の `tls10server` など）は、リポジトリの `go.mod` の Go の版で、実際に接続して確かめる。
+  - 前提: コード、テスト、Taskfile は変えない。記録は設計書の 11 節の TLS の項に近いところか、新しい節に書く。
 - 受け入れ条件:
   - [ ] Go の標準ライブラリで、TLS 1.0 / 1.1 と古い暗号スイートで接続するために必要な設定を調べ、5.6 と 5.5 のサーバーで接続できるかを実機で確かめる
   - [ ] フラグの案（名前、既定値、`--ssl-mode` との関係）と、README に書く警告を書く
@@ -477,16 +514,32 @@
   - [ ] CockroachDB で読み替えた確認と、skip した確認を、テストの中に理由つきで残す
   - [ ] README の Compatibility の表の CockroachDB の行を、テストの結果に合わせる
 
-## B-152 [todo|P2] MariaDB で DB 名つきで作ったトリガーの出力から DB 名を取り除く
+## B-152 [ready|P2] MariaDB で DB 名つきで作ったトリガーの出力から DB 名を取り除く
 - 概要: MariaDB は `SHOW CREATE TRIGGER` に、書かれたとおりの文（`CREATE TRIGGER qexp.trg BEFORE INSERT ON qexp.t ...`）を返し、出力に DB 名が残る。DB 名を変えて復元できない。10.11 と 11.4 で確認した（設計書 11 節、B-151）。MySQL 5.7 も同じ可能性がある。
+- 仕様:
+  - 直す場所は、トリガーの文から `DEFINER` を取る処理（`internal/schemafile` の `triggers.go` と `StripDefiner` の近く）。`CREATE [DEFINER=...] TRIGGER <名前> <timing> <event> ON <表> FOR EACH ROW` の見出しだけを解析し、トリガー名と `ON` の表名にある DB 名の修飾（`db.name`、`` `db`.`name` ``、`` `db`.name `` など）を取り除く。本体（`FOR EACH ROW` より後）は変えない。
+  - トリガーは自分の DB の表にしか付けられないので、修飾の DB 名は常にダンプ中の DB と同じ。取り除いても意味は変わらない。
+  - 見出しを解析できないとき（修飾の形が読めない、`IF NOT EXISTS` / `OR REPLACE` が付いているなど）は、黙って通さずエラーにする（「黙って落とさない」）。
+  - 5.7 は、`task test:integration:mysql57` で同じ入力を試す。同じ結果なら、同じ変更で直る（`dialect` で分けない）。違えば結果を設計書 11 節に書く。
+  - 前提: MySQL 8.0 / 8.4 の出力は変えない（`TestTriggers` の「名前は `` ` `` で囲まれる」期待を保つ）。着手時に、8.x が DB 名つきで作ったトリガーをどう返すかを実機で確かめ、修飾が残るなら同じ処理で取り除く。
+  - 前提: 設計書 11 節の B-151 (7) を、結果に合わせて更新する（「別に積む」から「B-152 で直した」へ）。
 - 受け入れ条件:
   - [ ] DB 名つきで作ったトリガーを MariaDB 10.11 / 11.4 でダンプし、出力に DB 名が残らないことを、先に失敗する統合テストで示す
   - [ ] その出力を別の DB 名に復元し、トリガーが復元先の DB にできることを確かめる
   - [ ] MySQL 5.7 で同じ入力を試し、結果を設計書に書く（同じなら直す）
   - [ ] README の「Triggers」の節を、結果に合わせる
 
-## B-153 [todo|P2] MariaDB の統合テストの前提を MariaDB に合わせて直す
+## B-153 [ready|P2] MariaDB の統合テストの前提を MariaDB に合わせて直す
 - 概要: `task test:integration:mariadb` が 10.11 と 11.4 の両方で 6 件失敗するのは、テストが MySQL の挙動を前提にしているため（設計書 11 節、B-151）。テストの側を直す。実装は変えない。
+- 仕様:
+  - 原因と直し方は、設計書 11 節の B-151 (1)〜(6) に確定済み。それに従う。
+  - MariaDB かどうかの判定は、`isMySQL57` がある 2 か所（`internal/dump/mysql57_test.go` の `env` のメソッドと、`internal/source/itest_test.go` の関数）に、同じ形で `isMariaDB` を足して使う。MySQL での確認は弱めない（MySQL では今の期待を保つ）。
+  - `TestTriggersRoundTrip` の名前の正規表現は、引用符つきでも無しでも受ける。`TestTriggers` の「引用符つき」の期待は、MariaDB と 5.7 では「書かれたとおり」を受ける。
+  - `TestParallelSnapshotAlignedByGlobalLock` の `STATE` の条件は、`Waiting for global read lock` と `Waiting for backup lock` の両方を受ける。
+  - `TestLockTimeout` と `TestParallelSnapshotLockWaitsForRunningStatement` は、MariaDB のときだけ、待たせる文を `UPDATE ... WHERE SLEEP(n) = 0` にする。
+  - `TestRoutinesKeepSQLMode` は、MariaDB のときだけ、準備の関数の本体を `RETURN 'x'` にする。
+  - 前提: B-152（トリガーの DB 名）とは独立。`TestTriggers` が DB 名の修飾を検査している箇所は、B-152 の担当なので、ここでは変えない（B-152 が先に入れば、その期待に合わせる）。
+  - 前提: `task test:integration:mariadb` の実行には Docker が要る。手元の Docker で 10.11 と 11.4 の両方を流して確かめる。
 - 受け入れ条件:
   - [ ] `TestTriggers` と `TestTriggersRoundTrip` が、MariaDB の「書かれたとおりの名前（引用符なし）」を受ける
   - [ ] `TestParallelSnapshotAlignedByGlobalLock` が、MariaDB の `Waiting for backup lock` を受ける
