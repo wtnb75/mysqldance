@@ -51,6 +51,21 @@ func TestDialectFor(t *testing.T) {
 	}
 }
 
+// TestSessionPinsMaxSortLength checks that every dialect raises max_sort_length
+// to its maximum, so ORDER BY on a long string key compares every byte of it
+// whatever the server default is (B-144).
+func TestSessionPinsMaxSortLength(t *testing.T) {
+	for _, v := range []string{"8.4.13", "10.11.19-MariaDB", "5.7.44", "5.6.51"} {
+		d, err := dialectFor(v)
+		if err != nil {
+			t.Fatalf("dialectFor(%q): %v", v, err)
+		}
+		if !slices.Contains(d.session, "SET SESSION max_sort_length = 8388608") {
+			t.Errorf("dialectFor(%q).session = %q, want max_sort_length at its maximum", v, d.session)
+		}
+	}
+}
+
 // TestDialectForMySQL56 covers MySQL 5.6 (5.6.51 was checked): it reads as 5.7
 // does, with the same dialect and no branch of its own.
 func TestDialectForMySQL56(t *testing.T) {

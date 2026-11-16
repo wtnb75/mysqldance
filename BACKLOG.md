@@ -438,13 +438,6 @@
   - [ ] R-152 と `internal/writer/mysql.go` のコメントが、今の挙動を説明している
   - [ ] 出力とテストは変わらない
 
-## B-144 [todo|P2] 長い文字列キーの `ORDER BY` が `max_sort_length` で切れて並びが決まらないのを直す
-- 概要: コメントの精査で見つかった。`internal/source/rows.go` の `stringKeyTypes` は「並びは全順序のまま」と書くが、`max_sort_length`（既定 1024 バイト）を見ていない。MariaDB 10.11 で、1100 バイトの共通接頭辞を持つ主キー `…b` と `…C` に `ORDER BY CAST(k AS BINARY)` を昇順・降順で引くと、どちらも `C, b` で、1024 バイトで切れた同値の並びが決まらない（MySQL 8.4 では再現しない。5.7 / 5.6 は未検証）。決定性に反するので、`pinSession` で `max_sort_length` を最大に固定するなど、キーの全バイトで並べる方法を決めて直す。
-- 受け入れ条件:
-  - [ ] 共通接頭辞が 1024 バイトを超える文字列キーの統合テストを足し、MariaDB 10.11 / 11.4 と MySQL 8.0 / 8.4 / 5.7 / 5.6 で、キーの順に出力されることを確かめる（先に失敗するテストを書く）
-  - [ ] 固定する変数が全サーバーに存在し、`SET` が失敗しないことを確かめる（なければ方言ごとに分ける）
-  - [ ] `stringKeyTypes` のコメントを、実際の挙動に合わせる
-
 ## B-145 [todo|P3] 読み出しの失敗後に `rows.Close()` が残りを読み捨てる時間とロックの保持を測る
 - 概要: 却下した指摘 R-084 の見直し。`EachRow` は失敗で戻るときに `rows.Close()` が結果の残りを読み捨て、それが終わるまで `eachTable` は他の読み出しを取り消さない。グローバル読み取りロック（非 InnoDB のテーブルがあるとき、または `--jobs` が 2 以上のとき）を持つ間、書き込みエラーや値のエラーの後も、残りの全走査が終わるまでソース側の書き込みが止まる。Ctrl-C は ctx の取り消しで接続が切れるので当たらない。R-084 の「100 万行は数秒」は小さいデータの見積もりで、測っていない。読んだ範囲で `dump` は失敗後に `Snapshot` を再利用せず、「同じ接続が使える」性質を使うのは `TestEachRowStopsOnCallbackError` だけ。大きいテーブルで測り、案（失敗時に接続を捨てる、読み出しだけ取り消す、今のまま）を比べて設計書に書く。コードは変えない。実装は、結果を見てから別項目にする。
 - 受け入れ条件:
@@ -483,6 +476,13 @@
   - [ ] 専用のタスク（`task test:integration:cockroach`。`cockroachdb/cockroach` のタグを固定する。`test:integration` の既定には含めない）で、`TestPostgres*` のうち CockroachDB で意味のあるものが通る
   - [ ] CockroachDB で読み替えた確認と、skip した確認を、テストの中に理由つきで残す
   - [ ] README の Compatibility の表の CockroachDB の行を、テストの結果に合わせる
+
+## B-151 [todo|P2] MariaDB 10.11 / 11.4 の統合テストで失敗する 6 件の原因を調べる
+- 概要: B-144 の検証で、`task test:integration:mariadb` が 10.11 と 11.4 の両方で `TestTriggersRoundTrip`（`internal/dump`）、`TestLockTimeout`、`TestParallelSnapshotAlignedByGlobalLock`、`TestParallelSnapshotLockWaitsForRunningStatement`、`TestRoutinesKeepSQLMode`、`TestTriggers`（`internal/source`）で失敗した。10.11 では、B-144 の変更を外しても同じ 6 件が失敗した。README の Compatibility の MariaDB の「Tested」と食い違うので、原因を調べ、テストの側かコードの側かを分けて記録する。コードは変えず、直す項目は結果を見てから別に積む。
+- 受け入れ条件:
+  - [ ] 6 件それぞれの失敗の原因を、テストの前提（MySQL の挙動の仮定）の誤りか、実装の誤りかに分けて、設計書の MariaDB の節に書く
+  - [ ] 実装の誤りがあれば、直す項目を `mgmt-backlog` で別に積む（データの欠落や決定性に反するものは P1 か P2）
+  - [ ] README の Compatibility の MariaDB の行が、結果と食い違うなら直す
 
 # Done
 
@@ -565,4 +565,5 @@
 ## B-138 [done|P2] 同じ出力先への並行実行を、出力ディレクトリのロックで拒否する
 ## B-139 [done|P2] リポジトリに LICENSE を置く
 ## B-140 [done|P2] 本物の `mysql` クライアントで復元する統合テストを足す
+## B-144 [done|P2] 長い文字列キーの `ORDER BY` が `max_sort_length` で切れないよう、セッションで最大に固定する
 ## B-146 [done|P3] コメントの言い過ぎと、台帳の根拠が弱い項目を直す

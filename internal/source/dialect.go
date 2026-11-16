@@ -70,7 +70,14 @@ var systemSchemas = map[string]bool{"information_schema": true, "mysql": true, "
 
 // Session settings both servers have.
 var (
-	sessionPrelude  = []string{"SET SESSION sql_mode = ''", "SET SESSION sql_quote_show_create = 1"}
+	// max_sort_length is raised to its maximum (8 MiB) so ORDER BY on a string key
+	// compares every byte of it whatever the server default (1024) is. No
+	// ascending order was seen to break at 1024 (MariaDB 10.11), only a
+	// descending one, which dump does not use (B-144): this is a precaution.
+	sessionPrelude = []string{
+		"SET SESSION sql_mode = ''", "SET SESSION sql_quote_show_create = 1",
+		"SET SESSION max_sort_length = 8388608",
+	}
 	sessionPostlude = []string{
 		"SET time_zone = '+00:00'",
 		"SET NAMES utf8mb4",

@@ -237,8 +237,9 @@ func pingWithin(ctx context.Context, db *sql.DB, timeout time.Duration) error {
 }
 
 // pinSession runs the statements that pin every session setting that changes
-// SHOW CREATE output or value text, so the dump never depends on server or
-// account defaults: ANSI_QUOTES would quote identifiers with '"',
+// SHOW CREATE output, value text or row order, so the dump never depends on
+// server or account defaults: max_sort_length would cut a long key short in
+// ORDER BY, ANSI_QUOTES would quote identifiers with '"',
 // PAD_CHAR_TO_FULL_LENGTH would pad CHAR values, NO_BACKSLASH_ESCAPES would
 // change how SHOW CREATE escapes strings (schemafile relies on backslash
 // escapes). s.dialect must be set.
