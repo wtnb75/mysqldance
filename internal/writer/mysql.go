@@ -83,11 +83,17 @@ func (m *MySQL) WriteEvents(w io.Writer, s Schema) error {
 
 // WriteTriggers implements TriggerWriter. The DEFINER clause is removed, as for
 // views, so the triggers belong to the restoring user and the name of the
-// dumping user stays out of the output.
+// dumping user stays out of the output. The database name is removed from the
+// trigger and table names too (MariaDB and 5.7 return them as written), so the
+// dump restores under another database name.
 func (m *MySQL) WriteTriggers(w io.Writer, s Schema) error {
 	triggers := make([]schemafile.Trigger, len(s.Triggers))
 	for i, t := range s.Triggers {
-		t.Create = schemafile.StripDefiner(t.Create)
+		create, err := schemafile.StripTriggerDB(schemafile.StripDefiner(t.Create), s.DB)
+		if err != nil {
+			return fmt.Errorf("trigger %s: %w", sqlvalue.QuoteIdent(t.Name), err)
+		}
+		t.Create = create
 		triggers[i] = t
 	}
 	return schemafile.WriteTriggers(w, s.DB, triggers)

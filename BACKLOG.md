@@ -514,21 +514,6 @@
   - [ ] CockroachDB で読み替えた確認と、skip した確認を、テストの中に理由つきで残す
   - [ ] README の Compatibility の表の CockroachDB の行を、テストの結果に合わせる
 
-## B-152 [ready|P2] MariaDB で DB 名つきで作ったトリガーの出力から DB 名を取り除く
-- 概要: MariaDB は `SHOW CREATE TRIGGER` に、書かれたとおりの文（`CREATE TRIGGER qexp.trg BEFORE INSERT ON qexp.t ...`）を返し、出力に DB 名が残る。DB 名を変えて復元できない。10.11 と 11.4 で確認した（設計書 11 節、B-151）。MySQL 5.7 も同じ可能性がある。
-- 仕様:
-  - 直す場所は、トリガーの文から `DEFINER` を取る処理（`internal/schemafile` の `triggers.go` と `StripDefiner` の近く）。`CREATE [DEFINER=...] TRIGGER <名前> <timing> <event> ON <表> FOR EACH ROW` の見出しだけを解析し、トリガー名と `ON` の表名にある DB 名の修飾（`db.name`、`` `db`.`name` ``、`` `db`.name `` など）を取り除く。本体（`FOR EACH ROW` より後）は変えない。
-  - トリガーは自分の DB の表にしか付けられないので、修飾の DB 名は常にダンプ中の DB と同じ。取り除いても意味は変わらない。
-  - 見出しを解析できないとき（修飾の形が読めない、`IF NOT EXISTS` / `OR REPLACE` が付いているなど）は、黙って通さずエラーにする（「黙って落とさない」）。
-  - 5.7 は、`task test:integration:mysql57` で同じ入力を試す。同じ結果なら、同じ変更で直る（`dialect` で分けない）。違えば結果を設計書 11 節に書く。
-  - 前提: MySQL 8.0 / 8.4 の出力は変えない（`TestTriggers` の「名前は `` ` `` で囲まれる」期待を保つ）。着手時に、8.x が DB 名つきで作ったトリガーをどう返すかを実機で確かめ、修飾が残るなら同じ処理で取り除く。
-  - 前提: 設計書 11 節の B-151 (7) を、結果に合わせて更新する（「別に積む」から「B-152 で直した」へ）。
-- 受け入れ条件:
-  - [ ] DB 名つきで作ったトリガーを MariaDB 10.11 / 11.4 でダンプし、出力に DB 名が残らないことを、先に失敗する統合テストで示す
-  - [ ] その出力を別の DB 名に復元し、トリガーが復元先の DB にできることを確かめる
-  - [ ] MySQL 5.7 で同じ入力を試し、結果を設計書に書く（同じなら直す）
-  - [ ] README の「Triggers」の節を、結果に合わせる
-
 ## B-153 [ready|P2] MariaDB の統合テストの前提を MariaDB に合わせて直す
 - 概要: `task test:integration:mariadb` が 10.11 と 11.4 の両方で 6 件失敗するのは、テストが MySQL の挙動を前提にしているため（設計書 11 節、B-151）。テストの側を直す。実装は変えない。
 - 仕様:
@@ -546,6 +531,10 @@
   - [ ] `TestLockTimeout` と `TestParallelSnapshotLockWaitsForRunningStatement` が、MariaDB では実行中の `SELECT` を待たないので、待たせる文を `UPDATE` にする（MySQL では今の確認を保つ）
   - [ ] `TestRoutinesKeepSQLMode` が、MariaDB で作れる準備（本体のリテラルを単引用符にする）で `SQL_MODE` を確かめる
   - [ ] `task test:integration:mariadb` が 10.11 と 11.4 の両方で通り、`task test:integration` も通る
+
+## B-154 [todo|P3] トリガーの本体にある DB 名の修飾の扱いを決める
+- 依存: B-152
+- 概要: B-152 はトリガーの見出しの DB 名だけを取り除く。本体の `INSERT INTO db.log ...` や `db.fn()` は書かれたまま出るので、別の DB 名に復元すると、元の DB を指し続ける。ビュー・ルーチン・イベントの本体も同じ。警告を出すか、書き換えるかを決める。
 
 # Done
 
@@ -631,3 +620,4 @@
 ## B-144 [done|P2] 長い文字列キーの `ORDER BY` が `max_sort_length` で切れないよう、セッションで最大に固定する
 ## B-146 [done|P3] コメントの言い過ぎと、台帳の根拠が弱い項目を直す
 ## B-151 [done|P2] MariaDB 10.11 / 11.4 の統合テストで失敗する 6 件の原因を調べる
+## B-152 [done|P2] MariaDB で DB 名つきで作ったトリガーの出力から DB 名を取り除く
