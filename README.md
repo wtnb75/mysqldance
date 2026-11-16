@@ -29,6 +29,7 @@ The source is the server `mysqldance` reads. The cells say whether the output wa
 | MariaDB 10.11 and 11.4 ([notes](#mariadb)) | Tested | Tested | Tested |
 | MySQL 5.6.51 ([notes](#mysql-56)) | Tested | Unverified | Unverified: a zero date, common in 5.6, stops it |
 | MySQL 5.5 and earlier | Unverified: refused (support is tracked as B-080) | Unverified | Unverified |
+| StarRocks 4.1.7 and Apache Doris 4.1.5 | Fails: the session setup stops at `SET SESSION max_sort_length` (unknown variable). Even past it, neither server gives a consistent snapshot: `START TRANSACTION WITH CONSISTENT SNAPSHOT` is accepted but rows added by another connection become visible, and `FLUSH TABLES WITH READ LOCK` is a syntax error (design document, section 11, B-074) | Fails: the same session setup stops it before the writer is chosen | Fails: the same |
 | MySQL 9.x and other MySQL-compatible servers (TiDB and so on) | Unverified | Unverified | Unverified |
 
 Notes:
@@ -51,6 +52,13 @@ Notes:
 | MariaDB 11.4 | Unverified | Unverified | Fails: `utf8mb4_uca1400_ai_ci` does not exist in MySQL | Tested into the same version; 10.11 not tried |
 
 MariaDB and MySQL outputs are not converted for each other (see [MariaDB](#mariadb)).
+
+`--target mysql` output restored into other MySQL-protocol servers:
+
+| Output from | Restored into | Status |
+| --- | --- | --- |
+| MySQL 8.4 | StarRocks 4.1.7 | Fails: no table is created. `SET FOREIGN_KEY_CHECKS` / `SET UNIQUE_CHECKS`, `ENGINE=InnoDB`, `DEFAULT CHARSET`, a key inside the column list, `FOREIGN KEY`, `CHECK`, generated columns, `CREATE ALGORITHM=... VIEW`, `b'...'` literals and several types (`UNSIGNED`, `BLOB`, `BIT`, `YEAR`, `ENUM`, `SET`, `DATETIME(n)`) are errors (design document, section 11, B-074) |
+| MySQL 8.4 | Apache Doris 4.1.5 | Fails: the same constructs are errors (except `DATETIME(n)`, which Doris accepts), and `BINARY`, `VARBINARY` and `DECIMAL(65,30)` cannot be created either. A string longer than its `varchar(n)` is **silently truncated** on insert (design document, section 11, B-074) |
 
 `--target sqlite` and `--target postgres` output:
 
