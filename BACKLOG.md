@@ -1,18 +1,5 @@
 # Backlog
 
-## B-076 [ready|P3] libSQL / Cloudflare D1 に SQLite 向けの出力を復元できるか調べる
-- 概要: libSQL（Turso）と Cloudflare D1 は SQLite の SQL を受ける。`--target sqlite` の既存の出力が、そのまま復元できるかを確かめ、結果を設計書に書く。コードは変えない。通らない構文があれば記録し、対応するかどうかは結果を見てから別項目にする。B-069（`sqlite3` コマンドでの復元）と合わせて、SQLite 系の復元先の表（B-067）を埋める。
-- 前提: libSQL の検証は Docker の `ghcr.io/tursodatabase/libsql-server`（amd64 / arm64 のイメージがあることを確認済み）で行う。D1 は Cloudflare のサービスで、コンテナでは再現できない。ローカルで動かす `wrangler` の D1（`wrangler d1 execute --local`）で確かめ、実サービスは未確認と書く。
-- 仕様:
-  - 前提: `wrangler` は `pnpm dlx wrangler`（版は着手時に確かめて設計書に書く）で使う。リポジトリに依存を足さない。
-  - 前提: libSQL のサーバーへは HTTP（`sqld` の `/v2/pipeline`）か、`libsql` のクライアントで流す。どちらを使ったかを記録する。出力ファイルは辞書順に 1 つずつ流す。
-  - 前提: 元の MySQL は 8.4。値の比較の表・問い合わせは、B-069 の `sqlite3` コマンドでの復元と同じにする。
-  - 前提: コード、テスト、Taskfile は変えない。
-- 受け入れ条件:
-  - [ ] libSQL のサーバーに `--target sqlite` の出力を復元して、通るか、通らない構文は何かを記録する
-  - [ ] 通る範囲で、復元後の行数と値が元の MySQL と一致するかを確かめる
-  - [ ] D1 は、ローカルの `wrangler` で同じ確認をした結果と、確認していない範囲（実サービスの制限）を設計書 11 節に書く
-
 ## B-077 [ready|P3] 互換 DBMS の検証用コンテナを起動するタスクを作る
 - 概要: B-070（TiDB）、B-071（CockroachDB）、B-073（ClickHouse）、B-076（libSQL）、B-074（StarRocks / Doris）の調査は、それぞれ別の DBMS のコンテナを手で起動して確かめることになる。起動と待機、後始末を `Taskfile.yml` のタスクにまとめ、`task compat:up NAME=tidb` のように使えるようにする。統合テストの既定（`task test:integration`）には含めない。対象は、イメージの存在と起動方法が調査で確かめられたものから足す。
 - 仕様:
@@ -476,6 +463,13 @@
 - 依存: B-075
 - 概要: B-073 の調査（設計書 11 節）で、`--target mysql` の出力は、型を直し、`0x...` を `unhex('...')` にすれば ClickHouse に入り、値も一致した。ただし ClickHouse は、範囲を超えた整数（`Int64` に `18446744073709551615` で `-1`）、`Bool` の `2`、ゼロ日付、`\Z` を、エラーにせず別の値にする。専用の writer を足すかを、B-075（CSV / Parquet）の結果を見て決める。足す場合の変更点は設計書の方針（案）の (a)〜(d)。
 
+## B-157 [todo|P3] Cloudflare D1 に復元できる出力（`--target d1`）を設計する
+- 依存: B-076
+- 概要: B-076 の調査（設計書 11 節）で、`--target sqlite` の出力は libSQL にはそのまま通ったが、ローカルの `wrangler` の D1 には、`BEGIN` / `COMMIT` の拒否と、外部キーの常時検査（`PRAGMA foreign_keys=OFF` が効かない）で、そのままでは通らなかった。スキーマとデータを 1 つのファイルにつなぎ、`BEGIN` / `COMMIT` / `PRAGMA foreign_keys` を除き、先頭に `PRAGMA defer_foreign_keys=on` を足せば、全行が一致した。これを出力の形として持つかを決める。決める前に、実サービスの D1 の制限（1 文の長さの上限、`wrangler d1 execute --file` の大きさの上限）を確かめる。
+- 受け入れ条件:
+  - [ ] 実サービスの D1（`--remote`）か、Cloudflare のドキュメントで、1 文の長さ・ファイルの大きさの上限を確かめて記録する
+  - [ ] `--target` の別の名前にするか、`sqlite` のオプションにするかと、大きい表の分け方を設計書に書く
+
 # Done
 
 ## B-003 [done|P2] 複数 DB を 1 つのスナップショットで読む
@@ -544,6 +538,7 @@
 ## B-073 [done|P3] ClickHouse 向けの出力に必要な対応を調べる
 ## B-074 [done|P3] StarRocks / Doris を読み出し元・復元先にできるか調べる
 ## B-075 [done|P3] ファイル形式（CSV / JSON Lines / Parquet）の出力を設計する
+## B-076 [done|P3] libSQL / Cloudflare D1 に SQLite 向けの出力を復元できるか調べる
 ## B-078 [done|P2] 読み出し元の互換性を検査し、推奨オプションを示す機能を設計する
 ## B-079 [done|P2] MySQL 5.6 と 5.7 の差異を調べる
 ## B-081 [done|P2] `latin1` の列に入った UTF-8 の扱いを設計する
