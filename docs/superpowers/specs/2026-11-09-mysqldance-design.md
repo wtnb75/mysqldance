@@ -1049,3 +1049,91 @@ CLI の案:
 - ClickHouse、StarRocks、Doris が、ここで作った CSV・JSON Lines・Parquet を実際に読んだときの値（`duckdb` と `pyarrow` でしか読んでいない）。
 - 数千万行の表での書き出しの速さ、メモリ、ファイルの大きさ。実験は 20,000 行である。
 - MySQL に実際に接続して読んだ値での確認（この節は、MySQL の型の端の値を Python で作った）。
+
+## 18. TLS の下限を下げるオプションの設計案（B-082）
+
+確認日: 2026-11-17。コードは変えていない。**この節は案であり、実装を決めるものではない**（実装は 18.7 の項目）。番号が 17 でないのは、17 節を B-084 が使う予定だからである。
+
+### 18.1 今の状態
+
+- `internal/source/tls.go` の `tlsConfig` が作る `tls.Config` は、4 か所（`preferred`、`verify-identity`、`verify-ca` と CA 付きの `required`、CA 無しの `required`）すべてで `MinVersion: tls.VersionTLS12` を置き、`CipherSuites` は置かない（Go の既定の暗号スイート）。
+- 使った Go は `go.mod` と同じ 1.26.0。Go 1.22 から、既定の暗号スイートに **RSA 鍵交換**（`TLS_RSA_WITH_*`）が入らない（`GODEBUG=tlsrsakex=1` で戻る）。つまり本ツールが TLS につながらない原因は、**プロトコルの版**（1.0 / 1.1 しか話さないサーバー）と**暗号スイート**（RSA 鍵交換しか持たないサーバー）の 2 つがあり、別々に効く。
+
+### 18.2 実機での確認
+
+方法: Go 1.26.0 の `database/sql` と `go-sql-driver/mysql` v1.10.1 で、`tls.Config{InsecureSkipVerify: true}` に `MinVersion`（1.0 / 1.1 / 1.2）と `CipherSuites`（置かない = 既定、置く = `tls.CipherSuites()` と `tls.InsecureCipherSuites()` の全部）を変えて接続し、`SELECT VERSION()` が返るかと、`Ssl_version` / `Ssl_cipher` を見た。サーバーは `mysql:5.5`（5.5.62）、`mysql:5.6`（5.6.51）、`mysql:5.7.21`、`mysql:5.7.44`（すべて `--platform linux/amd64`）。5.5 と 5.6 は公式イメージが TLS 無効なので、自作の CA とサーバー証明書（RSA 2048。秘密鍵は従来の RSA 形式）をコンテナにコピーして `have_ssl = YES` にした。5.7.21 と 5.7.44 は自動生成の証明書を使った。サーバー側の `tls_version` は、5.7.21 が `TLSv1,TLSv1.1`、5.7.44 が `TLSv1,TLSv1.1,TLSv1.2`（5.5 と 5.6 には変数がない）。
+
+結果（`min` は `MinVersion`。`既定` は `CipherSuites` を置かない、`全部` は上の全部を置く）:
+
+| サーバー | `min=1.2` 既定（今の本ツール） | `min=1.0` 既定 | `min=1.0` 全部（`GODEBUG` なし） | `min=1.0` 既定 + `GODEBUG=tlsrsakex=1` |
+| --- | --- | --- | --- | --- |
+| 5.5.62 | `unexpected EOF` | `unexpected EOF` | **通る**（`TLSv1`、`AES256-SHA`） | **通る**（同じ） |
+| 5.6.51 | 通る（`TLSv1.2`、`ECDHE-RSA-AES128-GCM-SHA256`） | 同じ | 同じ | 同じ |
+| 5.7.21 | `unexpected EOF` | `unexpected EOF` | **通る**（`TLSv1.1`、`AES256-SHA`） | **通る**（同じ） |
+| 5.7.44 | `remote error: tls: handshake failure` | 同じ | **通る**（`TLSv1.2`、`AES128-GCM-SHA256`） | **通る**（同じ） |
+
+読み取れること（すべて上の実験で確かめた）:
+
+- **5.5.62 は TLS 1.0 までで、5.7.21 は 1.1 までを話し、どちらも選んだのは `AES256-SHA`（RSA 鍵交換、CBC、SHA-1）だった**。版を下げるだけでは通らない（`min=1.0` 既定は `unexpected EOF`）。RSA 鍵交換のスイートを足して初めて通る。`min=1.1` で 5.5.62 に、`min=1.2` で 5.7.21 に、スイートを全部置いてつなぐと `tls: server selected unsupported protocol version 301`（5.7.21 は `302`）で、サーバーが選んだ版が下限より低いことを示す。
+- **Go の標準ライブラリだけで通る。`GODEBUG` は要らない**。クライアントの `MinVersion` を明示すれば TLS 1.0 / 1.1 を話せ（`tls10server` は Go の文書ではサーバー側の既定に効く設定で、クライアントの今回の実験には要らなかった）、`CipherSuites` に RSA 鍵交換のスイートを明示すれば `tlsrsakex` の設定に関わらず使える（`GODEBUG` を空にして通った）。
+- **5.7.44 は版を下げる必要がなく、スイートだけが要る**（`min=1.2` のまま、スイートを足すと `TLSv1.2` / `AES128-GCM-SHA256` で通る。今の README の `GODEBUG=tlsrsakex=1` の回避策と同じ効果）。したがって、版とスイートは**別の設定**にした方が、必要な緩め方だけを選べる。
+- **5.6.51 は何も変えずに通る**（証明書を設定すれば。設計書 11 節の B-079 の記録と一致）。5.6 の `min=1.0` でも、選ばれたのは `TLSv1.2` で、Go は版を下げても、サーバーと合意できる**一番高い版**を使う。
+- 症状の見分け方: サーバーが ClientHello を黙って切る（版かスイートが合わない）と `unexpected EOF`（5.5.62、5.7.21）、サーバーがアラートを返すと `remote error: tls: handshake failure`（5.7.44）になる。どちらも、原因（版かスイートか）がメッセージからは分からない。`--ssl-mode preferred` でも、サーバーが TLS を使えると言った後のハンドシェイクの失敗は、平文に戻らずエラーになる（設計書 11 節の B-080 の記録。今回の実験は `required` 相当の接続だけで、`preferred` では試していない）。
+- **Go は DHE（有限体の Diffie-Hellman）のスイートを持たない**。今回のサーバーはどれも RSA 鍵交換か ECDHE を受けたので問題にならなかったが、DHE しか許さない設定のサーバーには、スイートを足してもつながらない（確認はしていない）。
+
+### 18.3 平文（`--ssl-mode disabled`）との比較と、下げることのリスク
+
+| 観点 | 平文 | TLS 1.0 / 1.1 + RSA 鍵交換（案のフラグ） | TLS 1.2 以上（今の既定） |
+| --- | --- | --- | --- |
+| 通信の盗み見（受け身の攻撃者） | 認証のやり取りと全行が見える | 暗号化される | 暗号化される |
+| 過去の通信の保護（前方秘匿性） | なし | **なし**（RSA 鍵交換。サーバーの秘密鍵が後で漏れると、記録した通信を解読できる。ダンプは個人情報を含みうる） | ECDHE のスイートならあり |
+| 暗号の強さ | なし | CBC と SHA-1。**TLS 1.0 / 1.1 は RFC 8996 で廃止**。BEAST や Lucky 13 のような既知の攻撃は、通信に介入できる攻撃者を要する（バッチの 1 接続で成り立つかは確認していない） | 現行の標準 |
+| 通信の改ざん・なりすまし（能動的な攻撃者） | 防げない | `preferred` と、CA 無しの `required` は**サーバーを認証しない**ので、防げない（平文と同じ）。`verify-ca` と `verify-identity` なら防げる | 同じ |
+| 利用者の誤解 | なし | 「暗号化している」と思い込みやすい | — |
+
+- **利点**: 受け身の盗み見に対しては、平文より常に強い。古いサーバーを使い続けるしかなく、ダンプは必要なとき（移行、バックアップ）に、同じネットワークの外を通らざるをえない場合に意味がある。
+- **リスク**: 古い版と、前方秘匿性のないスイートを、本ツールが**進んで受け入れる**こと。能動的な攻撃者がいる経路では、サーバーを認証しない `preferred` / `required` は、版を下げなくても、平文と同じ強さしかない。下限を下げたときに推すのは、`verify-ca`（サーバーの CA を `--ssl-ca` で渡す）である。
+- **サーバーの版を上げる、または経路を変える方が良い場合**: SSH トンネル（`ssh -L`）、`stunnel` などの TLS を終端する中継、VPN、同じホストで `--socket` を使う、がある。これらが使えるなら、下限を下げるより先に勧める。
+
+### 18.4 フラグの案
+
+**2 つの独立したフラグ**にする。版と暗号スイートは別々に必要になる（18.2 の 5.7.44）。
+
+| フラグ | 値 | 既定 | 効果 |
+| --- | --- | --- | --- |
+| `--tls-min-version` | `1.0`、`1.1`、`1.2`、`1.3` | `1.2`（今と同じ） | `tls.Config.MinVersion` を置く（4 か所とも同じ値）。`1.3` を指定できるのは、下限を**上げる**用途のため |
+| `--tls-legacy-ciphers` | 真偽値 | 偽（今と同じ） | `tls.Config.CipherSuites` に、Go の既定のスイートに加えて RSA 鍵交換のスイート（`TLS_RSA_WITH_AES_128_CBC_SHA`、`..._AES_256_CBC_SHA`、`..._AES_128_GCM_SHA256`、`..._AES_256_GCM_SHA384`、`..._AES_128_CBC_SHA256`）を足す。**3DES、RC4 は足さない**（今回のサーバーはどれも要らなかった）。TLS 1.3 のスイートには効かない |
+
+- **`--ssl-mode` との関係**: 2 つとも**TLS を使うモードでだけ**指定できる。`disabled` との組み合わせと、`preferred` を Unix ソケットで使う（TLS を使わない）組み合わせは、**起動時のフラグ検査でエラーにする**（`--ssl-ca` と `preferred` の組み合わせを `ValidateSSL` が拒否するのと同じ形。黙って無視しない）。`preferred`（既定）とは組み合わせられる。ただし、**下限を下げた利用者は暗号化を求めている**ので、README では `--ssl-mode required` 以上を勧める（`preferred` は、サーバーが TLS を持たないとき、警告もなく平文になる。設計書 11 節の B-079 の記録）。
+- **版を下げたときに、暗号スイートを自動では足さない**: 5.5.62 と 5.7.21 には 2 つのフラグが要り、手間が増えるが、挙動が暗黙にならず、README と警告の文面を書き分けられる（案 B: `--tls-min-version` を 1.2 未満にしたら、スイートも足す。使う側の手間は減るが、5.7.44 のように版を下げずスイートだけが要る場合に別のフラグが結局要る）。
+- **失敗時に版やスイートを自動で下げて再試行しない**（「平文に黙って落とさない」と同じ考え方）。下げるかどうかは、利用者が決める。
+- **ハンドシェイクが失敗したときのエラーのヒント**: フラグを指定していないときの TLS のハンドシェイクの失敗には、「サーバーが TLS 1.0 / 1.1 か、RSA 鍵交換のスイートしか持たないかもしれない。`--tls-min-version` と `--tls-legacy-ciphers`（18 節。リスクは README を参照）か、`--ssl-mode disabled`（平文）を検討する」という 1 行を足す。見分けは 18.2 のとおりメッセージからはできないので、**原因を断定せず、両方を挙げる**。どのエラーを対象にするかは実装の項目で決める。
+- **警告**: どちらかのフラグが既定から変わったとき、`slog.Warn` で 1 回出す（B-087 / B-088 のログの形）。文面（案）: `TLS 1.0/1.1 and RSA key exchange are deprecated and offer no forward secrecy; the dump may contain personal data. Prefer --ssl-mode verify-ca with --ssl-ca, an SSH tunnel, or a newer server.` あわせて、つないだ後に `SHOW SESSION STATUS LIKE 'Ssl_version'` と `'Ssl_cipher'` の結果をログに出す案もある（13 節の C02 が使う方法と同じで、実験でも使った）。
+- **README の警告**（案。TLS の節に足す）: `--tls-min-version 1.0` or `1.1` and `--tls-legacy-ciphers` let mysqldance talk to old servers (MySQL 5.5 and 5.7.21 or earlier) over an encrypted but weak connection. TLS 1.0 and 1.1 are deprecated (RFC 8996), and RSA key exchange has no forward secrecy: a later leak of the server's private key lets someone who recorded the traffic read the dump. It is still better than `--ssl-mode disabled`, but it is **not** safe on an untrusted network. Use `--ssl-mode verify-ca` with `--ssl-ca` so the server is authenticated, and prefer an SSH tunnel or a newer server when you can.
+
+### 18.5 `GODEBUG` との関係
+
+- `GODEBUG=tlsrsakex=1`（今の README の回避策。統合テストでも使う）は、プロセス全体に効く環境変数で、コマンドラインから見えず、Go の将来の版で設定が外される可能性がある（Go の `GODEBUG` の互換方針）。コードで `CipherSuites` を明示する案は、同じ効果をフラグ 1 つに閉じ込め、**Go の版に左右されない**。
+- 実験では、`GODEBUG=tlsrsakex=1` と `min=1.0` の組み合わせでも通った（上の表の右端）。つまり、**フラグを実装しない場合の回避策**は、「コードを変えずに `GODEBUG` で RSA 鍵交換を戻す」では足りず（`GODEBUG` は暗号スイートだけを戻し、版の下限は下げない。`min=1.2` のまま `GODEBUG=tlsrsakex=1` を付けると、5.5.62 は `server selected unsupported protocol version 301`、5.7.21 は `302` で失敗した）、**下限を下げるコードの変更が要る**。5.7.44 だけは、`GODEBUG=tlsrsakex=1` で今のままつながる。
+- 実装したら、`task test:integration:mysql57` の `GODEBUG=tlsrsakex=1` は `--tls-legacy-ciphers` に置き換えられる。README の 5.7 の TLS の注意（`GODEBUG` の回避策）も書き換える。
+
+### 18.6 他の項目への影響
+
+- **B-158（5.5.3 以降に対応する）**: 5.5.62 に**暗号化してつなぐ手段が、この案で得られる**（`--tls-min-version 1.0 --tls-legacy-ciphers`）。B-158 の README の注意（「TLS を使えず平文になる」）は、この項目の実装が先に入るなら「2 つのフラグを使えば TLS 1.0 でつながる」に変える。実装が後なら、B-158 は今のまま平文だけにする。
+- **13 節の C02（`mysqldance check` の TLS の検査）**: 「`tls_version` が TLS 1.2 を含まない: warn（B-082 の結果を待つ）」の文面は、`--tls-min-version` と `--tls-legacy-ciphers` を挙げる形にできる。ハンドシェイクが失敗したときの推奨（13.5）も同じ。
+- **5.6**: 下限を下げる必要はない（18.2）。
+
+### 18.7 結論
+
+- **要る**: 古いサーバー（5.5 と 5.7.21 以前）は、`--ssl-mode disabled`（平文）以外の選択肢が今はなく、実機で TLS 1.0 / 1.1 + RSA 鍵交換なら Go の標準ライブラリだけでつながることを確かめた。平文より、受け身の盗み見に対して常に強い。
+- **フラグは 2 つ**（`--tls-min-version`、`--tls-legacy-ciphers`。既定は今と同じ）。`GODEBUG` に頼らない。リスクの警告を、README、`slog.Warn`、エラーのヒントの 3 か所で出す。
+- **積むならこの項目**: 実装は別の項目に積んだ（B-159）。
+
+### 18.8 確認していないこと
+
+- 下限を下げたつなぎ方での**全量のダンプ**と、`verify-ca` / `verify-identity` の証明書検査（今回は `InsecureSkipVerify` の接続で、ハンドシェイクと `SELECT VERSION()`、`SHOW SESSION STATUS` までを見た）。一時的に本ツールの `tls.go` を書き換えて全量のダンプを試す実験は、実行しなかった。
+- どの RSA 鍵交換のスイートが最小限で足りるか（今回は全部を置いた。選ばれたのは `AES256-SHA`（5.5.62、5.7.21）と `AES128-GCM-SHA256`（5.7.44））。案の 5 つで足りることは、実験していない。
+- 5.5.62、5.6.51、5.7.21、5.7.44 以外のサーバー（5.5 の他の版、MariaDB 10.x の古い版、Percona、5.7.21 と 5.7.44 の間の版）、自動生成でない証明書（SHA-1 署名や 1024 ビットの RSA など、古い鍵を使うサーバー。5.5 と 5.6 は自作の RSA 2048 を使った）、Go 1.26.0 以外の版。
+- 5.7.21 で TLS 1.0 そのもの（`min=1.0` でも、選ばれたのは `TLSv1.1`）。サーバー側が `TLSv1` のみのときは、5.5.62 の結果が代わりになる。
+- `openssl s_client` での確認は、今回は結果が安定せず（`-starttls mysql` で、5.7.21 の TLS 1.1 を含め失敗と出た。Go では通っている）、使っていない。5.5.62 の `openssl s_client` の結果は 11 節の B-080 の記録にある。
+- DHE しか許さない設定のサーバー（18.2）。
