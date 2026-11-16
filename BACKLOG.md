@@ -477,6 +477,13 @@
   - [ ] CockroachDB で読み替えた確認と、skip した確認を、テストの中に理由つきで残す
   - [ ] README の Compatibility の表の CockroachDB の行を、テストの結果に合わせる
 
+## B-151 [todo|P2] MariaDB 10.11 / 11.4 の統合テストで失敗する 6 件の原因を調べる
+- 概要: B-144 の検証で、`task test:integration:mariadb` が 10.11 と 11.4 の両方で `TestTriggersRoundTrip`（`internal/dump`）、`TestLockTimeout`、`TestParallelSnapshotAlignedByGlobalLock`、`TestParallelSnapshotLockWaitsForRunningStatement`、`TestRoutinesKeepSQLMode`、`TestTriggers`（`internal/source`）で失敗した。10.11 では、B-144 の変更を外しても同じ 6 件が失敗した。README の Compatibility の MariaDB の「Tested」と食い違うので、原因を調べ、テストの側かコードの側かを分けて記録する。コードは変えず、直す項目は結果を見てから別に積む。
+- 受け入れ条件:
+  - [ ] 6 件それぞれの失敗の原因を、テストの前提（MySQL の挙動の仮定）の誤りか、実装の誤りかに分けて、設計書の MariaDB の節に書く
+  - [ ] 実装の誤りがあれば、直す項目を `mgmt-backlog` で別に積む（データの欠落や決定性に反するものは P1 か P2）
+  - [ ] README の Compatibility の MariaDB の行が、結果と食い違うなら直す
+
 # Done
 
 ## B-003 [done|P2] 複数 DB を 1 つのスナップショットで読む
