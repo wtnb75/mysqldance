@@ -1,15 +1,5 @@
 # Backlog
 
-## B-070 [ready|P3] TiDB を読み出し元・復元先にできるか調べる
-- 概要: TiDB は MySQL プロトコルと MySQL 8.0 の SQL に互換がある。TiDB を読み出し元にしたときと、`--target mysql` の出力の復元先にしたときの差異を実機で確かめて、設計書に記録する。コードは変えない。対応するかどうかの判断と実装は、結果を見てから別項目にする（B-037 の MariaDB、B-039 の 5.7 と同じ流れ）。
-- 前提: 検証は Docker の `pingcap/tidb`（amd64 / arm64 のイメージがあることを確認済み。単体で起動する構成を使う）で行う。
-- 受け入れ条件:
-  - [ ] 現行の安定版の TiDB で、`dialect` の全クエリの結果と `SHOW CREATE` の書式を MySQL 8.4 と比べる
-  - [ ] 現在のバイナリをつないだときの挙動（どこで失敗するか）を確かめる
-  - [ ] `START TRANSACTION WITH CONSISTENT SNAPSHOT` と `FLUSH TABLES WITH READ LOCK` の挙動を確かめる
-  - [ ] MySQL 8.4 の出力を TiDB に復元できるかを確かめる
-  - [ ] 結果と、対応する場合の方針を設計書 11 節に書く
-
 ## B-071 [ready|P3] CockroachDB を `--target postgres` の復元先にできるか調べる
 - 概要: CockroachDB は PostgreSQL のワイヤプロトコルと SQL に互換がある。本ツールは MySQL 系のサーバーしか読まないので、読み出し元にはならず、`--target postgres` の出力の復元先として確かめる。実機で復元を試し、通らない構文を設計書に記録する。コードは変えない。対応するかどうかの判断と実装は、結果を見てから別項目にする。
 - 前提: 検証は Docker の `cockroachdb/cockroach`（amd64 / arm64 のイメージがあることを確認済み。単一ノードの非セキュア構成を使う）で行う。
@@ -487,6 +477,14 @@
   - [ ] `task test:integration:postgres`（14〜18）で、出力を読み込み、制約に反する行の挿入が失敗することを確かめる
   - [ ] README の PostgreSQL の節（出力しないものの一覧を含む）を更新する
 
+## B-149 [todo|P3] TiDB を読み出し元にできるようにする（`--jobs 1`）
+- 概要: B-070 の調査（設計書 11 節）で、TiDB v8.5.7 は `dialect` を足せば `--target mysql` で読めることが分かった。`tidb` の方言を足し、`pingcap/tidb:v8.5.7` で統合テストを通す。`FLUSH TABLES WITH READ LOCK` が使えないので `--jobs 2` 以上は対象外にし、`@@tidb_snapshot` を使う対応は別項目にする。
+- 受け入れ条件:
+  - [ ] `dialectFor` が TiDB を判定し、セッション設定・ビュー依存・既定値の式（`CURRENT_TIMESTAMP`）の読み方を設計書の方針どおりにする
+  - [ ] `--jobs 2` 以上と、ロックが必要な場合のエラーが、TiDB では理由が分かるメッセージになる
+  - [ ] 専用の統合テストのタスク（`task test:integration:tidb`。`test:integration` の既定には含めない）で、ダンプと、MySQL 8.4 への復元・データの一致が通る
+  - [ ] README の Compatibility の表と、CHECK・降順・`INVISIBLE` の注意を更新する
+
 # Done
 
 ## B-003 [done|P2] 複数 DB を 1 つのスナップショットで読む
@@ -549,6 +547,7 @@
 ## B-067 [done|P2] README に互換性の表（読み出し元 × 出力形式 × 復元先）を書く
 ## B-068 [done|P2] PostgreSQL の複数の版で統合テストを実行する
 ## B-069 [done|P2] SQLite の復元を `sqlite3` コマンドで確かめる
+## B-070 [done|P3] TiDB を読み出し元・復元先にできるか調べる
 ## B-078 [done|P2] 読み出し元の互換性を検査し、推奨オプションを示す機能を設計する
 ## B-079 [done|P2] MySQL 5.6 と 5.7 の差異を調べる
 ## B-081 [done|P2] `latin1` の列に入った UTF-8 の扱いを設計する
