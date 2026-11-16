@@ -32,10 +32,10 @@ func TestTriggers(t *testing.T) {
 	if want := "a.m_del b.z_first b.a_second"; strings.Join(names, " ") != want {
 		t.Fatalf("triggers = %q, want %q", strings.Join(names, " "), want)
 	}
-	old := isMySQL57(t, conn)
+	old := isMySQL57(t, conn) || isMariaDB(t, conn)
 	for _, tr := range got {
-		// MySQL 5.7 returns the statement as it was written, so the name is not
-		// quoted there; 8.x quotes it.
+		// MySQL 5.7 and MariaDB return the statement as it was written, so the name
+		// is not quoted there; 8.x quotes it.
 		quote := "`"
 		if old {
 			quote = "`?"

@@ -96,10 +96,16 @@ func TestLockTimeout(t *testing.T) {
 			if err := long.QueryRowContext(context.Background(), "SELECT CONNECTION_ID()").Scan(&longID); err != nil {
 				t.Fatal(err)
 			}
+			// MariaDB does not make FLUSH TABLES WITH READ LOCK wait for a running
+			// SELECT, but it does wait for a writing statement.
+			stmt := "SELECT id, SLEEP(60) FROM `" + db + "`.m"
+			if isMariaDB(t, conn) {
+				stmt = "UPDATE `" + db + "`.m SET id = id WHERE SLEEP(60) = 0"
+			}
 			longDone := make(chan struct{})
 			go func() {
 				defer close(longDone)
-				_, err := long.ExecContext(context.Background(), "SELECT id, SLEEP(60) FROM `"+db+"`.m")
+				_, err := long.ExecContext(context.Background(), stmt)
 				var me *mysql.MySQLError
 				if err != nil && (!errors.As(err, &me) || me.Number != errQueryInterrupted) {
 					t.Errorf("long statement: %v", err)

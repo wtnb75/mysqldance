@@ -514,24 +514,6 @@
   - [ ] CockroachDB で読み替えた確認と、skip した確認を、テストの中に理由つきで残す
   - [ ] README の Compatibility の表の CockroachDB の行を、テストの結果に合わせる
 
-## B-153 [ready|P2] MariaDB の統合テストの前提を MariaDB に合わせて直す
-- 概要: `task test:integration:mariadb` が 10.11 と 11.4 の両方で 6 件失敗するのは、テストが MySQL の挙動を前提にしているため（設計書 11 節、B-151）。テストの側を直す。実装は変えない。
-- 仕様:
-  - 原因と直し方は、設計書 11 節の B-151 (1)〜(6) に確定済み。それに従う。
-  - MariaDB かどうかの判定は、`isMySQL57` がある 2 か所（`internal/dump/mysql57_test.go` の `env` のメソッドと、`internal/source/itest_test.go` の関数）に、同じ形で `isMariaDB` を足して使う。MySQL での確認は弱めない（MySQL では今の期待を保つ）。
-  - `TestTriggersRoundTrip` の名前の正規表現は、引用符つきでも無しでも受ける。`TestTriggers` の「引用符つき」の期待は、MariaDB と 5.7 では「書かれたとおり」を受ける。
-  - `TestParallelSnapshotAlignedByGlobalLock` の `STATE` の条件は、`Waiting for global read lock` と `Waiting for backup lock` の両方を受ける。
-  - `TestLockTimeout` と `TestParallelSnapshotLockWaitsForRunningStatement` は、MariaDB のときだけ、待たせる文を `UPDATE ... WHERE SLEEP(n) = 0` にする。
-  - `TestRoutinesKeepSQLMode` は、MariaDB のときだけ、準備の関数の本体を `RETURN 'x'` にする。
-  - 前提: B-152（トリガーの DB 名）とは独立。`TestTriggers` が DB 名の修飾を検査している箇所は、B-152 の担当なので、ここでは変えない（B-152 が先に入れば、その期待に合わせる）。
-  - 前提: `task test:integration:mariadb` の実行には Docker が要る。手元の Docker で 10.11 と 11.4 の両方を流して確かめる。
-- 受け入れ条件:
-  - [ ] `TestTriggers` と `TestTriggersRoundTrip` が、MariaDB の「書かれたとおりの名前（引用符なし）」を受ける
-  - [ ] `TestParallelSnapshotAlignedByGlobalLock` が、MariaDB の `Waiting for backup lock` を受ける
-  - [ ] `TestLockTimeout` と `TestParallelSnapshotLockWaitsForRunningStatement` が、MariaDB では実行中の `SELECT` を待たないので、待たせる文を `UPDATE` にする（MySQL では今の確認を保つ）
-  - [ ] `TestRoutinesKeepSQLMode` が、MariaDB で作れる準備（本体のリテラルを単引用符にする）で `SQL_MODE` を確かめる
-  - [ ] `task test:integration:mariadb` が 10.11 と 11.4 の両方で通り、`task test:integration` も通る
-
 ## B-154 [todo|P3] トリガーの本体にある DB 名の修飾の扱いを決める
 - 依存: B-152
 - 概要: B-152 はトリガーの見出しの DB 名だけを取り除く。本体の `INSERT INTO db.log ...` や `db.fn()` は書かれたまま出るので、別の DB 名に復元すると、元の DB を指し続ける。ビュー・ルーチン・イベントの本体も同じ。警告を出すか、書き換えるかを決める。
@@ -621,3 +603,4 @@
 ## B-146 [done|P3] コメントの言い過ぎと、台帳の根拠が弱い項目を直す
 ## B-151 [done|P2] MariaDB 10.11 / 11.4 の統合テストで失敗する 6 件の原因を調べる
 ## B-152 [done|P2] MariaDB で DB 名つきで作ったトリガーの出力から DB 名を取り除く
+## B-153 [done|P2] MariaDB の統合テストの前提を MariaDB に合わせて直す

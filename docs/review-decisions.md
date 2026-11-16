@@ -1441,3 +1441,10 @@
 - 初出: B-152
 - 再出: 0
 
+## R-200 MariaDB のときだけ、テストの待たせる文・準備の本文・`STATE` の条件を MySQL と変えるのは、テストの趣旨を弱める
+- 対象: internal/source/lock_test.go の TestLockTimeout / internal/source/parallel_snapshot_test.go の TestParallelSnapshotLockWaitsForRunningStatement と TestParallelSnapshotAlignedByGlobalLock / internal/source/routines_test.go の TestRoutinesKeepSQLMode
+- 指摘: MariaDB で `SELECT` を `UPDATE` に変えると別の場面を試す。`Waiting for backup lock` を全サーバーで受けると緩くなる。本体を `'x'` にすると ANSI_QUOTES の経路を通らない。
+- 却下の理由: B-153 の確定した仕様と設計書 11 節の B-151 (3)〜(6) が、実機（10.11 / 11.4）で確かめて決めた直し方である。MariaDB は実行中の `SELECT` を待たず、書き込みの文は待つ。`STATE` は MariaDB が `Waiting for backup lock` を返す。`"x"` は MariaDB が作成時に拒否する。MySQL では今の確認を変えていない（分岐は `isMariaDB` のときだけ）。`STATE` の条件を接続 ID で絞るのは、既存の確認の範囲を超える好みの変更。
+- 初出: B-153
+- 再出: 0
+

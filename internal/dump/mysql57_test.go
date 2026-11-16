@@ -31,6 +31,14 @@ func (e *env) isMySQL57(t *testing.T) bool {
 	return strings.HasPrefix(e.serverVersion(t), "5.7.")
 }
 
+// isMariaDB reports whether the test server is MariaDB. Tests use it only to
+// expect what MariaDB does differently from MySQL; production code never asks.
+// Each test package has its own copy on purpose (R-072 in docs/review-decisions.md).
+func (e *env) isMariaDB(t *testing.T) bool {
+	t.Helper()
+	return strings.Contains(strings.ToLower(e.serverVersion(t)), "mariadb")
+}
+
 // TestMySQL57RoundTrip dumps a 5.7 database that has what 5.7 writes
 // differently (int(11), a latin1 default character set, no CHECK or INVISIBLE),
 // restores it into 5.7 and compares every row and value, then restores the same

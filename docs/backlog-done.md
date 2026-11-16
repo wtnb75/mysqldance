@@ -858,3 +858,21 @@
   - [x] その出力を別の DB 名に復元し、トリガーが復元先の DB にできることを確かめる
   - [x] MySQL 5.7 で同じ入力を試し、結果を設計書に書く（同じなら直す）
   - [x] README の「Triggers」の節を、結果に合わせる
+
+## B-153 [done|P2] MariaDB の統合テストの前提を MariaDB に合わせて直す
+- 概要: `task test:integration:mariadb` が 10.11 と 11.4 の両方で 6 件失敗するのは、テストが MySQL の挙動を前提にしているため（設計書 11 節、B-151）。テストの側を直す。実装は変えない。
+- 仕様:
+  - 原因と直し方は、設計書 11 節の B-151 (1)〜(6) に確定済み。それに従う。
+  - MariaDB かどうかの判定は、`isMySQL57` がある 2 か所（`internal/dump/mysql57_test.go` の `env` のメソッドと、`internal/source/itest_test.go` の関数）に、同じ形で `isMariaDB` を足して使う。MySQL での確認は弱めない（MySQL では今の期待を保つ）。
+  - `TestTriggersRoundTrip` の名前の正規表現は、引用符つきでも無しでも受ける。`TestTriggers` の「引用符つき」の期待は、MariaDB と 5.7 では「書かれたとおり」を受ける。
+  - `TestParallelSnapshotAlignedByGlobalLock` の `STATE` の条件は、`Waiting for global read lock` と `Waiting for backup lock` の両方を受ける。
+  - `TestLockTimeout` と `TestParallelSnapshotLockWaitsForRunningStatement` は、MariaDB のときだけ、待たせる文を `UPDATE ... WHERE SLEEP(n) = 0` にする。
+  - `TestRoutinesKeepSQLMode` は、MariaDB のときだけ、準備の関数の本体を `RETURN 'x'` にする。
+  - 前提: B-152（トリガーの DB 名）とは独立。`TestTriggers` が DB 名の修飾を検査している箇所は、B-152 の担当なので、ここでは変えない（B-152 が先に入れば、その期待に合わせる）。
+  - 前提: `task test:integration:mariadb` の実行には Docker が要る。手元の Docker で 10.11 と 11.4 の両方を流して確かめる。
+- 受け入れ条件:
+  - [x] `TestTriggers` と `TestTriggersRoundTrip` が、MariaDB の「書かれたとおりの名前（引用符なし）」を受ける
+  - [x] `TestParallelSnapshotAlignedByGlobalLock` が、MariaDB の `Waiting for backup lock` を受ける
+  - [x] `TestLockTimeout` と `TestParallelSnapshotLockWaitsForRunningStatement` が、MariaDB では実行中の `SELECT` を待たないので、待たせる文を `UPDATE` にする（MySQL では今の確認を保つ）
+  - [x] `TestRoutinesKeepSQLMode` が、MariaDB で作れる準備（本体のリテラルを単引用符にする）で `SQL_MODE` を確かめる
+  - [x] `task test:integration:mariadb` が 10.11 と 11.4 の両方で通り、`task test:integration` も通る
