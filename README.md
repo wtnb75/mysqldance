@@ -478,6 +478,22 @@ CI (`.github/workflows/integration.yml`) runs them against MySQL 8.0 and 8.4 on 
 
 The `fix` and `update-deps` workflows are run by hand (`workflow_dispatch`). Each runs `go fix` or `go get -u`, then the unit tests, and opens a PR only if they pass. A PR created with the default `GITHUB_TOKEN` does not trigger the `branch` workflow, so CI does not start by itself. Before merging, run `branch` on the PR's branch (`chore/go-fix` or `chore/update-deps`) from the Actions tab, or with `gh workflow run branch.yml --ref chore/update-deps`, to run the integration tests as well.
 
+### Other DBMSs for checking by hand
+
+`task compat:up NAME=<name>` starts a container of a DBMS that `mysqldance` does not test automatically, and waits until the server answers. It is not part of `task test:integration`. The container is named `mysqldance-compat-<name>` (so it does not collide with `mysqldance-test`), and only the loopback address of the Docker host is published. `PORT`, `HOST` and `TIMEOUT` work as in `test:integration`; for a Docker daemon on another host, pass `HOST=host.docker.internal` (or set `MYSQLDANCE_TEST_HOST`). A `NAME` that is not in the table fails and lists the supported names. The image tags are pinned in the `COMPAT_*_IMAGE` variables at the top of `Taskfile.yml`; override one for a single run, for example `task compat:up NAME=tidb COMPAT_TIDB_IMAGE=pingcap/tidb:v8.1.0`.
+
+```sh
+task compat:up NAME=cockroach   # start and wait
+task compat:down NAME=cockroach # remove the container
+```
+
+| `NAME` | Image (default) | Default host port | Connect with | Notes |
+| --- | --- | --- | --- | --- |
+| `tidb` | `pingcap/tidb:v8.5.7` | `33081` (container 4000) | any MySQL client or `mysqldance -h 127.0.0.1 -P 33081 -u root` (`root`, empty password) | `pingcap/tidb:latest` is v7.5.1, so the tag is pinned |
+| `cockroach` | `cockroachdb/cockroach:v26.4.0` | `33082` (container 26257) | DSN `postgres://root@127.0.0.1:33082/defaultdb?sslmode=disable`, or `docker exec -i mysqldance-compat-cockroach ./cockroach sql --insecure` | started with `start-single-node --insecure` |
+| `clickhouse` | `clickhouse/clickhouse-server:26.10` | `33083` (native protocol, container 9000) | `docker exec -i mysqldance-compat-clickhouse clickhouse-client --multiquery` | started with `CLICKHOUSE_SKIP_USER_SETUP=1`, so the passwordless `default` user can connect through the published port, and `--ulimit nofile=262144:262144` |
+| `libsql` | `ghcr.io/tursodatabase/libsql-server:v0.24.33` | `33084` (HTTP, container 8080) | HTTP: `POST http://127.0.0.1:33084/v2/pipeline`, health check `GET /health` | no authentication |
+
 ### Sample data
 
 To try `mysqldance` or look at diffs of its output, load a small sample database into a MySQL container:
