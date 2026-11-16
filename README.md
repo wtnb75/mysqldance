@@ -74,7 +74,9 @@ MariaDB and MySQL outputs are not converted for each other (see [MariaDB](#maria
 | `postgres` | CockroachDB v26.4.0 (single node, insecure) | Conditional: restored by hand from MySQL 8.4 with every row compared (design document, section 11, B-071); no automated test yet (B-150). `integer` becomes 64 bits there |
 | `postgres` | DuckDB 2.0.0 | Fails: `SET client_encoding`, `interval(3)`, `timestamptz(0)`, an empty `bytea` (`'\x'`) and `ADD CONSTRAINT ... FOREIGN KEY` are errors, and a `bytea` of two bytes or more is **silently restored as different bytes** (`'\x00FF41'` becomes `00 46 46 34 31`). With those removed by hand, every row count and value matched MySQL 8.4 except that `bytea` (design document, section 11, B-072) |
 | `sqlite` | DuckDB 2.0.0 | Fails: `PRAGMA foreign_keys`, an inline `FOREIGN KEY ... ON DELETE CASCADE`, `char(10)` and a 4-byte `INTEGER` column (`INT32`) are errors. With those changed by hand, every row count and value matched MySQL 8.4 (design document, section 11, B-072) |
-| `sqlite` / `postgres` | Other SQLite-compatible or PostgreSQL-compatible DBMSs (libSQL, Cloudflare D1 and so on) | Unverified |
+| `sqlite` | libSQL (`sqld` 0.24.33, SQLite 3.47.0, over HTTP `/v2/pipeline`) | Conditional: every file ran unchanged, one file per request in name order, and every row count and value matched the `sqlite3` restore of the same files and MySQL 8.4's row counts (design document, section 11, B-076); restored by hand, no automated test |
+| `sqlite` | Cloudflare D1 (local `wrangler` 4.162.0 only; the real service was not tried) | Fails as is: `BEGIN` / `COMMIT` are rejected, and `PRAGMA foreign_keys=OFF` has no effect, so a data file fails on a foreign key when its parent table is loaded later. Restored by hand as one file with `BEGIN`, `COMMIT` and `PRAGMA foreign_keys` removed and `PRAGMA defer_foreign_keys=on` added on top, every row matched (design document, section 11, B-076) |
+| `sqlite` / `postgres` | Other SQLite-compatible or PostgreSQL-compatible DBMSs | Unverified |
 
 When the supported servers or restore destinations change, update these tables in the same change.
 
