@@ -64,6 +64,8 @@ MariaDB and MySQL outputs are not converted for each other (see [MariaDB](#maria
 | `postgres` | PostgreSQL 14, 15, 16, 17, 18 | Tested (from MySQL 8.4; PostgreSQL 17 also from 8.0, 5.7.44 and MariaDB) |
 | `postgres` | PostgreSQL 13 and earlier | Unverified |
 | `postgres` | CockroachDB v26.4.0 (single node, insecure) | Conditional: restored by hand from MySQL 8.4 with every row compared (design document, section 11, B-071); no automated test yet (B-150). `integer` becomes 64 bits there |
+| `postgres` | DuckDB 2.0.0 | Fails: `SET client_encoding`, `interval(3)`, `timestamptz(0)`, an empty `bytea` (`'\x'`) and `ADD CONSTRAINT ... FOREIGN KEY` are errors, and a `bytea` of two bytes or more is **silently restored as different bytes** (`'\x00FF41'` becomes `00 46 46 34 31`). With those removed by hand, every row count and value matched MySQL 8.4 except that `bytea` (design document, section 11, B-072) |
+| `sqlite` | DuckDB 2.0.0 | Fails: `PRAGMA foreign_keys`, an inline `FOREIGN KEY ... ON DELETE CASCADE`, `char(10)` and a 4-byte `INTEGER` column (`INT32`) are errors. With those changed by hand, every row count and value matched MySQL 8.4 (design document, section 11, B-072) |
 | `sqlite` / `postgres` | Other SQLite-compatible or PostgreSQL-compatible DBMSs (libSQL, Cloudflare D1 and so on) | Unverified |
 
 When the supported servers or restore destinations change, update these tables in the same change.

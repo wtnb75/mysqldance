@@ -1,16 +1,5 @@
 # Backlog
 
-## B-072 [ready|P3] DuckDB に今の出力を復元できるか調べる
-- 概要: DuckDB は SQL が PostgreSQL に近く、`duckdb < file.sql` で流せる。`--target postgres` と `--target sqlite` の既存の出力が、そのまま DuckDB に復元できるかを実機で確かめ、結果を設計書に書く。コードは変えない。通らない構文があれば記録し、専用の writer を足す価値があるかは、結果を見てから別項目にする。
-- 仕様:
-  - 前提: DuckDB は公式の Docker イメージがない。PyPI の `duckdb`（現行の安定版。版は着手時に確かめて設計書に書く）を `uv run --with duckdb` で使い、ファイルの DB に復元する（`duckdb` の CLI は使わず、Python の API で、出力ファイルを辞書順に 1 つずつ流す）。
-  - 前提: 元の MySQL は 8.4。値の比較は、B-071（CockroachDB）と同じ表・同じ問い合わせにする（`task test:integration:postgres` の既存の統合テストを流用または参照する）。
-  - 前提: 結果の記録先は設計書 11 節。コードとテストは変えない（調べるための一時スクリプトは、リポジトリに入れない）。
-- 受け入れ条件:
-  - [ ] 現行の安定版の DuckDB に、`--target postgres` と `--target sqlite` の出力を復元して、通るか、通らない構文は何かを記録する
-  - [ ] 通る範囲で、復元後の行数と値が元の MySQL と一致するかを確かめる
-  - [ ] 結果と、対応する場合の方針（既存の出力を流用するか、writer を足すか）を設計書 11 節に書く
-
 ## B-073 [ready|P3] ClickHouse 向けの出力に必要な対応を調べる
 - 概要: ClickHouse は `CREATE TABLE` に `ENGINE` と `ORDER BY` が必須で、型は `Nullable(...)` で包み、外部キーや CHECK がなく、文字列のエスケープも MySQL と違う。MySQL からの型の対応、主キーから `MergeTree` の `ORDER BY` を決める規則（キーなしのテーブルは `tuple()` など）、文字列リテラル、1 レコード 1 行の `INSERT` の取り込みの速さを実機で確かめ、writer の方針案を設計書に書く。コードは変えない。writer の実装は、結果を見てから別項目にする。
 - 前提: 検証は Docker の `clickhouse/clickhouse-server`（amd64 / arm64 のイメージがあることを確認済み）で行う。
@@ -518,6 +507,10 @@
 - 依存: B-152
 - 概要: B-152 はトリガーの見出しの DB 名だけを取り除く。本体の `INSERT INTO db.log ...` や `db.fn()` は書かれたまま出るので、別の DB 名に復元すると、元の DB を指し続ける。ビュー・ルーチン・イベントの本体も同じ。警告を出すか、書き換えるかを決める。
 
+## B-155 [todo|P3] DuckDB 向けの出力（`--target duckdb`）を実装する
+- 依存: B-075
+- 概要: B-072 の調査（設計書 11 節）で、`--target postgres` の出力は DuckDB 2.0.0 に通らず、`bytea`（`'\x00FF41'`）が黙って別のバイト列になる。`--target sqlite` も 4 点で通らない。PostgreSQL 向けの writer を基に、DuckDB 向けの writer を足すかを、B-075（CSV / Parquet）の結果を見て決める。足す場合の変更点は設計書の方針（案）の (a)〜(d)。
+
 # Done
 
 ## B-003 [done|P2] 複数 DB を 1 つのスナップショットで読む
@@ -582,6 +575,7 @@
 ## B-069 [done|P2] SQLite の復元を `sqlite3` コマンドで確かめる
 ## B-070 [done|P3] TiDB を読み出し元・復元先にできるか調べる
 ## B-071 [done|P3] CockroachDB を `--target postgres` の復元先にできるか調べる
+## B-072 [done|P3] DuckDB に今の出力を復元できるか調べる
 ## B-078 [done|P2] 読み出し元の互換性を検査し、推奨オプションを示す機能を設計する
 ## B-079 [done|P2] MySQL 5.6 と 5.7 の差異を調べる
 ## B-081 [done|P2] `latin1` の列に入った UTF-8 の扱いを設計する
