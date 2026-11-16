@@ -1,18 +1,5 @@
 # Backlog
 
-## B-073 [ready|P3] ClickHouse 向けの出力に必要な対応を調べる
-- 概要: ClickHouse は `CREATE TABLE` に `ENGINE` と `ORDER BY` が必須で、型は `Nullable(...)` で包み、外部キーや CHECK がなく、文字列のエスケープも MySQL と違う。MySQL からの型の対応、主キーから `MergeTree` の `ORDER BY` を決める規則（キーなしのテーブルは `tuple()` など）、文字列リテラル、1 レコード 1 行の `INSERT` の取り込みの速さを実機で確かめ、writer の方針案を設計書に書く。コードは変えない。writer の実装は、結果を見てから別項目にする。
-- 前提: 検証は Docker の `clickhouse/clickhouse-server`（amd64 / arm64 のイメージがあることを確認済み）で行う。
-- 仕様:
-  - 前提: 設計書 11 節に書くのは、型の対応表、リテラルの書き方、主キー・キーなし・生成列の方針案、取り込みの所要時間（実行した環境と版つき）。コード、テスト、Taskfile は変えない。
-  - 前提: 10 万行の取り込みは、MySQL 8.4 から本ツール（`--target mysql`）で出した 1 レコード 1 行の `INSERT` を、ClickHouse の構文に合わせて書き換えたもの（または同じ形の手書きの SQL）を、`clickhouse-client` で流して測る。書き換えの方法も記録する。
-  - 前提: writer の方針案は「案」。実装するかどうかは、結果を見てから別項目にする。
-- 受け入れ条件:
-  - [ ] 現行の安定版の ClickHouse に、手書きの `CREATE TABLE` と `INSERT` で、本ツールの型の対応表（`internal/writer` の postgres.go / sqlite.go を基にする）の全ての型を入れられるかを確かめる
-  - [ ] 文字列、バイナリ、`NULL`、日時、`DECIMAL` のリテラルの書き方と、復元後の値の一致を記録する
-  - [ ] 主キーのあるテーブル、ないテーブル、生成列の扱いの方針案を書く
-  - [ ] 1 レコード 1 行の `INSERT` を 10 万行取り込む所要時間を記録する
-
 ## B-074 [ready|P3] StarRocks / Doris を読み出し元・復元先にできるか調べる
 - 概要: StarRocks と Apache Doris は MySQL プロトコルを話す OLAP の DBMS で、TiDB（B-070）と同じく、読み出し元にも `--target mysql` の出力の復元先にもなりえる。差異を実機で確かめて設計書に記録する。コードは変えない。対応するかどうかは、結果を見てから別項目にする。
 - 仕様:
@@ -511,6 +498,10 @@
 - 依存: B-075
 - 概要: B-072 の調査（設計書 11 節）で、`--target postgres` の出力は DuckDB 2.0.0 に通らず、`bytea`（`'\x00FF41'`）が黙って別のバイト列になる。`--target sqlite` も 4 点で通らない。PostgreSQL 向けの writer を基に、DuckDB 向けの writer を足すかを、B-075（CSV / Parquet）の結果を見て決める。足す場合の変更点は設計書の方針（案）の (a)〜(d)。
 
+## B-156 [todo|P3] ClickHouse 向けの出力（`--target clickhouse`）を実装する
+- 依存: B-075
+- 概要: B-073 の調査（設計書 11 節）で、`--target mysql` の出力は、型を直し、`0x...` を `unhex('...')` にすれば ClickHouse に入り、値も一致した。ただし ClickHouse は、範囲を超えた整数（`Int64` に `18446744073709551615` で `-1`）、`Bool` の `2`、ゼロ日付、`\Z` を、エラーにせず別の値にする。専用の writer を足すかを、B-075（CSV / Parquet）の結果を見て決める。足す場合の変更点は設計書の方針（案）の (a)〜(d)。
+
 # Done
 
 ## B-003 [done|P2] 複数 DB を 1 つのスナップショットで読む
@@ -576,6 +567,7 @@
 ## B-070 [done|P3] TiDB を読み出し元・復元先にできるか調べる
 ## B-071 [done|P3] CockroachDB を `--target postgres` の復元先にできるか調べる
 ## B-072 [done|P3] DuckDB に今の出力を復元できるか調べる
+## B-073 [done|P3] ClickHouse 向けの出力に必要な対応を調べる
 ## B-078 [done|P2] 読み出し元の互換性を検査し、推奨オプションを示す機能を設計する
 ## B-079 [done|P2] MySQL 5.6 と 5.7 の差異を調べる
 ## B-081 [done|P2] `latin1` の列に入った UTF-8 の扱いを設計する
