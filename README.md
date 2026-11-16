@@ -63,7 +63,8 @@ MariaDB and MySQL outputs are not converted for each other (see [MariaDB](#maria
 | `sqlite` | `sqlite3` command 3.7.9 | Fails: the multi-row `INSERT` is a syntax error |
 | `postgres` | PostgreSQL 14, 15, 16, 17, 18 | Tested (from MySQL 8.4; PostgreSQL 17 also from 8.0, 5.7.44 and MariaDB) |
 | `postgres` | PostgreSQL 13 and earlier | Unverified |
-| `sqlite` / `postgres` | Other SQLite-compatible or PostgreSQL-compatible DBMSs (libSQL, Cloudflare D1, CockroachDB and so on) | Unverified |
+| `postgres` | CockroachDB v26.4.0 (single node, insecure) | Conditional: restored by hand from MySQL 8.4 with every row compared (design document, section 11, B-071); no automated test yet (B-150). `integer` becomes 64 bits there |
+| `sqlite` / `postgres` | Other SQLite-compatible or PostgreSQL-compatible DBMSs (libSQL, Cloudflare D1 and so on) | Unverified |
 
 When the supported servers or restore destinations change, update these tables in the same change.
 

@@ -1,13 +1,5 @@
 # Backlog
 
-## B-071 [ready|P3] CockroachDB を `--target postgres` の復元先にできるか調べる
-- 概要: CockroachDB は PostgreSQL のワイヤプロトコルと SQL に互換がある。本ツールは MySQL 系のサーバーしか読まないので、読み出し元にはならず、`--target postgres` の出力の復元先として確かめる。実機で復元を試し、通らない構文を設計書に記録する。コードは変えない。対応するかどうかの判断と実装は、結果を見てから別項目にする。
-- 前提: 検証は Docker の `cockroachdb/cockroach`（amd64 / arm64 のイメージがあることを確認済み。単一ノードの非セキュア構成を使う）で行う。
-- 受け入れ条件:
-  - [ ] 現行の安定版の CockroachDB に `--target postgres` の出力を復元し、通るか、通らない構文は何かを記録する
-  - [ ] 復元後の行数と値が、元の MySQL と一致するかを確かめる（通る範囲で）
-  - [ ] 結果と、対応する場合の方針を設計書 11 節に書く
-
 ## B-072 [todo|P3] DuckDB に今の出力を復元できるか調べる
 - 概要: DuckDB は SQL が PostgreSQL に近く、`duckdb < file.sql` で流せる。`--target postgres` と `--target sqlite` の既存の出力が、そのまま DuckDB に復元できるかを実機で確かめ、結果を設計書に書く。コードは変えない。通らない構文があれば記録し、専用の writer を足す価値があるかは、結果を見てから別項目にする。
 - 受け入れ条件:
@@ -485,6 +477,13 @@
   - [ ] 専用の統合テストのタスク（`task test:integration:tidb`。`test:integration` の既定には含めない）で、ダンプと、MySQL 8.4 への復元・データの一致が通る
   - [ ] README の Compatibility の表と、CHECK・降順・`INVISIBLE` の注意を更新する
 
+## B-150 [todo|P3] CockroachDB を `--target postgres` の復元先として統合テストに入れる
+- 概要: B-071 の調査（設計書 11 節）で、`--target postgres` の出力は CockroachDB v26.4.0 に、コードを変えずに復元でき、行数と値が MySQL 8.4 と一致した。手作業の記録を自動テストにし、README の表を「Tested」にできるようにする。`TestPostgres*` のうち、PostgreSQL 固有の確認（後片付けの `DROP DATABASE ... WITH (FORCE)`、`integer` の型名、`pg_constraint.confdeltype`、`pg_constraint` がクラスタ全体を見ること）は、CockroachDB で読み替えるか skip する。
+- 受け入れ条件:
+  - [ ] 専用のタスク（`task test:integration:cockroach`。`cockroachdb/cockroach` のタグを固定する。`test:integration` の既定には含めない）で、`TestPostgres*` のうち CockroachDB で意味のあるものが通る
+  - [ ] CockroachDB で読み替えた確認と、skip した確認を、テストの中に理由つきで残す
+  - [ ] README の Compatibility の表の CockroachDB の行を、テストの結果に合わせる
+
 # Done
 
 ## B-003 [done|P2] 複数 DB を 1 つのスナップショットで読む
@@ -548,6 +547,7 @@
 ## B-068 [done|P2] PostgreSQL の複数の版で統合テストを実行する
 ## B-069 [done|P2] SQLite の復元を `sqlite3` コマンドで確かめる
 ## B-070 [done|P3] TiDB を読み出し元・復元先にできるか調べる
+## B-071 [done|P3] CockroachDB を `--target postgres` の復元先にできるか調べる
 ## B-078 [done|P2] 読み出し元の互換性を検査し、推奨オプションを示す機能を設計する
 ## B-079 [done|P2] MySQL 5.6 と 5.7 の差異を調べる
 ## B-081 [done|P2] `latin1` の列に入った UTF-8 の扱いを設計する
