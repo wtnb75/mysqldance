@@ -830,3 +830,16 @@
   - [x] 上の (1)〜(4) のコメントと説明が、コードの実際の挙動と一致する
   - [x] R-087 と R-062 の理由に、影響（照合順序の変化、復元の失敗）が書かれている
   - [x] `task check` が通る。出力は変わらない
+
+## B-151 [done|P2] MariaDB 10.11 / 11.4 の統合テストで失敗する 6 件の原因を調べる
+- 概要: B-144 の検証で、`task test:integration:mariadb` が 10.11 と 11.4 の両方で `TestTriggersRoundTrip`（`internal/dump`）、`TestLockTimeout`、`TestParallelSnapshotAlignedByGlobalLock`、`TestParallelSnapshotLockWaitsForRunningStatement`、`TestRoutinesKeepSQLMode`、`TestTriggers`（`internal/source`）で失敗した。10.11 では、B-144 の変更を外しても同じ 6 件が失敗した。README の Compatibility の MariaDB の「Tested」と食い違うので、原因を調べ、テストの側かコードの側かを分けて記録する。コードは変えず、直す項目は結果を見てから別に積む。
+- 仕様:
+  - 調べる対象は `origin/main` のコード（B-144 を含めない）。`task test:integration:mariadb` を 10.11 と 11.4 で実行して失敗を再現し、6 件それぞれのエラーメッセージと原因を確かめる。B-144 の変更が絡むかは、10.11 で B-144 の有無を比べて 1 行書く。
+  - 記録先は設計書 `docs/superpowers/specs/2026-11-09-mysqldance-design.md` の 11 節（未確認事項・実機の記録）に、MariaDB の失敗の小節を足す。設計書に「MariaDB の節」という見出しは無い。
+  - 原因は「テストの前提の誤り」「実装の誤り」「環境の問題（Docker・イメージなど）」の 3 つに分ける。
+  - コードとテストは変えない。直す項目は `mgmt-backlog` で別に積む。
+  - 前提: Docker が使え、`task test:integration:mariadb` が実行できる。使えない場合は、`impl-backlog` の規則どおり draft の PR にして項目を完了にしない。
+- 受け入れ条件:
+  - [x] 6 件それぞれの失敗の原因を、テストの前提（MySQL の挙動の仮定）の誤りか、実装の誤りかに分けて、設計書の 11 節に書く
+  - [x] 実装の誤りがあれば、直す項目を `mgmt-backlog` で別に積む（データの欠落や決定性に反するものは P1 か P2）
+  - [x] README の Compatibility の MariaDB の行が、結果と食い違うなら直す
