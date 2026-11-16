@@ -32,6 +32,7 @@ func TestSessionSettingsPinned(t *testing.T) {
 	mc.Params = map[string]string{
 		"sql_mode":              "'ANSI_QUOTES,PAD_CHAR_TO_FULL_LENGTH'",
 		"sql_quote_show_create": "0",
+		"max_sort_length":       "4",
 	}
 	// MariaDB has no show_create_table_verbosity, and MySQL 5.7 and 5.6 are not
 	// pinned to it (5.7.21 and earlier lack it), so none can be tested for it.
@@ -65,6 +66,13 @@ func TestSessionSettingsPinned(t *testing.T) {
 	}
 	if mode != "" || quote != 1 {
 		t.Errorf("snapshot session sql_mode = %q, sql_quote_show_create = %d; want '', 1", mode, quote)
+	}
+	var sortLen int
+	if err := s.conn.QueryRowContext(ctx, "SELECT @@session.max_sort_length").Scan(&sortLen); err != nil {
+		t.Fatal(err)
+	}
+	if sortLen != 8388608 {
+		t.Errorf("snapshot session max_sort_length = %d, want 8388608", sortLen)
 	}
 	if pinsVerbosity {
 		var verbosity int

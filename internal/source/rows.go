@@ -14,6 +14,11 @@ import (
 // stringKeyTypes are the DATA_TYPE values of key columns compared as binary
 // in ORDER BY, so collations cannot change the order. Values distinct under a
 // unique key's collation always differ in bytes, so the order stays total.
+// The session pins max_sort_length to its maximum (sessionPrelude) as a
+// precaution: with the default of 1024 bytes no ascending order was seen to
+// break (MariaDB 10.11, keys sharing 1100 bytes), only a descending one, which
+// dump does not use (B-144). A unique key is decided within its first 3072
+// bytes (the index limit), well under the maximum, even for a TEXT column.
 // ENUM/SET sort by their member index, which is already collation-independent.
 var stringKeyTypes = map[string]bool{
 	"char": true, "varchar": true,
