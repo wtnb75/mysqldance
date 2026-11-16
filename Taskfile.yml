@@ -1,5 +1,15 @@
 version: "3"
 
+# Images of the compat:up containers (DBMSs other than MySQL and PostgreSQL that
+# are checked by hand; see the comment of compat:up). The tags are pinned here,
+# in one place, to the versions recorded in the design document; override one
+# for a single run, e.g. `task compat:up NAME=tidb COMPAT_TIDB_IMAGE=pingcap/tidb:v8.1.0`.
+vars:
+  COMPAT_TIDB_IMAGE: '{{.COMPAT_TIDB_IMAGE | default "pingcap/tidb:v8.5.7"}}'
+  COMPAT_COCKROACH_IMAGE: '{{.COMPAT_COCKROACH_IMAGE | default "cockroachdb/cockroach:v26.4.0"}}'
+  COMPAT_CLICKHOUSE_IMAGE: '{{.COMPAT_CLICKHOUSE_IMAGE | default "clickhouse/clickhouse-server:26.10"}}'
+  COMPAT_LIBSQL_IMAGE: '{{.COMPAT_LIBSQL_IMAGE | default "ghcr.io/tursodatabase/libsql-server:v0.24.33"}}'
+
 tasks:
   default:
     cmds:
@@ -123,6 +133,46 @@ tasks:
       - "{{.SRC}} | awk -v mode=next -v want=todo -f scripts/backlog.awk | sort | head -n {{.N}}"
       - echo "== blocked (unmet dependencies) =="
       - "{{.SRC}} | awk -v mode=blocked -f scripts/backlog.awk | sort"
+
+  # Containers of other DBMSs, for checking by hand whether mysqldance reads
+  # from or restores into them (they are not part of test:integration).
+  # `task compat:up NAME=tidb` starts one and waits until it answers. NAME is
+  # one of tidb, cockroach, clickhouse and libsql; any other value fails with
+  # the list of the supported names. The images are the COMPAT_*_IMAGE variables
+  # at the top of this file. Overridable variables (as in test:integration):
+  #   PORT      host port published for the server (default per NAME: tidb
+  #             33081, cockroach 33082, clickhouse 33083, libsql 33084)
+  #   HOST      address the readiness check dials to reach that port (default
+  #             127.0.0.1; use host.docker.internal when the Docker daemon runs
+  #             elsewhere). Falls back to MYSQLDANCE_TEST_HOST.
+  #   TIMEOUT   seconds to wait for the server (default 180)
+  # The container is named mysqldance-compat-<NAME>, so it does not collide with
+  # mysqldance-test. Remove it with `task compat:down NAME=tidb`.
+  compat:up:
+    desc: "Start a compatible DBMS in Docker (NAME=tidb|cockroach|clickhouse|libsql) and wait until it answers"
+    requires:
+      vars: [NAME]
+    vars:
+      PORT: '{{.PORT | default ""}}'
+      HOST: '{{.HOST | default .MYSQLDANCE_TEST_HOST | default "127.0.0.1"}}'
+      TIMEOUT: '{{.TIMEOUT | default "180"}}'
+    env:
+      COMPAT_TIDB_IMAGE: '{{.COMPAT_TIDB_IMAGE}}'
+      COMPAT_COCKROACH_IMAGE: '{{.COMPAT_COCKROACH_IMAGE}}'
+      COMPAT_CLICKHOUSE_IMAGE: '{{.COMPAT_CLICKHOUSE_IMAGE}}'
+      COMPAT_LIBSQL_IMAGE: '{{.COMPAT_LIBSQL_IMAGE}}'
+      PORT: '{{.PORT}}'
+      HOST: '{{.HOST}}'
+      TIMEOUT: '{{.TIMEOUT}}'
+    cmds:
+      - scripts/compat.sh up '{{.NAME}}'
+
+  compat:down:
+    desc: Remove the container started by compat:up (NAME=tidb|cockroach|clickhouse|libsql)
+    requires:
+      vars: [NAME]
+    cmds:
+      - scripts/compat.sh down '{{.NAME}}'
 
   # Sample data for trying mysqldance by hand: scripts/sample/*.sql is loaded
   # into a MySQL container, in file name order. Overridable variables:

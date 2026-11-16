@@ -1,17 +1,5 @@
 # Backlog
 
-## B-077 [ready|P3] 互換 DBMS の検証用コンテナを起動するタスクを作る
-- 概要: B-070（TiDB）、B-071（CockroachDB）、B-073（ClickHouse）、B-076（libSQL）、B-074（StarRocks / Doris）の調査は、それぞれ別の DBMS のコンテナを手で起動して確かめることになる。起動と待機、後始末を `Taskfile.yml` のタスクにまとめ、`task compat:up NAME=tidb` のように使えるようにする。統合テストの既定（`task test:integration`）には含めない。対象は、イメージの存在と起動方法が調査で確かめられたものから足す。
-- 仕様:
-  - 前提: `Taskfile.yml` の `test:integration:one` の作り（`PORT` / `HOST` / `TIMEOUT` の変数、`docker run`、TCP の待機、後始末）に合わせる。変数名は `test:integration` と同じにする。
-  - 前提: この項目で足す対象は、起動方法が設計書 11 節に記録済みの TiDB（`pingcap/tidb:v8.5.7`。タグを固定する）と CockroachDB（`cockroachdb/cockroach`、`start-single-node --insecure`）。ClickHouse と libSQL は、B-073 / B-076 で起動方法が分かった時点で足せるので、その時点で未完なら、足せたものだけで PR にし、残りは別項目に積む（`NAME` に未対応の名前を渡したら、対応する名前の一覧を出して失敗する）。
-  - 前提: コンテナ名は `mysqldance-compat-<NAME>`、ホストのポートは `NAME` ごとの既定値（`PORT` で上書きできる）。既存の `mysqldance-test` と衝突しない。
-  - 前提: 起動方法を変える場合に備え、タグは `Taskfile.yml` の 1 か所の変数にまとめる。
-- 受け入れ条件:
-  - [ ] TiDB と CockroachDB を、`NAME` で選んで起動し、接続できるまで待つタスクがある（ClickHouse と libSQL は、起動方法が分かっていれば足す。未対応の `NAME` は、対応する名前の一覧を出して失敗する）
-  - [ ] 後始末のタスクがあり、`PORT` と `HOST` は `test:integration` と同じ変数で上書きできる（Docker デーモンが別のホストにある場合を含む）
-  - [ ] 各 DBMS の接続方法（DSN とクライアント）と、起動に必要な環境変数を README の Development 節に書く
-
 ## B-080 [ready|P3] MySQL 5.5 と 5.6 の差異を調べる
 - 依存: B-079
 - 概要: B-079 に続き、5.5 の挙動を実機で確かめる。5.5.3 より前は `utf8mb4` がなく、`SET NAMES utf8mb4` が使えない。5.5 の中の版（5.5.3 以降と、それより前）で何が変わるかを確かめる。コードは変えない。5.1 以前は公式イメージがなく、需要が見えてから別項目にする。
@@ -539,6 +527,7 @@
 ## B-074 [done|P3] StarRocks / Doris を読み出し元・復元先にできるか調べる
 ## B-075 [done|P3] ファイル形式（CSV / JSON Lines / Parquet）の出力を設計する
 ## B-076 [done|P3] libSQL / Cloudflare D1 に SQLite 向けの出力を復元できるか調べる
+## B-077 [done|P3] 互換 DBMS の検証用コンテナを起動するタスクを作る
 ## B-078 [done|P2] 読み出し元の互換性を検査し、推奨オプションを示す機能を設計する
 ## B-079 [done|P2] MySQL 5.6 と 5.7 の差異を調べる
 ## B-081 [done|P2] `latin1` の列に入った UTF-8 の扱いを設計する
