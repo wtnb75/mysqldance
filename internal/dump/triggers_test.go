@@ -122,6 +122,55 @@ func TestTriggersRoundTrip(t *testing.T) {
 	}
 }
 
+// A trigger created with the database name (CREATE TRIGGER db.trg ... ON db.t)
+// comes back qualified from MariaDB and MySQL 5.7, which return the statement as
+// written. The output must not carry the name, or it cannot be restored under
+// another database name (B-152).
+func TestTriggersCreatedWithDatabaseNameRestoreUnderAnotherName(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE t (id INT PRIMARY KEY, v INT)",
+		"CREATE TRIGGER "+db+".trg_bare BEFORE INSERT ON "+db+".t FOR EACH ROW SET NEW.v = 1",
+		"CREATE TRIGGER `"+db+"`.`trg_quoted` AFTER INSERT ON `"+db+"`.`t` FOR EACH ROW SET @x = NEW.v",
+	)
+	before := e.triggerDefs(t, db)
+	if len(before) != 2 {
+		t.Fatalf("fixture has %d triggers, want 2", len(before))
+	}
+
+	dir := t.TempDir()
+	e.dump(t, dir, db)
+	text := readFiles(t, dir)[naming.TriggersFile(db)]
+	for _, bad := range []string{db + ".", "`" + db + "`."} {
+		if strings.Contains(text, bad) {
+			t.Errorf("triggers file names the database (%q):\n%s", bad, text)
+		}
+	}
+
+	// Rename the database in every file name and in the quoted names the files
+	// use, restore it, and compare with the original (which still exists, so a
+	// trigger left in the old database would show).
+	other := uniqueName(t)
+	t.Cleanup(func() { e.exec(t, "DROP DATABASE IF EXISTS `"+other+"`") })
+	renamed := t.TempDir()
+	for name, content := range readFiles(t, dir) {
+		name = strings.Replace(name, db+".", other+".", 1)
+		content = strings.ReplaceAll(content, "`"+db+"`", "`"+other+"`")
+		if err := os.WriteFile(filepath.Join(renamed, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.restore(t, renamed)
+	if after := e.triggerDefs(t, other); !reflect.DeepEqual(after, before) {
+		t.Errorf("triggers differ after restore under another name\nbefore: %q\nafter:  %q", before, after)
+	}
+	if again := e.triggerDefs(t, db); !reflect.DeepEqual(again, before) {
+		t.Errorf("the original database's triggers changed\nbefore: %q\nafter:  %q", before, again)
+	}
+}
+
 func TestTriggersOutputIsDeterministic(t *testing.T) {
 	e := newEnv(t)
 	db := uniqueName(t)

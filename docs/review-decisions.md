@@ -1427,3 +1427,17 @@
 - 初出: B-065
 - 再出: 0
 
+## R-198 トリガーの見出しを読めないとき（`IF NOT EXISTS` / `OR REPLACE` など）に、修飾が無くてもダンプ全体が失敗する
+- 対象: internal/schemafile/triggers.go の StripTriggerDB / internal/writer/mysql.go の WriteTriggers
+- 指摘: 修飾の無いトリガーも文法に合わないとエラーになり、以前は通ったダンプが止まる。修飾があるときだけ読めばよい。
+- 却下の理由: B-152 の確定した仕様が「見出しを解析できないとき（`IF NOT EXISTS` / `OR REPLACE` が付いているなど）は、黙って通さずエラーにする」と決めている（不変条件「黙って落とさない」）。修飾の有無は、見出しを読まないと分からない。`SHOW CREATE TRIGGER` が `IF NOT EXISTS` / `OR REPLACE` つきの文を返す実例は、B-151 の確認（10.11 / 11.4 / 5.7）には無い。出たら、文法を広げる項目として積む。
+- 初出: B-152
+- 再出: 0
+
+## R-199 修飾の DB 名を、`lower_case_table_names` に関わらず大文字小文字を区別せずに比べる
+- 対象: internal/schemafile/triggers.go の StripTriggerDB（`strings.EqualFold`）
+- 指摘: 大文字小文字を区別するサーバーで、`App` をダンプ中に `app` の修飾を受け入れて取り除く。
+- 却下の理由: サーバーは、表のある DB 以外にトリガーを作らせない（`Trigger in wrong schema`）ので、返る修飾は常にダンプ中の DB と同じ綴りか、`lower_case_table_names` で折りたたまれた綴り。区別して比べると、後者を誤ってエラーにする。比べるのは「ダンプ中の DB のものか」の確認だけで、取り除いて意味は変わらない（B-152 の確定した仕様）。
+- 初出: B-152
+- 再出: 0
+

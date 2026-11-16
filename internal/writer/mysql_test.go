@@ -159,6 +159,32 @@ func TestMySQLTriggersWithoutDefiner(t *testing.T) {
 	}
 }
 
+// MariaDB and MySQL 5.7 return the trigger as written, database name included.
+func TestMySQLTriggersWithoutDatabaseName(t *testing.T) {
+	w := NewMySQL(datafile.Options{})
+	var got bytes.Buffer
+	err := w.WriteTriggers(&got, Schema{DB: "d", Triggers: []schemafile.Trigger{
+		{Name: "t1", Table: "a",
+			Create: "CREATE DEFINER=`x`@`%` TRIGGER d.t1 BEFORE INSERT ON d.a FOR EACH ROW SET NEW.x = 1"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.String(), "CREATE TRIGGER t1 BEFORE INSERT ON a FOR EACH ROW SET NEW.x = 1") {
+		t.Errorf("database name left in %q", got.String())
+	}
+}
+
+func TestMySQLTriggersUnreadableHeadingIsAnError(t *testing.T) {
+	w := NewMySQL(datafile.Options{})
+	err := w.WriteTriggers(&bytes.Buffer{}, Schema{DB: "d", Triggers: []schemafile.Trigger{
+		{Name: "t1", Table: "a", Create: "CREATE TRIGGER IF NOT EXISTS t1 BEFORE INSERT ON a FOR EACH ROW SET NEW.x = 1"},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "`t1`") {
+		t.Errorf("err = %v, want one naming the trigger", err)
+	}
+}
+
 // Routine bodies are MySQL syntax too: only the MySQL writer carries them.
 var _ RoutineWriter = (*MySQL)(nil)
 
