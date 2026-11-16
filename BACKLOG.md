@@ -1,17 +1,5 @@
 # Backlog
 
-## B-074 [ready|P3] StarRocks / Doris を読み出し元・復元先にできるか調べる
-- 概要: StarRocks と Apache Doris は MySQL プロトコルを話す OLAP の DBMS で、TiDB（B-070）と同じく、読み出し元にも `--target mysql` の出力の復元先にもなりえる。差異を実機で確かめて設計書に記録する。コードは変えない。対応するかどうかは、結果を見てから別項目にする。
-- 仕様:
-  - 前提: 検証は Docker の `starrocks/allin1-ubuntu` と `apache/doris`（どちらも amd64 / arm64 のイメージがあることを確認済み）で、単体で起動する構成を使う。Doris は all-in-one 相当のタグを着手時に探す（FE と BE の 2 コンテナ構成でもよい）。どちらも、使った版を設計書に書く。
-  - 前提: 進め方と記録の形は B-070（TiDB。`rg -n -A 12 '^## B-070 ' docs/backlog-done.md` と設計書 11 節の該当項）に合わせる。`START TRANSACTION WITH CONSISTENT SNAPSHOT` と `FLUSH TABLES WITH READ LOCK` の挙動も、B-070 と同じく確かめて記録する。
-  - 前提: 片方が、環境（メモリなど）の都合で起動できなければ、できた側だけ記録し、できなかった理由を書く。その場合も項目は `done` にしてよいが、未確認の側を設計書に明記する。
-  - 前提: コード、テスト、Taskfile は変えない。
-- 受け入れ条件:
-  - [ ] StarRocks と Doris のそれぞれで、現在のバイナリをつないだときの挙動（どこで失敗するか）と、`dialect` の全クエリの結果を MySQL 8.4 と比べる
-  - [ ] MySQL 8.4 の出力を、それぞれに復元できるかを確かめる（`CREATE TABLE` に必要な `DISTRIBUTED BY` などの扱いを含む）
-  - [ ] 結果と、対応する場合の方針を設計書 11 節に書く
-
 ## B-075 [ready|P3] ファイル形式（CSV / JSON Lines / Parquet）の出力を設計する
 - 概要: OLAP の DBMS では、1 レコード 1 行の `INSERT` より、CSV や Parquet のほうが取り込みが速く自然なことがある。本ツールの不変条件（決定性、差分の局所性、黙って落とさない）をファイル形式でも守れるか、出力の形（テーブルごとのファイル、スキーマの置き場所、`NULL` と空文字、バイナリ、日時、型の情報）を調べて、設計書に方針を書く。コードは変えない。形式ごとの実装は、結果を見てから別項目にする。
 - 仕様:
@@ -568,6 +556,7 @@
 ## B-071 [done|P3] CockroachDB を `--target postgres` の復元先にできるか調べる
 ## B-072 [done|P3] DuckDB に今の出力を復元できるか調べる
 ## B-073 [done|P3] ClickHouse 向けの出力に必要な対応を調べる
+## B-074 [done|P3] StarRocks / Doris を読み出し元・復元先にできるか調べる
 ## B-078 [done|P2] 読み出し元の互換性を検査し、推奨オプションを示す機能を設計する
 ## B-079 [done|P2] MySQL 5.6 と 5.7 の差異を調べる
 ## B-081 [done|P2] `latin1` の列に入った UTF-8 の扱いを設計する
