@@ -34,8 +34,8 @@ import (
 // What PostgreSQL cannot represent is reported through Schema.Warn, never
 // dropped silently: generated columns, ON UPDATE CURRENT_TIMESTAMP, default
 // expressions, FULLTEXT and SPATIAL indexes, expression indexes, CHECK
-// constraints, foreign keys into another database or onto columns that are not
-// a primary or unique key, and the views that cannot be converted
+// constraints, foreign keys into a database that is not dumped or onto columns
+// that are not a primary or unique key, and the views that cannot be converted
 // (postgresview.go). A value or a name PostgreSQL cannot hold
 // is an error. AUTO_INCREMENT, ENUM/SET member lists and collations are not
 // carried over, by design and without a warning (README; review ledger R-058).
@@ -456,84 +456,141 @@ func (p *Postgres) NewRowWriter(db string, t source.TableInfo, open OpenFile) (R
 	return newStreamWriter(t, open, header, "COMMIT;\n", sqlvalue.QuotePGIdent, p.data, literal), nil
 }
 
-// WriteConstraints implements ConstraintWriter: the foreign keys of every
-// table, applied after all rows are loaded. PostgreSQL wants the referenced
-// columns to be a primary key or a unique index, where InnoDB takes any index;
-// a key that is not is reported and left out.
+// pgConstraintDB is one database of the run, with its tables by name.
+type pgConstraintDB struct {
+	Schema
+	tables map[string]source.TableInfo
+}
+
+// outputs returns the columns of t that are output (all but the generated ones).
+func (d pgConstraintDB) outputs(t source.TableInfo) map[string]bool {
+	set := map[string]bool{}
+	for _, c := range d.Defs[t.Name].Columns {
+		if !c.Generated {
+			set[c.Name] = true
+		}
+	}
+	return set
+}
+
+// WriteConstraints implements ConstraintWriter: the foreign keys, applied after
+// all rows are loaded. PostgreSQL wants the referenced columns to be a primary
+// key or a unique index, where InnoDB takes any index; a key that is not is
+// reported and left out.
+//
+// A foreign key between two databases is in the constraints file of the one
+// whose file name sorts later (byte order, as the restore runs the files): that
+// file runs after the schema and data files of both. So the file of s holds the
+// keys of every database, s included, whose host is s, in the order of the file
+// names of the databases and then of the tables, and not the order the databases
+// were dumped in. Whatever is wrong with a key is reported, and a name that
+// clashes is an error, by the database of the table that has the key only, so
+// each is said once.
 func (p *Postgres) WriteConstraints(w io.Writer, s Schema) error {
 	var out strings.Builder
 	out.WriteString(pgSettings)
 	out.WriteString(pgSearchPath(s.DB))
 	var warnings []string
-	byName := make(map[string]source.TableInfo, len(s.Tables))
-	for _, t := range s.Tables {
-		byName[t.Name] = t
-	}
-	outputs := func(t source.TableInfo) map[string]bool {
-		set := map[string]bool{}
-		for _, c := range s.Defs[t.Name].Columns {
-			if !c.Generated {
-				set[c.Name] = true
-			}
+
+	dbs := make([]pgConstraintDB, 0, 1+len(s.Peers))
+	for _, d := range append([]Schema{s}, s.Peers...) {
+		tables := make(map[string]source.TableInfo, len(d.Tables))
+		for _, t := range d.Tables {
+			tables[t.Name] = t
 		}
-		return set
+		dbs = append(dbs, pgConstraintDB{Schema: d, tables: tables})
+	}
+	slices.SortStableFunc(dbs, func(a, b pgConstraintDB) int { return strings.Compare(a.ConstraintsFile, b.ConstraintsFile) })
+	byDB := make(map[string]pgConstraintDB, len(dbs))
+	for _, d := range dbs {
+		byDB[d.DB] = d
+	}
+	// qualified names a table of another database, which the search path of this
+	// file does not reach.
+	qualified := func(db, table string) string {
+		if db == s.DB {
+			return sqlvalue.QuotePGIdent(table)
+		}
+		return sqlvalue.QuotePGIdent(db) + "." + sqlvalue.QuotePGIdent(table)
 	}
 
-	for _, t := range s.Tables {
-		def, ok := s.Defs[t.Name]
-		if !ok {
-			return fmt.Errorf("table %s: no table definition was read", sqlvalue.QuoteIdent(t.Name))
-		}
-		have := outputs(t)
-		// Constraint names are unique within a table, and the primary key is one.
-		// Foreign key names are unique in MySQL, so a clash comes from a shortening.
-		// The primary key's name is the one WriteSchema gives it (<table>__PRIMARY,
-		// shortened); WriteSchema fails the run if the key is not output, so it is
-		// always there. Review ledger R-126, R-127.
-		used := map[string]string{}
-		if slices.ContainsFunc(def.Indexes, func(ix source.IndexDef) bool { return ix.Name == "PRIMARY" }) {
-			used[pgShortName(t.Name+"__PRIMARY")] = "the primary key"
-		}
-		for _, fk := range def.ForeignKeys {
-			skip := func(why string) {
-				warnings = append(warnings, fmt.Sprintf("table %s: foreign key %s %s and is not output",
-					sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(fk.Name), why))
+	for _, d := range dbs {
+		own := d.DB == s.DB
+		for _, t := range d.Tables {
+			def, ok := d.Defs[t.Name]
+			if !ok {
+				if !own {
+					continue
+				}
+				return fmt.Errorf("table %s: no table definition was read", sqlvalue.QuoteIdent(t.Name))
 			}
-			ref, inDB := byName[fk.RefTable]
-			refHave := outputs(ref)
-			switch {
-			case fk.RefSchema != s.DB:
-				skip("references another database")
-				continue
-			case !inDB:
-				skip("references table " + sqlvalue.QuoteIdent(fk.RefTable) + ", which is not output")
-				continue
-			case slices.ContainsFunc(fk.Columns, func(c string) bool { return !have[c] }):
-				skip("uses a generated column")
-				continue
-			case slices.ContainsFunc(fk.RefColumns, func(c string) bool { return !refHave[c] }):
-				skip("references a generated column")
-				continue
-			case !isUniqueKey(s.Defs[ref.Name], fk.RefColumns):
-				skip("references columns that are not a primary key or unique key")
-				continue
+			have := d.outputs(t)
+			// Constraint names are unique within a table, and the primary key is one.
+			// Foreign key names are unique in MySQL, so a clash comes from a shortening.
+			// The primary key's name is the one WriteSchema gives it (<table>__PRIMARY,
+			// shortened); WriteSchema fails the run if the key is not output, so it is
+			// always there. Review ledger R-126, R-127.
+			used := map[string]string{}
+			if slices.ContainsFunc(def.Indexes, func(ix source.IndexDef) bool { return ix.Name == "PRIMARY" }) {
+				used[pgShortName(t.Name+"__PRIMARY")] = "the primary key"
 			}
-			// Only a foreign key that is output has a PostgreSQL name. A failed run
-			// prints no warnings, so an error names the name before the cut.
-			name, myTable, myFK := pgShortName(fk.Name), sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(fk.Name)
-			who := "foreign key " + myFK
-			if name != fk.Name {
-				warnings = append(warnings, fmt.Sprintf("table %s: foreign key %s is named %s in PostgreSQL, not %s (over %d bytes)",
-					myTable, myFK, sqlvalue.QuoteIdent(name), myFK, pgMaxIdent))
+			for _, fk := range def.ForeignKeys {
+				skip := func(why string) {
+					if own {
+						warnings = append(warnings, fmt.Sprintf("table %s: foreign key %s %s and is not output",
+							sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(fk.Name), why))
+					}
+				}
+				refDB, dumped := byDB[fk.RefSchema]
+				if !dumped {
+					skip("references database " + sqlvalue.QuoteIdent(fk.RefSchema) + ", which is not dumped")
+					continue
+				}
+				ref, inDB := refDB.tables[fk.RefTable]
+				refHave := refDB.outputs(ref)
+				switch {
+				case !inDB:
+					where := ""
+					if refDB.DB != d.DB {
+						where = " of database " + sqlvalue.QuoteIdent(refDB.DB)
+					}
+					skip("references table " + sqlvalue.QuoteIdent(fk.RefTable) + where + ", which is not output")
+					continue
+				case slices.ContainsFunc(fk.Columns, func(c string) bool { return !have[c] }):
+					skip("uses a generated column")
+					continue
+				case slices.ContainsFunc(fk.RefColumns, func(c string) bool { return !refHave[c] }):
+					skip("references a generated column")
+					continue
+				case !isUniqueKey(refDB.Defs[ref.Name], fk.RefColumns):
+					skip("references columns that are not a primary key or unique key")
+					continue
+				}
+				// Only a foreign key that is output has a PostgreSQL name. A failed run
+				// prints no warnings, so an error names the name before the cut.
+				name, myTable, myFK := pgShortName(fk.Name), sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(fk.Name)
+				who := "foreign key " + myFK
+				if name != fk.Name && own {
+					warnings = append(warnings, fmt.Sprintf("table %s: foreign key %s is named %s in PostgreSQL, not %s (over %d bytes)",
+						myTable, myFK, sqlvalue.QuoteIdent(name), myFK, pgMaxIdent))
+				}
+				if prev, dup := used[name]; dup && own {
+					return fmt.Errorf("table %s: the PostgreSQL name %s of %s is already used by %s",
+						myTable, sqlvalue.QuoteIdent(name), who, prev)
+				}
+				used[name] = who
+				// The key is written by the database whose constraints file runs later.
+				host := d
+				if refDB.DB != d.DB && refDB.ConstraintsFile > d.ConstraintsFile {
+					host = refDB
+				}
+				if host.DB != s.DB {
+					continue
+				}
+				out.WriteString("ALTER TABLE " + qualified(d.DB, t.Name) + " ADD CONSTRAINT " + sqlvalue.QuotePGIdent(name) +
+					" FOREIGN KEY (" + pgList(fk.Columns) + ") REFERENCES " + qualified(refDB.DB, fk.RefTable) +
+					" (" + pgList(fk.RefColumns) + ") ON DELETE " + fk.OnDelete + " ON UPDATE " + fk.OnUpdate + ";\n")
 			}
-			if prev, dup := used[name]; dup {
-				return fmt.Errorf("table %s: the PostgreSQL name %s of %s is already used by %s",
-					myTable, sqlvalue.QuoteIdent(name), who, prev)
-			}
-			used[name] = who
-			out.WriteString("ALTER TABLE " + sqlvalue.QuotePGIdent(t.Name) + " ADD CONSTRAINT " + sqlvalue.QuotePGIdent(name) +
-				" FOREIGN KEY (" + pgList(fk.Columns) + ") REFERENCES " + sqlvalue.QuotePGIdent(fk.RefTable) +
-				" (" + pgList(fk.RefColumns) + ") ON DELETE " + fk.OnDelete + " ON UPDATE " + fk.OnUpdate + ";\n")
 		}
 	}
 	if _, err := io.WriteString(w, out.String()); err != nil {

@@ -139,13 +139,14 @@ func TestPostgresConstraints(t *testing.T) {
 	if b.String() != want {
 		t.Errorf("constraints differ\n got:\n%s\nwant:\n%s", b.String(), want)
 	}
-	if !containsAny(warns, "foreign key `fk_other` references another database") {
+	if !containsAny(warns, "foreign key `fk_other` references database `other`, which is not dumped") {
 		t.Errorf("no warning about the foreign key into another database: %q", warns)
 	}
 }
 
 // longFKSchema renames the table child's output foreign key (fk_parent) and, if
-// other is set, its foreign key into another database (fk_other, never output).
+// other is set, its foreign key into a database that is not dumped (fk_other,
+// never output).
 func longFKSchema(fk, other string) Schema {
 	s := pgSchema()
 	d := s.Defs["child"]
@@ -216,7 +217,7 @@ func TestPostgresLongNameOfSkippedForeignKeyIsNotAnError(t *testing.T) {
 	if strings.Contains(got, long) || containsAny(warns, "is named") {
 		t.Errorf("a foreign key that is not output was shortened:\n%s\n%q", got, warns)
 	}
-	if !containsAny(warns, "foreign key `"+long+"` references another database") {
+	if !containsAny(warns, "foreign key `"+long+"` references database `other`, which is not dumped") {
 		t.Errorf("no warning about the skipped foreign key: %q", warns)
 	}
 }

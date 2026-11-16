@@ -37,6 +37,12 @@ type Schema struct {
 	// Defs is the structure of each table by name. It is set only for a writer
 	// whose NeedsDefs is true.
 	Defs map[string]source.TableDef
+	// ConstraintsFile is the name of this database's constraints file, and Peers
+	// are the other databases of the run (their DB, Tables, Defs and
+	// ConstraintsFile only). Both are set only for a ConstraintWriter, so it can
+	// put a foreign key between two databases in the file that runs last.
+	ConstraintsFile string
+	Peers           []Schema
 	// Warn receives a message for each thing the writer could not carry over
 	// to its target. nil discards them.
 	Warn func(msg string)
@@ -156,7 +162,10 @@ type TriggerWriter interface {
 // definitions after all rows are loaded (foreign keys, which the files of
 // different tables could otherwise violate in any order). dump writes the
 // result to the database's constraints file (naming.ConstraintsFile), which
-// sorts after every data file. A writer without it produces no such file.
+// sorts after every data file. A writer without it produces no such file. dump
+// stages the files once every database is read, and passes the other databases
+// as Schema.Peers, so a definition that reaches into another database can go to
+// the file that runs last.
 type ConstraintWriter interface {
 	// WriteConstraints writes the constraints file of one database.
 	WriteConstraints(w io.Writer, s Schema) error
