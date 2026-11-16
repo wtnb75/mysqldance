@@ -477,12 +477,22 @@
   - [ ] CockroachDB で読み替えた確認と、skip した確認を、テストの中に理由つきで残す
   - [ ] README の Compatibility の表の CockroachDB の行を、テストの結果に合わせる
 
-## B-151 [todo|P2] MariaDB 10.11 / 11.4 の統合テストで失敗する 6 件の原因を調べる
-- 概要: B-144 の検証で、`task test:integration:mariadb` が 10.11 と 11.4 の両方で `TestTriggersRoundTrip`（`internal/dump`）、`TestLockTimeout`、`TestParallelSnapshotAlignedByGlobalLock`、`TestParallelSnapshotLockWaitsForRunningStatement`、`TestRoutinesKeepSQLMode`、`TestTriggers`（`internal/source`）で失敗した。10.11 では、B-144 の変更を外しても同じ 6 件が失敗した。README の Compatibility の MariaDB の「Tested」と食い違うので、原因を調べ、テストの側かコードの側かを分けて記録する。コードは変えず、直す項目は結果を見てから別に積む。
+## B-152 [todo|P2] MariaDB で DB 名つきで作ったトリガーの出力から DB 名を取り除く
+- 概要: MariaDB は `SHOW CREATE TRIGGER` に、書かれたとおりの文（`CREATE TRIGGER qexp.trg BEFORE INSERT ON qexp.t ...`）を返し、出力に DB 名が残る。DB 名を変えて復元できない。10.11 と 11.4 で確認した（設計書 11 節、B-151）。MySQL 5.7 も同じ可能性がある。
 - 受け入れ条件:
-  - [ ] 6 件それぞれの失敗の原因を、テストの前提（MySQL の挙動の仮定）の誤りか、実装の誤りかに分けて、設計書の MariaDB の節に書く
-  - [ ] 実装の誤りがあれば、直す項目を `mgmt-backlog` で別に積む（データの欠落や決定性に反するものは P1 か P2）
-  - [ ] README の Compatibility の MariaDB の行が、結果と食い違うなら直す
+  - [ ] DB 名つきで作ったトリガーを MariaDB 10.11 / 11.4 でダンプし、出力に DB 名が残らないことを、先に失敗する統合テストで示す
+  - [ ] その出力を別の DB 名に復元し、トリガーが復元先の DB にできることを確かめる
+  - [ ] MySQL 5.7 で同じ入力を試し、結果を設計書に書く（同じなら直す）
+  - [ ] README の「Triggers」の節を、結果に合わせる
+
+## B-153 [todo|P2] MariaDB の統合テストの前提を MariaDB に合わせて直す
+- 概要: `task test:integration:mariadb` が 10.11 と 11.4 の両方で 6 件失敗するのは、テストが MySQL の挙動を前提にしているため（設計書 11 節、B-151）。テストの側を直す。実装は変えない。
+- 受け入れ条件:
+  - [ ] `TestTriggers` と `TestTriggersRoundTrip` が、MariaDB の「書かれたとおりの名前（引用符なし）」を受ける
+  - [ ] `TestParallelSnapshotAlignedByGlobalLock` が、MariaDB の `Waiting for backup lock` を受ける
+  - [ ] `TestLockTimeout` と `TestParallelSnapshotLockWaitsForRunningStatement` が、MariaDB では実行中の `SELECT` を待たないので、待たせる文を `UPDATE` にする（MySQL では今の確認を保つ）
+  - [ ] `TestRoutinesKeepSQLMode` が、MariaDB で作れる準備（本体のリテラルを単引用符にする）で `SQL_MODE` を確かめる
+  - [ ] `task test:integration:mariadb` が 10.11 と 11.4 の両方で通り、`task test:integration` も通る
 
 # Done
 
@@ -567,3 +577,4 @@
 ## B-140 [done|P2] 本物の `mysql` クライアントで復元する統合テストを足す
 ## B-144 [done|P2] 長い文字列キーの `ORDER BY` が `max_sort_length` で切れないよう、セッションで最大に固定する
 ## B-146 [done|P3] コメントの言い過ぎと、台帳の根拠が弱い項目を直す
+## B-151 [done|P2] MariaDB 10.11 / 11.4 の統合テストで失敗する 6 件の原因を調べる
