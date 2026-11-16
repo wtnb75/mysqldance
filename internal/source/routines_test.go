@@ -45,9 +45,15 @@ func TestRoutines(t *testing.T) {
 
 func TestRoutinesKeepSQLMode(t *testing.T) {
 	cfg, db, conn := testDB(t)
+	// MariaDB reads "x" under ANSI_QUOTES as an undeclared variable and refuses to
+	// create the function; a single-quoted literal creates it on every server.
+	body := `"x"`
+	if isMariaDB(t, conn) {
+		body = `'x'`
+	}
 	mustExec(t, conn,
 		"SET SESSION sql_mode = 'ANSI_QUOTES'",
-		`CREATE FUNCTION f() RETURNS VARCHAR(10) DETERMINISTIC RETURN "x"`,
+		`CREATE FUNCTION f() RETURNS VARCHAR(10) DETERMINISTIC RETURN `+body,
 	)
 	s := openSnapshot(t, cfg, db)
 	got, err := s.Routines(context.Background())

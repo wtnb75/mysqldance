@@ -159,7 +159,9 @@ func TestParallelSnapshotAlignedByGlobalLock(t *testing.T) {
 	t.Logf("%d snapshots started in %v while the global read lock was held", n, time.Since(snapStart))
 
 	// The writer is queued behind the lock, not merely slow to start.
-	waitFor(t, conn, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE STATE = 'Waiting for global read lock'")
+	// MySQL words the wait "Waiting for global read lock", MariaDB "Waiting for
+	// backup lock" (checked on 10.11 and 11.4; design doc section 11, B-151 (5)).
+	waitFor(t, conn, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE STATE IN ('Waiting for global read lock', 'Waiting for backup lock')")
 	select {
 	case err := <-writerDone:
 		t.Fatalf("writer finished while the global read lock was held (err=%v)", err)
@@ -265,17 +267,24 @@ func TestParallelSnapshotLockWaitsForRunningStatement(t *testing.T) {
 	mustExec(t, conn, "CREATE TABLE i (id INT PRIMARY KEY)", "INSERT INTO i VALUES (1)")
 	ctx := context.Background()
 
+	longStmt := "SELECT COUNT(*), SLEEP(2) FROM `" + db + "`.i"
+	if isMariaDB(t, conn) {
+		longStmt = "UPDATE `" + db + "`.i SET id = id WHERE SLEEP(2) = 0"
+	}
 	long := pinnedConn(t, dsn)
 	longDone := make(chan struct{})
 	go func() {
 		defer close(longDone)
-		// A statement that holds a read lock on the table for a while.
-		if _, err := long.ExecContext(ctx, "SELECT COUNT(*), SLEEP(2) FROM `"+db+"`.i"); err != nil {
+		// A statement that holds a lock on the table for a while. MariaDB does not
+		// make the global read lock wait for a SELECT, but waits for a write.
+		if _, err := long.ExecContext(ctx, longStmt); err != nil {
 			t.Errorf("long statement: %v", err)
 		}
 	}()
 	// Wait until the server is running it, instead of guessing with a sleep.
-	waitFor(t, conn, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE INFO LIKE 'SELECT COUNT(*), SLEEP(2)%'")
+	// 'User sleep' means the statement has opened and locked the table; a row in
+	// the process list alone can still be before that, and then the lock gets through.
+	waitFor(t, conn, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE INFO LIKE '%SLEEP(2)%' AND STATE = 'User sleep' AND ID <> CONNECTION_ID()")
 
 	locker := pinnedConn(t, dsn)
 	start := time.Now()

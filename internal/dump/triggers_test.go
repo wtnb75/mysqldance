@@ -98,9 +98,9 @@ func TestTriggersRoundTrip(t *testing.T) {
 		t.Errorf("triggers file does not start with the header and DELIMITER:\n%.300s", text)
 	}
 	// The creation order, not the name order, decides: z_first before a_second.
-	// MySQL 5.7 keeps the statement as written, so the name may be unquoted.
+	// MySQL 5.7 and MariaDB keep the statement as written, so the name may be unquoted.
 	quote := "`"
-	if e.isMySQL57(t) {
+	if e.isMySQL57(t) || e.isMariaDB(t) {
 		quote = "`?"
 	}
 	indexOf := func(name string) int {
