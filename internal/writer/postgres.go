@@ -52,7 +52,7 @@ func (p *Postgres) NeedsDefs() bool { return true }
 
 // pgMaxIdent is PostgreSQL's identifier limit in bytes. A longer name is cut
 // silently by the server, which could make two names one, so it is refused
-// (pgIdent: database and column names) or, for a table, index or foreign key
+// (pgIdent: database names) or, for a table, column, index or foreign key
 // name, shortened by us (pgShortName).
 const pgMaxIdent = 63
 
@@ -86,6 +86,11 @@ func pgShortName(name string) string {
 	}
 	return name[:cut] + suffix
 }
+
+// pgQuote quotes name as WriteSchema created it: shortened by pgShortName if
+// over the limit. A name pgShortName gave is at the limit, so it is not changed
+// again.
+func pgQuote(name string) string { return sqlvalue.QuotePGIdent(pgShortName(name)) }
 
 // pgIdent checks that name is usable as a PostgreSQL identifier.
 func pgIdent(what, name string) error {
@@ -161,10 +166,19 @@ func writePostgresTable(out *strings.Builder, t source.TableInfo, def source.Tab
 		return err
 	}
 	written := make(map[string]bool, len(cols))
+	// colNames holds the PostgreSQL names of the columns of this table. A failed run
+	// prints no warnings, so a clash names both columns as MySQL has them.
+	colNames := make(map[string]string, len(cols))
 	var lines []string
 	for _, c := range cols {
-		if err := pgIdent("column", c.Name); err != nil {
-			return err
+		myCol := sqlvalue.QuoteIdent(c.Name)
+		short := pgShortName(c.Name)
+		if prev, dup := colNames[short]; dup {
+			return fmt.Errorf("the PostgreSQL name %s of column %s is already used by column %s", sqlvalue.QuoteIdent(short), myCol, prev)
+		}
+		colNames[short] = myCol
+		if short != c.Name {
+			warn("column %s is named %s in PostgreSQL (over %d bytes)", myCol, sqlvalue.QuoteIdent(short), pgMaxIdent)
 		}
 		line, err := postgresColumn(c, warn)
 		if err != nil {
@@ -207,7 +221,7 @@ func writePostgresTable(out *strings.Builder, t source.TableInfo, def source.Tab
 		// An index name is built from two MySQL names, so MySQL's own limits do not
 		// keep it within PostgreSQL's. It is built from the table's MySQL name, not
 		// from the shortened one, so it does not change when the table name is
-		// shortened; column names are the user's and fail the run (pgIdent).
+		// shortened. A column name is shortened too, but the index name does not carry it.
 		full := t.Name + "__" + ix.Name
 		// who describes this index in an error. A failed run prints no warnings, so the
 		// error has to carry the name that was shortened.
@@ -250,7 +264,7 @@ func postgresIndexColumns(ix source.IndexDef, written map[string]bool) (string, 
 		if !written[p.Column] {
 			return "", false
 		}
-		parts[i] = sqlvalue.QuotePGIdent(p.Column)
+		parts[i] = pgQuote(p.Column)
 		if p.Desc {
 			parts[i] += " DESC"
 		}
@@ -274,7 +288,7 @@ func postgresColumn(c source.ColumnDef, warn func(format string, a ...any)) (str
 	if err != nil {
 		return "", err
 	}
-	line := sqlvalue.QuotePGIdent(c.Name) + " " + typ
+	line := pgQuote(c.Name) + " " + typ
 	if !c.Nullable {
 		line += " NOT NULL"
 	}
@@ -464,11 +478,8 @@ func (p *Postgres) NewRowWriter(db string, t source.TableInfo, open OpenFile) (R
 		return out, nil
 	}
 	header := pgSettings + pgSearchPath(db) + "BEGIN;\n"
-	// The INSERT names the table as WriteSchema created it.
-	// Errors keep naming the table as MySQL has it (wrap), so t itself is not changed.
-	named := t
-	named.Name = pgShortName(t.Name)
-	return newStreamWriter(named, open, header, "COMMIT;\n", sqlvalue.QuotePGIdent, p.data, literal), nil
+	// pgQuote names the table and its columns as WriteSchema created them.
+	return newStreamWriter(t, open, header, "COMMIT;\n", pgQuote, p.data, literal), nil
 }
 
 // pgConstraintDB is one database of the run, with its tables by name.
@@ -642,7 +653,7 @@ func isUniqueKey(def source.TableDef, cols []string) bool {
 func pgList(names []string) string {
 	q := make([]string, len(names))
 	for i, n := range names {
-		q[i] = sqlvalue.QuotePGIdent(n)
+		q[i] = pgQuote(n)
 	}
 	return strings.Join(q, ", ")
 }

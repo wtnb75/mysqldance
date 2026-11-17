@@ -355,12 +355,6 @@ func TestPostgresSchemaErrors(t *testing.T) {
 		"unknown type":              func(s *Schema) { setType(s, "parent", "code", "uuid") },
 		"schema name over 63 bytes": func(s *Schema) { s.DB = long },
 		"schema name starts pg_":    func(s *Schema) { s.DB = "pg_x" },
-		"column name over 63 bytes": func(s *Schema) {
-			d := s.Defs["parent"]
-			d.Columns[1].Name = long
-			s.Defs["parent"] = d
-			s.Tables[1].Columns[1].Name = long
-		},
 		"index name collision": func(s *Schema) {
 			// parent__uk_code is also the name this index would get.
 			d := s.Defs["parent"]
