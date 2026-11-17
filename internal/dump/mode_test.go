@@ -3,6 +3,7 @@ package dump
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -131,7 +132,7 @@ func TestSweepTempsRemovesScratchFiles(t *testing.T) {
 	if _, err := s.newScratch(); err != nil { // left behind by a killed run
 		t.Fatal(err)
 	}
-	if err := sweepTemps(dir); err != nil {
+	if err := sweepTemps(slog.New(slog.DiscardHandler), dir); err != nil {
 		t.Fatal(err)
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {

@@ -1,17 +1,5 @@
 # Backlog
 
-## B-089 [ready|P3] 削除したファイルをログに出す
-- 依存: B-052
-- 概要: `removeStale` は前回のダンプのファイルを、`sweepTemps` は前回の一時ファイルを、何も言わずに消す。ユーザーのディレクトリのファイルを消す操作なので、消したファイル名を `Info`（`removeStale`）と `Debug`（`sweepTemps`）で出す。
-- 仕様:
-  - 前提: 対象は `internal/dump/dump.go` の `removeStale`（`Info`）と `sweepTemps`（`Debug`）。`removeStale` は DB ごとなので `file` と `database` の属性を付け、`sweepTemps` は出力ディレクトリ全体を扱うので `file` だけを付ける。
-  - 前提: `file` の値は、出力ディレクトリからの相対名（出力は平らなので、ファイル名そのもの）。ログの出力先は `opt.Log`（nil なら捨てる）で、`removeStale` と `sweepTemps` にロガーを渡す。
-  - 前提: 削除の順序は今のまま（決定性のため、ログの順序もファイル名の順）。
-- 受け入れ条件:
-  - [ ] 削除したファイルごとに 1 行出る（`removeStale` は `file` と `database`、`sweepTemps` は `file` だけ）
-  - [ ] 削除がない実行では何も出ない
-  - [ ] 出力ファイルの内容と失敗時のファイル扱いは変わらない
-
 ## B-090 [ready|P3] 警告に `table` 属性を付ける
 - 依存: B-052
 - 概要: writer の警告は文字列（`Schema.Warn func(msg string)`）で渡り、テーブル名は本文に埋まっている。`--log-format json` でテーブルを絞り込めない。警告を構造（メッセージ、テーブル名）で渡し、`dump` が `table` 属性を付ける。メッセージ本文は変えない。
@@ -591,6 +579,7 @@
 ## B-086 [done|P3] 復元用ファイルにクライアントコマンドを通さないサンドボックスを足す
 ## B-087 [done|P2] 最終エラーを `slog.Error` で出す
 ## B-088 [done|P2] 接続・スナップショット・ロックの方式をログに出す
+## B-089 [done|P3] 削除したファイルをログに出す
 ## B-094 [done|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
 ## B-095 [done|P2] MySQL 5.6 に対応する
 ## B-096 [done|P2] PostgreSQL 向けの出力で、長すぎるインデックス名を決定的に短縮する
