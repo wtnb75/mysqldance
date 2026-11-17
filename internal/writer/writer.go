@@ -63,6 +63,13 @@ type RowWriter interface {
 	Close() error
 }
 
+// Warner is implemented by a RowWriter that has something to say about the
+// rows it wrote, which package dump asks for after Close. The warnings depend
+// only on the data, so they are the same on every run.
+type Warner interface {
+	Warnings() []Warning
+}
+
 // Writer renders a dump for one target DBMS. File names, staging and removal
 // of stale files are not its concern; package dump owns them.
 type Writer interface {

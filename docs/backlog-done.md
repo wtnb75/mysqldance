@@ -858,6 +858,17 @@
   - [x] 一致しない値があれば、`-0` を `-0e0` 相当の形にするなど、一致する出力にする
   - [x] 結果を設計書 11 節に書き、出力の表記が変わるなら README に書く
 
+## B-093 [done|P3] SQLite 向けの出力で `-0` と `FLOAT` が復元後も同じビットに戻るか確かめる
+- 概要: B-092 の SQLite 版。SQLite の `REAL` は 8 バイトの `double` で、`FLOAT` の値も `double` として保存される。bare な `-0` は整数 `0` になり、`-0.0` は `REAL` の `-0` になる（未確認）。`internal/sqlvalue/sqlite.go` の数値のリテラルを確かめる。
+- 結果: `-0` だけが `+0` に戻り、それ以外（`FLOAT` / `DOUBLE` の最大値・最小の正規化数・サブノーマル数を含む）は一致した。`-0` は、`REAL` 親和性の列が整数値の `double` を整数として保存して符号を失うため、リテラルを変えても直せない。列の型は変えず、SQLite 向けの行の書き出しが `-0` の個数を列ごとに数えて、表の最後に警告を 1 件ずつ出すことにした（`writer.Warner`、`sqliteRowWriter`、`sqlvalue.Value.IsNegativeZero`）。統合テスト `TestSQLiteFloatDoubleRoundTrip` が、ビット単位の比較と警告を確かめる。結果は設計書 11 節、警告は README に書いた。
+- 仕様:
+  - 前提: 比較は `/usr/bin/sqlite3` で行う。`-0` は `1.0/x`（`-Inf` になるか）と `typeof(x)` で見分ける。値は B-092 と同じ（`FLOAT` / `DOUBLE` の最大値・最小の正規化数・サブノーマル数・`-0`）。
+  - 前提: 直す場合は `internal/sqlvalue/sqlite.go` だけを変え、他のターゲットの出力は変えない。
+- 受け入れ条件:
+  - [x] `sqlite3` で、`FLOAT` / `DOUBLE`（`-0` を含む）がダンプ → 復元で一致するかを、ビット単位で確かめる
+  - [x] 一致しない値があれば、一致する出力にする（直せないので、警告を出す形にした。ユーザーの判断）
+  - [x] 結果を設計書 11 節に書き、出力の表記が変わるなら README に書く
+
 ## B-094 [done|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
 - 概要: B-069 の PR（#43）の CI で、MySQL 8.0 の `TestLockTimeout/jobs=2`（`internal/source/lock_test.go`）が `lock_test.go:114: Open succeeded although the lock could not be taken within the timeout` で失敗した。同じコードの 1 回目の run は 8.0 / 8.4 とも通り、2 回目は 8.4 が通って 8.0 だけが失敗した。6 秒の `SLEEP` の文と 1 秒の `--lock-timeout` を、時間で競わせる作りが原因と推測している（未確認）。原因を調べ、再現させてから、安定させる。
 - 結果: 原因はテストの作りで、実装（`lockGlobal`）は正しい。元の失敗は手元では再現できず（修正前に 8.0 / 8.4 で `-count=20` ずつ）、読みで特定した。別の失敗を 8.4 の `jobs=2` で 1 回再現した（`1 session(s) of ... are left on the server after the failed Open`）。(1) `Open` 失敗時の `sdb.Close` はクライアントのソケットを閉じるだけで、サーバーのセッション削除は非同期なのに、直後に `PROCESSLIST` を数えていた。(2) `waitFor` は `PROCESSLIST` に行が出れば進むが、その時点では文がテーブルを開いておらず、読み取りを止めない `FLUSH TABLES WITH READ LOCK` が先に取れて `Open` が成功しうる（元の失敗はこれと、6 秒対 1 秒の固定の競争と推測。再現はしていない）。直し方: 長い文を `SELECT id, SLEEP(60)` にして `KILL QUERY` で止め、`STATE = 'User sleep'` を待ってから `Open` し、残りセッションは期限つきでポーリングする。20 回の実行は 245 秒から 47 秒に縮んだ。

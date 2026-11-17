@@ -337,6 +337,52 @@ func quoteList(names []string) string {
 // datafile.Write). Each file runs in one transaction, so
 // restoring a large table is not one commit per statement.
 func (s *SQLite) NewRowWriter(_ string, t source.TableInfo, open OpenFile) (RowWriter, error) {
-	return newStreamWriter(t, open, sqliteDataHeader, sqliteDataFooter, sqlvalue.QuoteIdent, s.data,
-		infallible(sqlvalue.SQLiteLiterals)), nil
+	rw := &sqliteRowWriter{table: t.Name, columns: t.Columns, negZero: make([]int, len(t.Columns))}
+	// The type of a column does not change, so only the FLOAT / DOUBLE columns
+	// are looked at for each row.
+	var floatCols []int
+	for i, c := range t.Columns {
+		if sqlvalue.IsFloatOrDouble(c.TypeName) {
+			floatCols = append(floatCols, i)
+		}
+	}
+	rw.RowWriter = newStreamWriter(t, open, sqliteDataHeader, sqliteDataFooter, sqlvalue.QuoteIdent, s.data,
+		func(row []sqlvalue.Value) ([]string, error) {
+			for _, i := range floatCols {
+				if i < len(row) && row[i].IsNegativeZero() {
+					rw.negZero[i]++
+				}
+			}
+			return sqlvalue.SQLiteLiterals(row), nil
+		})
+	return rw, nil
+}
+
+// sqliteRowWriter counts the -0 of each FLOAT / DOUBLE column. SQLite stores a
+// whole-number value of a REAL column as an integer, which drops the sign, so
+// no spelling of the literal brings -0 back (B-093); it is reported instead.
+type sqliteRowWriter struct {
+	RowWriter
+	table   string
+	columns []sqlvalue.Column
+	negZero []int // per column
+}
+
+// Warnings implements Warner: one warning per column that held a -0, in column
+// order.
+func (w *sqliteRowWriter) Warnings() []Warning {
+	var out []Warning
+	for i, n := range w.negZero {
+		if n == 0 {
+			continue
+		}
+		noun := "values"
+		if n == 1 {
+			noun = "value"
+		}
+		out = append(out, Warning{Table: w.table, Message: fmt.Sprintf(
+			"column %s holds %d %s of -0, which SQLite stores as 0 (a REAL column drops the sign of -0)",
+			sqlvalue.QuoteIdent(w.columns[i].Name), n, noun)})
+	}
+	return out
 }
