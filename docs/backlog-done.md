@@ -835,6 +835,18 @@
   - [x] メッセージ本文と警告の順序（決定性）は変わらない
   - [x] `source.Tables` の警告にも `table` 属性が付く
 
+## B-091 [done|P3] 完了時の要約を `Info` で出す
+- 依存: B-053
+- 概要: 全 DB の書き出しとファイルの入れ替えが終わった時点で、DB 数・テーブル数・行数・ファイル数・所要時間を 1 行の `Info` で出す。件数は B-053 の進捗の集計を使う。
+- 結果: `Run` が、全 DB の書き出し・ファイルの入れ替え・`removeStale` が終わった後に、`dump finished`（`databases`、`tables`、`rows`、`bytes`、`files`、`duration`）を `Info` で 1 回だけ出す。件数は DB ごとの `dbTotals` の合計（`dbTotals.add`）で、`bytes` と `files` はデータファイルだけ。`duration` はロック取得の直後からの時間。失敗した実行では出ない（DB が 0 件の実行は `Run` が先にエラーにする）。README の「Progress」の表と説明に足した。統合テスト `TestProgressLogSummary`（2 DB の件数が実際のファイルと一致）、`TestProgressLogSummaryAfterRemoval`（削除の記録より後に出る）、`TestProgressLogNotDoneOnFailure`（失敗時に出ない）で確かめた。
+- 仕様:
+  - 前提: B-053 の `dbTotals`（`dump.go:165` の `database dumped` の元）を全 DB で足し合わせる。メッセージは `dump finished`、属性は `databases`、`tables`、`rows`、`bytes`、`files`、`duration`。`bytes` と `files` は B-053 と同じくデータファイルだけを数える。
+  - 前提: 出すのは、全 DB の書き出しとファイルの入れ替え（`removeStale` を含む）が終わった後の 1 回だけ。失敗した実行と、DB が 0 件の実行は出さない。`duration` は実行全体（ロック取得から）の時間。
+  - 前提: `README.md` の「Progress」節にメッセージを足す。
+- 受け入れ条件:
+  - [x] 成功時に要約が 1 行出る。失敗時には出ない
+  - [x] 件数が実際の出力と一致することをテストで確認する
+
 ## B-094 [done|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
 - 概要: B-069 の PR（#43）の CI で、MySQL 8.0 の `TestLockTimeout/jobs=2`（`internal/source/lock_test.go`）が `lock_test.go:114: Open succeeded although the lock could not be taken within the timeout` で失敗した。同じコードの 1 回目の run は 8.0 / 8.4 とも通り、2 回目は 8.4 が通って 8.0 だけが失敗した。6 秒の `SLEEP` の文と 1 秒の `--lock-timeout` を、時間で競わせる作りが原因と推測している（未確認）。原因を調べ、再現させてから、安定させる。
 - 結果: 原因はテストの作りで、実装（`lockGlobal`）は正しい。元の失敗は手元では再現できず（修正前に 8.0 / 8.4 で `-count=20` ずつ）、読みで特定した。別の失敗を 8.4 の `jobs=2` で 1 回再現した（`1 session(s) of ... are left on the server after the failed Open`）。(1) `Open` 失敗時の `sdb.Close` はクライアントのソケットを閉じるだけで、サーバーのセッション削除は非同期なのに、直後に `PROCESSLIST` を数えていた。(2) `waitFor` は `PROCESSLIST` に行が出れば進むが、その時点では文がテーブルを開いておらず、読み取りを止めない `FLUSH TABLES WITH READ LOCK` が先に取れて `Open` が成功しうる（元の失敗はこれと、6 秒対 1 秒の固定の競争と推測。再現はしていない）。直し方: 長い文を `SELECT id, SLEEP(60)` にして `KILL QUERY` で止め、`STATE = 'User sleep'` を待ってから `Open` し、残りセッションは期限つきでポーリングする。20 回の実行は 245 秒から 47 秒に縮んだ。

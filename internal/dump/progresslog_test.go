@@ -117,6 +117,95 @@ func TestProgressLog(t *testing.T) {
 	}
 }
 
+// The summary of the run is one Info line after every database is written and the
+// files are in place, and its counts are those of the output (B-091).
+func TestProgressLogSummary(t *testing.T) {
+	e := newEnv(t)
+	db1, db2 := uniqueName(t)+"_1", uniqueName(t)+"_2"
+	for i, db := range []string{db1, db2} {
+		e.createDB(t, db)
+		e.exec(t,
+			"CREATE TABLE a (id INT PRIMARY KEY)", "INSERT INTO a VALUES (1), (2)",
+			"CREATE TABLE b (id INT PRIMARY KEY)",
+		)
+		if i == 1 {
+			e.exec(t, "CREATE TABLE c (id INT PRIMARY KEY)", "INSERT INTO c VALUES (9)")
+		}
+	}
+	log, dir := e.runProgress(t, 1, db1, db2)
+
+	var lines []string
+	for l := range strings.SplitSeq(log, "\n") {
+		if strings.Contains(l, "msg=\"dump finished\"") {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("want exactly one summary line, got %d:\n%s", len(lines), log)
+	}
+	sum := lines[0]
+	if !strings.Contains(sum, "level=INFO") {
+		t.Errorf("the summary is not an Info record: %q", sum)
+	}
+	// It comes after every database line.
+	if strings.LastIndex(log, "msg=\"database dumped\"") > strings.Index(log, sum) {
+		t.Errorf("the summary comes before the end of a database:\n%s", log)
+	}
+
+	var files int64
+	var size int64
+	for _, db := range []string{db1, db2} {
+		tables := []string{"a", "b"}
+		if db == db2 {
+			tables = append(tables, "c")
+		}
+		plan := naming.NewPlan(db, tables)
+		for _, tbl := range tables {
+			fi, err := os.Stat(filepath.Join(dir, plan.DataFile(tbl)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			files++
+			size += fi.Size()
+		}
+	}
+	for key, want := range map[string]int64{"databases": 2, "tables": 5, "rows": 5, "bytes": size, "files": files} {
+		if got := attrInt(t, sum, key); got != want {
+			t.Errorf("summary: %s = %d, want %d\n%s", key, got, want, sum)
+		}
+	}
+	if logAttr(sum, "duration") == "" {
+		t.Errorf("no duration in %q", sum)
+	}
+}
+
+// The summary comes after the stale files of an earlier dump are removed, so it is
+// never logged before the run is committed (B-091).
+func TestProgressLogSummaryAfterRemoval(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t, "CREATE TABLE a (id INT PRIMARY KEY)", "INSERT INTO a VALUES (1)")
+	dir := t.TempDir()
+	stale := filepath.Join(dir, naming.DataFile(db, "gone"))
+	if err := os.WriteFile(stale, []byte("-- stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	opt := Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, Log: connLogger(&buf)}
+	if err := Run(context.Background(), opt); err != nil {
+		t.Fatalf("Run: %v\n%s", err, buf.String())
+	}
+	log := buf.String()
+	removed := strings.Index(log, "msg=\"removed a file of an earlier dump\"")
+	if removed < 0 {
+		t.Fatalf("the stale file was not removed (or not logged):\n%s", log)
+	}
+	if fin := strings.Index(log, "msg=\"dump finished\""); fin < removed {
+		t.Errorf("the summary comes before the removal record:\n%s", log)
+	}
+}
+
 // A failed run says nothing of the database being done.
 func TestProgressLogNotDoneOnFailure(t *testing.T) {
 	t.Parallel()
@@ -134,5 +223,8 @@ func TestProgressLogNotDoneOnFailure(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "database dumped") {
 		t.Errorf("a failed run logged the end of the database:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "dump finished") {
+		t.Errorf("a failed run logged the summary:\n%s", buf.String())
 	}
 }
