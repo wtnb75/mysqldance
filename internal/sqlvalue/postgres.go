@@ -13,9 +13,12 @@ import (
 type PGKind int
 
 const (
-	// PGNumber is any integer, numeric or float column: the digits the server
+	// PGNumber is any integer or numeric column: the digits the server
 	// returned are valid as they are.
 	PGNumber PGKind = iota
+	// PGFloat is a real or double precision column. Its digits are valid as
+	// they are, except that -0 is written as the string '-0' (B-092).
+	PGFloat
 	// PGBool is a boolean column made from TINYINT(1).
 	PGBool
 	// PGBit is a bit(n) column; PGColumn.Bits is n.
@@ -62,6 +65,13 @@ func PostgresLiteral(c PGColumn, raw []byte, isNull bool) (string, error) {
 	}
 	switch c.Kind {
 	case PGNumber:
+		return string(raw), nil
+	case PGFloat:
+		// A bare -0 is the integer 0 negated and a numeric -0e0 has no sign;
+		// a quoted '-0' is read by float4in / float8in, which keep it.
+		if isNegativeZero(raw) {
+			return "'-0'", nil
+		}
 		return string(raw), nil
 	case PGBool:
 		switch string(raw) {

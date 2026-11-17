@@ -1,15 +1,5 @@
 # Backlog
 
-## B-092 [ready|P3] PostgreSQL 向けの出力で `-0` と `FLOAT` が復元後も同じビットに戻るか確かめる
-- 概要: B-059 は MySQL への復元だけを直した。`-0` が落ちる原因は、MySQL では bare な `-0` が整数 `0` の符号反転になることだった。`--target postgres` の `real` / `double precision` の列も同じ問題を持つ可能性がある（`internal/sqlvalue/postgres.go` の `PGNumber`。未確認）。`FLOAT` は B-059 で正確な最短表記になったので、`real` に戻るかも確かめる。確かめて、戻らなければ直す。調査で直す内容が決まる小さな項目なので、1 つの PR にする。
-- 仕様:
-  - 前提: 比較は PostgreSQL 17 で、`float4send` / `float8send` のバイト列（`-0` と通常の 0 も区別できる）で行う。値は `FLOAT` / `DOUBLE` の最大値・最小の正規化数・サブノーマル数・`-0` を含める。テストは `task test:integration`（PostgreSQL 17 を含む）に入れる。
-  - 前提: 直す場合は `internal/sqlvalue/postgres.go` の `PGNumber` だけを変え、MySQL 向けの出力は変えない。
-- 受け入れ条件:
-  - [ ] PostgreSQL 17 で、`FLOAT` / `DOUBLE`（`-0`、`FLOAT` の最大値、サブノーマル数を含む）がダンプ → 復元で一致するかを、ビット単位で確かめる
-  - [ ] 一致しない値があれば、`-0` を `-0e0` 相当の形にするなど、一致する出力にする
-  - [ ] 結果を設計書 11 節に書き、出力の表記が変わるなら README に書く
-
 ## B-093 [ready|P3] SQLite 向けの出力で `-0` と `FLOAT` が復元後も同じビットに戻るか確かめる
 - 概要: B-092 の SQLite 版。SQLite の `REAL` は 8 バイトの `double` で、`FLOAT` の値も `double` として保存される。bare な `-0` は整数 `0` になり、`-0.0` は `REAL` の `-0` になる（未確認）。`internal/sqlvalue/sqlite.go` の数値のリテラルを確かめる。
 - 仕様:
@@ -559,6 +549,7 @@
 ## B-089 [done|P3] 削除したファイルをログに出す
 ## B-090 [done|P3] 警告に `table` 属性を付ける
 ## B-091 [done|P3] 完了時の要約を `Info` で出す
+## B-092 [done|P3] PostgreSQL 向けの出力で `-0` と `FLOAT` が復元後も同じビットに戻るか確かめる
 ## B-094 [done|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
 ## B-095 [done|P2] MySQL 5.6 に対応する
 ## B-096 [done|P2] PostgreSQL 向けの出力で、長すぎるインデックス名を決定的に短縮する

@@ -1462,3 +1462,10 @@
 - 初出: B-090
 - 再出: 0
 
+## R-203 `isNegativeZero` が、`ParseFloat` で 0 に潰れる非ゼロのテキスト（`-1e-400`）を `-0` と判定する
+- 対象: internal/sqlvalue/float.go の isNegativeZero（MySQL 向けの `-0e0` と PostgreSQL 向けの `'-0'` が使う）
+- 指摘: `strconv.ParseFloat` はアンダーフローの入力（`-1e-400`）を、エラーなしで 0 にする。`-` で始まって 0 に読めるテキストは、全て `-0` として書かれ、非ゼロの値が黙って `-0` になりうる。
+- 却下の理由: `FLOAT` / `DOUBLE` のテキストは、サーバーが実在する `double`（`FLOAT` は `col * 1e0` の正確な `double`）を印字したもので、`double` の最小のサブノーマル数（`5e-324`）より小さい値は印字されない。`ParseFloat` が 0 に潰す綴りは来ない（失敗のシナリオを示せない）。`TestFloatDoubleRoundTrip` と `TestPostgresFloatDoubleRoundTrip` が、サブノーマル数（`1e-310`、`5e-324`）を含めてビット単位で一致することを確かめている。
+- 初出: B-092
+- 再出: 0
+

@@ -314,6 +314,7 @@ func isPGBoolean(c source.ColumnDef) bool {
 func pgColumnType(c source.ColumnDef) (string, sqlvalue.PGColumn, error) {
 	unsigned := isUnsigned(c)
 	num := sqlvalue.PGColumn{Kind: sqlvalue.PGNumber}
+	flt := sqlvalue.PGColumn{Kind: sqlvalue.PGFloat}
 	switch c.DataType {
 	case "tinyint":
 		if isPGBoolean(c) {
@@ -354,9 +355,9 @@ func pgColumnType(c source.ColumnDef) (string, sqlvalue.PGColumn, error) {
 		}
 		return "numeric(10,0)", num, nil
 	case "float":
-		return "real", num, nil
+		return "real", flt, nil
 	case "double", "real":
-		return "double precision", num, nil
+		return "double precision", flt, nil
 	case "char", "varchar":
 		text := sqlvalue.PGColumn{Kind: sqlvalue.PGText}
 		if m := parenNumber.FindStringSubmatch(c.Type); m != nil && m[1] != "0" {

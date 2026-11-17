@@ -847,6 +847,17 @@
   - [x] 成功時に要約が 1 行出る。失敗時には出ない
   - [x] 件数が実際の出力と一致することをテストで確認する
 
+## B-092 [done|P3] PostgreSQL 向けの出力で `-0` と `FLOAT` が復元後も同じビットに戻るか確かめる
+- 概要: B-059 は MySQL への復元だけを直した。`-0` が落ちる原因は、MySQL では bare な `-0` が整数 `0` の符号反転になることだった。`--target postgres` の `real` / `double precision` の列も同じ問題を持つ可能性がある（`internal/sqlvalue/postgres.go` の `PGNumber`。未確認）。`FLOAT` は B-059 で正確な最短表記になったので、`real` に戻るかも確かめる。確かめて、戻らなければ直す。調査で直す内容が決まる小さな項目なので、1 つの PR にする。
+- 結果: PostgreSQL 17 で確かめたところ、`-0`（`FLOAT` も `DOUBLE` も）だけが `+0` に戻り、`FLOAT` の最大値・サブノーマル数を含む他の値は一致した。`-0e0` も `numeric` の `0` の符号反転なので直らず、引用符つきの `'-0'` と出すようにした（`sqlvalue.PGFloat` を新設し、`internal/writer/postgres.go` の `FLOAT` / `DOUBLE` をこの種類にした。MySQL と SQLite 向けの出力は変わらない）。統合テスト `TestPostgresFloatDoubleRoundTrip` が `float4send` / `float8send` でビット単位に比べる。結果は設計書 11 節、表記は README の「Determinism and ordering」に書いた。
+- 仕様:
+  - 前提: 比較は PostgreSQL 17 で、`float4send` / `float8send` のバイト列（`-0` と通常の 0 も区別できる）で行う。値は `FLOAT` / `DOUBLE` の最大値・最小の正規化数・サブノーマル数・`-0` を含める。テストは `task test:integration`（PostgreSQL 17 を含む）に入れる。
+  - 前提: 直す場合は `internal/sqlvalue/postgres.go` の `PGNumber` だけを変え、MySQL 向けの出力は変えない。
+- 受け入れ条件:
+  - [x] PostgreSQL 17 で、`FLOAT` / `DOUBLE`（`-0`、`FLOAT` の最大値、サブノーマル数を含む）がダンプ → 復元で一致するかを、ビット単位で確かめる
+  - [x] 一致しない値があれば、`-0` を `-0e0` 相当の形にするなど、一致する出力にする
+  - [x] 結果を設計書 11 節に書き、出力の表記が変わるなら README に書く
+
 ## B-094 [done|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
 - 概要: B-069 の PR（#43）の CI で、MySQL 8.0 の `TestLockTimeout/jobs=2`（`internal/source/lock_test.go`）が `lock_test.go:114: Open succeeded although the lock could not be taken within the timeout` で失敗した。同じコードの 1 回目の run は 8.0 / 8.4 とも通り、2 回目は 8.4 が通って 8.0 だけが失敗した。6 秒の `SLEEP` の文と 1 秒の `--lock-timeout` を、時間で競わせる作りが原因と推測している（未確認）。原因を調べ、再現させてから、安定させる。
 - 結果: 原因はテストの作りで、実装（`lockGlobal`）は正しい。元の失敗は手元では再現できず（修正前に 8.0 / 8.4 で `-count=20` ずつ）、読みで特定した。別の失敗を 8.4 の `jobs=2` で 1 回再現した（`1 session(s) of ... are left on the server after the failed Open`）。(1) `Open` 失敗時の `sdb.Close` はクライアントのソケットを閉じるだけで、サーバーのセッション削除は非同期なのに、直後に `PROCESSLIST` を数えていた。(2) `waitFor` は `PROCESSLIST` に行が出れば進むが、その時点では文がテーブルを開いておらず、読み取りを止めない `FLUSH TABLES WITH READ LOCK` が先に取れて `Open` が成功しうる（元の失敗はこれと、6 秒対 1 秒の固定の競争と推測。再現はしていない）。直し方: 長い文を `SELECT id, SLEEP(60)` にして `KILL QUERY` で止め、`STATE = 'User sleep'` を待ってから `Open` し、残りセッションは期限つきでポーリングする。20 回の実行は 245 秒から 47 秒に縮んだ。
