@@ -133,6 +133,7 @@ func Run(ctx context.Context, opt Options) (err error) {
 			opt.Log.Warn("could not release the output directory lock", "error", uerr)
 		}
 	}()
+	runStart := time.Now()
 	if err := sweepTemps(opt.Log, opt.OutDir); err != nil {
 		return err
 	}
@@ -145,6 +146,8 @@ func Run(ctx context.Context, opt Options) (err error) {
 	// What the constraints files need of each database (see writeConstraints).
 	cw, hasConstraints := opt.Writer.(writer.ConstraintWriter)
 	schemas := map[string]writer.Schema{}
+	// The totals of all databases, for the summary at the end of the run.
+	var all dbTotals
 	for i, db := range opt.DBs {
 		if i > 0 {
 			if err := snap.Use(ctx, db); err != nil {
@@ -164,6 +167,7 @@ func Run(ctx context.Context, opt Options) (err error) {
 		// The files are staged, not yet in place: that is the last step of the run.
 		opt.Log.Info("database dumped", "database", db, "tables", tot.tables,
 			"rows", tot.rows, "bytes", tot.bytes, "files", tot.files, "duration", time.Since(start))
+		all.add(tot)
 	}
 	if hasConstraints {
 		if err := writeConstraints(opt, cw, schemas, plans, st); err != nil {
@@ -194,6 +198,10 @@ func Run(ctx context.Context, opt Options) (err error) {
 			return fmt.Errorf("database %q: %w", db, err)
 		}
 	}
+	// The last record of a successful run: the files are in place and the stale
+	// ones are gone. Run fails on an empty opt.DBs, so there is always a database.
+	opt.Log.Info("dump finished", "databases", len(opt.DBs), "tables", all.tables,
+		"rows", all.rows, "bytes", all.bytes, "files", all.files, "duration", time.Since(runStart))
 	return nil
 }
 
@@ -230,6 +238,14 @@ func prepareOutDir(dir string, mode os.FileMode) error {
 type dbTotals struct {
 	tables, files int
 	rows, bytes   int64
+}
+
+// add adds the totals of another database to t.
+func (t *dbTotals) add(o dbTotals) {
+	t.tables += o.tables
+	t.files += o.files
+	t.rows += o.rows
+	t.bytes += o.bytes
 }
 
 // dumpDB stages the files of db and records its file names in plans. Once every

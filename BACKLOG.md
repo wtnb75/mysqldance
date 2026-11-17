@@ -1,16 +1,5 @@
 # Backlog
 
-## B-091 [ready|P3] 完了時の要約を `Info` で出す
-- 依存: B-053
-- 概要: 全 DB の書き出しとファイルの入れ替えが終わった時点で、DB 数・テーブル数・行数・ファイル数・所要時間を 1 行の `Info` で出す。件数は B-053 の進捗の集計を使う。
-- 仕様:
-  - 前提: B-053 の `dbTotals`（`dump.go:165` の `database dumped` の元）を全 DB で足し合わせる。メッセージは `dump finished`、属性は `databases`、`tables`、`rows`、`bytes`、`files`、`duration`。`bytes` と `files` は B-053 と同じくデータファイルだけを数える。
-  - 前提: 出すのは、全 DB の書き出しとファイルの入れ替え（`removeStale` を含む）が終わった後の 1 回だけ。失敗した実行と、DB が 0 件の実行は出さない。`duration` は実行全体（ロック取得から）の時間。
-  - 前提: `README.md` の「Progress」節にメッセージを足す。
-- 受け入れ条件:
-  - [ ] 成功時に要約が 1 行出る。失敗時には出ない
-  - [ ] 件数が実際の出力と一致することをテストで確認する
-
 ## B-092 [ready|P3] PostgreSQL 向けの出力で `-0` と `FLOAT` が復元後も同じビットに戻るか確かめる
 - 概要: B-059 は MySQL への復元だけを直した。`-0` が落ちる原因は、MySQL では bare な `-0` が整数 `0` の符号反転になることだった。`--target postgres` の `real` / `double precision` の列も同じ問題を持つ可能性がある（`internal/sqlvalue/postgres.go` の `PGNumber`。未確認）。`FLOAT` は B-059 で正確な最短表記になったので、`real` に戻るかも確かめる。確かめて、戻らなければ直す。調査で直す内容が決まる小さな項目なので、1 つの PR にする。
 - 仕様:
@@ -569,6 +558,7 @@
 ## B-088 [done|P2] 接続・スナップショット・ロックの方式をログに出す
 ## B-089 [done|P3] 削除したファイルをログに出す
 ## B-090 [done|P3] 警告に `table` 属性を付ける
+## B-091 [done|P3] 完了時の要約を `Info` で出す
 ## B-094 [done|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
 ## B-095 [done|P2] MySQL 5.6 に対応する
 ## B-096 [done|P2] PostgreSQL 向けの出力で、長すぎるインデックス名を決定的に短縮する
