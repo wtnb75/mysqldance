@@ -1448,3 +1448,10 @@
 - 初出: B-153
 - 再出: 0
 
+## R-201 削除のログに理由が無い／一時ファイルの削除が `Debug` だけ
+- 対象: internal/dump/dump.go の removeStale / sweepTemps
+- 指摘: `removed a file of an earlier dump` は、テーブルの削除・権限の変化・`--exclude-table` を区別できない。`sweepTemps` の削除が既定の水準では見えない。
+- 却下の理由: B-089 の確定した仕様が、`removeStale` は `Info`（`file` と `database`）、`sweepTemps` は `Debug`（`file`）と決めている。古いファイルの削除は `removeStale` が所有名で決めるだけで、理由を持たない（README の「Re-dumping and removing stale files」）。理由の付与は仕様の範囲外。
+- 初出: B-089
+- 再出: 0
+

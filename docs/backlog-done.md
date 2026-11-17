@@ -809,6 +809,19 @@
   - [x] ロックを取った場合と取らない場合の両方をテストで確認する（統合テスト）
   - [x] 時間は属性（`duration`）で渡し、出力ファイルの内容には影響しない
 
+## B-089 [done|P3] 削除したファイルをログに出す
+- 依存: B-052
+- 概要: `removeStale` は前回のダンプのファイルを、`sweepTemps` は前回の一時ファイルを、何も言わずに消す。ユーザーのディレクトリのファイルを消す操作なので、消したファイル名を `Info`（`removeStale`）と `Debug`（`sweepTemps`）で出す。
+- 結果: `removeStale` は `removed a file of an earlier dump`（`database`、`file`）を `Info` で、`sweepTemps` は `removed a temporary file of an earlier run`（`file`）を `Debug` で、削除した後に 1 件ずつ出す。どちらも `opt.Log` を引数で受ける。README の「Progress」の表に足した。
+- 仕様:
+  - 前提: 対象は `internal/dump/dump.go` の `removeStale`（`Info`）と `sweepTemps`（`Debug`）。`removeStale` は DB ごとなので `file` と `database` の属性を付け、`sweepTemps` は出力ディレクトリ全体を扱うので `file` だけを付ける。
+  - 前提: `file` の値は、出力ディレクトリからの相対名（出力は平らなので、ファイル名そのもの）。ログの出力先は `opt.Log`（nil なら捨てる）で、`removeStale` と `sweepTemps` にロガーを渡す。
+  - 前提: 削除の順序は今のまま（決定性のため、ログの順序もファイル名の順）。
+- 受け入れ条件:
+  - [x] 削除したファイルごとに 1 行出る（`removeStale` は `file` と `database`、`sweepTemps` は `file` だけ）
+  - [x] 削除がない実行では何も出ない
+  - [x] 出力ファイルの内容と失敗時のファイル扱いは変わらない
+
 ## B-094 [done|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
 - 概要: B-069 の PR（#43）の CI で、MySQL 8.0 の `TestLockTimeout/jobs=2`（`internal/source/lock_test.go`）が `lock_test.go:114: Open succeeded although the lock could not be taken within the timeout` で失敗した。同じコードの 1 回目の run は 8.0 / 8.4 とも通り、2 回目は 8.4 が通って 8.0 だけが失敗した。6 秒の `SLEEP` の文と 1 秒の `--lock-timeout` を、時間で競わせる作りが原因と推測している（未確認）。原因を調べ、再現させてから、安定させる。
 - 結果: 原因はテストの作りで、実装（`lockGlobal`）は正しい。元の失敗は手元では再現できず（修正前に 8.0 / 8.4 で `-count=20` ずつ）、読みで特定した。別の失敗を 8.4 の `jobs=2` で 1 回再現した（`1 session(s) of ... are left on the server after the failed Open`）。(1) `Open` 失敗時の `sdb.Close` はクライアントのソケットを閉じるだけで、サーバーのセッション削除は非同期なのに、直後に `PROCESSLIST` を数えていた。(2) `waitFor` は `PROCESSLIST` に行が出れば進むが、その時点では文がテーブルを開いておらず、読み取りを止めない `FLUSH TABLES WITH READ LOCK` が先に取れて `Open` が成功しうる（元の失敗はこれと、6 秒対 1 秒の固定の競争と推測。再現はしていない）。直し方: 長い文を `SELECT id, SLEEP(60)` にして `KILL QUERY` で止め、`STATE = 'User sleep'` を待ってから `Open` し、残りセッションは期限つきでポーリングする。20 回の実行は 245 秒から 47 秒に縮んだ。

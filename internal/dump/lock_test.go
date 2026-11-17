@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,7 +64,7 @@ func TestLockFileIsNotOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = unlock() }()
-	if err := sweepTemps(dir); err != nil {
+	if err := sweepTemps(slog.New(slog.DiscardHandler), dir); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, lockFileName)); err != nil {

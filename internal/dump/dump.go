@@ -133,7 +133,7 @@ func Run(ctx context.Context, opt Options) (err error) {
 			opt.Log.Warn("could not release the output directory lock", "error", uerr)
 		}
 	}()
-	if err := sweepTemps(opt.OutDir); err != nil {
+	if err := sweepTemps(opt.Log, opt.OutDir); err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, st.discard()) }()
@@ -190,7 +190,7 @@ func Run(ctx context.Context, opt Options) (err error) {
 		written[filepath.Base(f.final)] = true
 	}
 	for _, db := range opt.DBs {
-		if err := removeStale(opt.OutDir, plans[db], written); err != nil {
+		if err := removeStale(opt.Log, opt.OutDir, db, plans[db], written); err != nil {
 			return fmt.Errorf("database %q: %w", db, err)
 		}
 	}
@@ -678,7 +678,7 @@ func ownedEntries(dir string, plan *naming.Plan) ([]string, error) {
 
 // removeStale deletes the files of the earlier dump of the database of plan
 // that this run did not write again.
-func removeStale(dir string, plan *naming.Plan, written map[string]bool) error {
+func removeStale(log *slog.Logger, dir, db string, plan *naming.Plan, written map[string]bool) error {
 	owned, err := ownedEntries(dir, plan)
 	if err != nil {
 		return err
@@ -690,6 +690,7 @@ func removeStale(dir string, plan *naming.Plan, written map[string]bool) error {
 		if err := os.Remove(filepath.Join(dir, name)); err != nil {
 			return err
 		}
+		log.Info("removed a file of an earlier dump", "database", db, "file", name)
 	}
 	return nil
 }
@@ -711,7 +712,7 @@ func isTempName(name string) bool {
 }
 
 // sweepTemps removes the temporary files an earlier run left behind.
-func sweepTemps(dir string) error {
+func sweepTemps(log *slog.Logger, dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
@@ -722,6 +723,7 @@ func sweepTemps(dir string) error {
 			if err := os.Remove(filepath.Join(dir, n)); err != nil {
 				return err
 			}
+			log.Debug("removed a temporary file of an earlier run", "file", n)
 		}
 	}
 	return nil

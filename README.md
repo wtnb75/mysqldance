@@ -422,6 +422,10 @@ Besides the snapshot records, each database and each table is reported as `INFO`
 | `dumping database` | `database` | before the first table of the database is read |
 | `table dumped` | `database`, `table`, `rows`, `bytes`, `files`, `duration` | when the data files of the table are written |
 | `database dumped` | `database`, `tables`, `rows`, `bytes`, `files`, `duration` | when every file of the database is written (not on a failed run) |
+| `removed a file of an earlier dump` | `database`, `file` | after each stale file of the database is deleted, in file name order, one database after another. Stale files are deleted last, after every `database dumped` record and after the new files are in place (see "Re-dumping and removing stale files") |
+| `removed a temporary file of an earlier run` | `file` | at `DEBUG` level: after each temporary file a killed run left behind is deleted |
+
+`file` is the name relative to the output directory. A run that deletes nothing logs neither record.
 
 `rows` is the number of rows written, `bytes` and `files` are those of the data files of the table (or, in the database record, of all its tables; the schema, routines, triggers, events and constraints files are not counted), and `duration` is the time from the start of the table (or database) to its end (the time of a database also covers reading its schema, routines, triggers and events, and the tables overlap with `--jobs` above 1, so it is not the sum of theirs). With `--jobs` above 1 the tables are written at the same time, so the `table dumped` records come in the order the tables finish, not in table order. The files are written under temporary names first and renamed into place after the last database, so `table dumped` and `database dumped` do not yet mean the files are in place: a run can still fail after them, and then nothing is replaced (see "Failure handling").
 
