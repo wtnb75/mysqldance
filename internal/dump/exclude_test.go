@@ -99,4 +99,13 @@ func TestExcludeTableWarnsAboutReferrers(t *testing.T) {
 			t.Errorf("log lacks %q:\n%s", want, log)
 		}
 	}
+	// The foreign key warning is about the table that has it; the view's is not about a table (B-090).
+	for line := range strings.SplitSeq(log, "\n") {
+		switch {
+		case strings.Contains(line, "foreign key `child_fk`") && !strings.Contains(line, "table=child"):
+			t.Errorf("foreign key warning lacks table=child: %s", line)
+		case strings.Contains(line, "view `v_parent`") && strings.Contains(line, "table="):
+			t.Errorf("view warning has a table attribute: %s", line)
+		}
+	}
 }

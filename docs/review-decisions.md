@@ -1455,3 +1455,10 @@
 - 初出: B-089
 - 再出: 0
 
+## R-202 警告の `Table` と本文のテーブル名が別々に渡される／ソートと Compact が本文に依存する
+- 対象: internal/writer/writer.go の warnList.add / internal/writer/sqlite.go の writeSQLiteTable と internal/writer/postgres.go の writePostgresTable（`warn` の包み）/ internal/source/exclude.go の ExcludedRefs（ソートと Compact）
+- 指摘: `Table` と本文の `table %s:` が食い違っても検出できない。同じ本文で `Table` だけが違う警告は、Compact で畳まれず、順序が本文の文面で決まる。
+- 却下の理由: テーブルに紐づく警告は、全て 1 か所（`warn` の包み、`Tables`、`excludedForeignKeys`、`WriteConstraints`）で `Table` と本文を同じ変数から作る。`Tables` の警告は、テストの補助関数 `warningsOf`（internal/source/itest_test.go）が、`Table` が本文のテーブル名と一致することを毎回確かめている。`ExcludedRefs` の本文はテーブル名を含むので、同じ本文で `Table` だけが違う警告は出ない。ソートは本文、次に `Table` の順で全順序にしてあり、決定性は保たれる。B-090 の確定した仕様は「メッセージ本文は変えない」。
+- 初出: B-090
+- 再出: 0
+

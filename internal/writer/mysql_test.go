@@ -98,7 +98,7 @@ func TestMySQLWarnsAboutViewsReadingAnotherDatabase(t *testing.T) {
 	var warns []string
 	var got bytes.Buffer
 	err := w.WriteViews(&got, Schema{DB: "d", CreateDatabase: "CREATE DATABASE `d`", Views: views,
-		Warn: func(msg string) { warns = append(warns, msg) }})
+		Warn: func(w Warning) { warns = append(warns, w.Message) }})
 	if err != nil {
 		t.Fatal(err)
 	}

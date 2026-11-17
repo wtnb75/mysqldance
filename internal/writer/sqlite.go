@@ -49,8 +49,7 @@ func (s *SQLite) WriteSchema(w io.Writer, sc Schema) error {
 	out.WriteString(sqlitePragma)
 	// Reported only once the schema is written, so a failed run says nothing
 	// about a file that was not produced.
-	var warnings []string
-	warn := func(format string, a ...any) { warnings = append(warnings, fmt.Sprintf(format, a...)) }
+	var warnings warnList
 
 	// SQLite keeps tables and indexes in one namespace, ignoring ASCII case.
 	// Table names are unique in lower case here: dump rejects file names that
@@ -64,11 +63,11 @@ func (s *SQLite) WriteSchema(w io.Writer, sc Schema) error {
 		if !ok {
 			return fmt.Errorf("table %s: no table definition was read", sqlvalue.QuoteIdent(t.Name))
 		}
-		if err := writeSQLiteTable(&out, sc.DB, t, def, sc.Defs, taken, warn); err != nil {
+		if err := writeSQLiteTable(&out, sc.DB, t, def, sc.Defs, taken, warnings.add); err != nil {
 			return fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
 		}
 	}
-	writeViews(&out, sc, sqliteDialect, nil, nil, warn)
+	writeViews(&out, sc, sqliteDialect, nil, nil, warnings.noTable)
 	if _, err := io.WriteString(w, out.String()); err != nil {
 		return err
 	}
@@ -77,10 +76,10 @@ func (s *SQLite) WriteSchema(w io.Writer, sc Schema) error {
 }
 
 func writeSQLiteTable(out *strings.Builder, db string, t source.TableInfo, def source.TableDef, defs map[string]source.TableDef,
-	taken map[string]string, warnf func(format string, a ...any)) error {
+	taken map[string]string, warnf func(table, format string, a ...any)) error {
 	table := sqlvalue.QuoteIdent(t.Name)
 	// warn prefixes the table; the name is an argument, never part of the format.
-	warn := func(format string, a ...any) { warnf("table %s: "+format, append([]any{table}, a...)...) }
+	warn := func(format string, a ...any) { warnf(t.Name, "table %s: "+format, append([]any{table}, a...)...) }
 	// The columns written must be the ones the data files list.
 	cols, err := outputColumns(t, def, warn)
 	if err != nil {

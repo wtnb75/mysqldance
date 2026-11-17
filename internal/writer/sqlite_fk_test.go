@@ -74,7 +74,7 @@ func fkParentKeySchema() Schema {
 func TestSQLiteForeignKeyParentKey(t *testing.T) {
 	var warnings []string
 	schema := fkParentKeySchema()
-	schema.Warn = func(msg string) { warnings = append(warnings, msg) }
+	schema.Warn = func(w Warning) { warnings = append(warnings, w.Message) }
 	var got bytes.Buffer
 	if err := NewSQLite(datafile.Options{}).WriteSchema(&got, schema); err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestSQLiteForeignKeySelfReference(t *testing.T) {
 				RefColumns: []string{"id"}, OnUpdate: "NO ACTION", OnDelete: "NO ACTION"}},
 		}},
 	}
-	schema.Warn = func(msg string) { t.Errorf("unexpected warning: %s", msg) }
+	schema.Warn = func(w Warning) { t.Errorf("unexpected warning: %s", w.Message) }
 	var got bytes.Buffer
 	if err := NewSQLite(datafile.Options{}).WriteSchema(&got, schema); err != nil {
 		t.Fatal(err)

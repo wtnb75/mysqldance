@@ -278,14 +278,14 @@ func readSchema(ctx context.Context, opt Options, snap *source.Snapshot, db stri
 		return writer.Schema{}, err
 	}
 	for _, w := range warnings {
-		opt.Log.Warn(w, "database", db)
+		logWarning(opt.Log, db, w)
 	}
 	refWarnings, err := snap.ExcludedRefs(ctx)
 	if err != nil {
 		return writer.Schema{}, err
 	}
 	for _, w := range refWarnings {
-		opt.Log.Warn(w, "database", db)
+		logWarning(opt.Log, db, w)
 	}
 	views, deps, err := snap.Views(ctx)
 	if err != nil {
@@ -339,8 +339,18 @@ func readSchema(ctx context.Context, opt Options, snap *source.Snapshot, db stri
 	}
 	return writer.Schema{
 		DB: db, CreateDatabase: createDB, Tables: tables, Views: views, ViewDeps: deps, Triggers: triggers, Routines: routines, Events: events, Defs: defs,
-		Warn: func(msg string) { opt.Log.Warn(msg, "database", db) },
+		Warn: func(w writer.Warning) { logWarning(opt.Log, db, w) },
 	}, nil
+}
+
+// logWarning logs w for db. The table attribute is left out for a warning that
+// concerns no one table.
+func logWarning(log *slog.Logger, db string, w writer.Warning) {
+	if w.Table == "" {
+		log.Warn(w.Message, "database", db)
+		return
+	}
+	log.Warn(w.Message, "database", db, "table", w.Table)
 }
 
 // planFiles decides the output file names of db and claims them in seen, so a

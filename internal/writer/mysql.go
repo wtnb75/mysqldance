@@ -46,8 +46,8 @@ func (m *MySQL) WriteViews(w io.Writer, s Schema) error {
 		// warn, whatever the file order: the restore target is unknown (R-151).
 		// The SQLite and PostgreSQL writers output no views at all (R-152).
 		for _, db := range v.Reads {
-			emit(s.Warn, []string{fmt.Sprintf("view %s reads database %s: it must be restored before this one (files restore in file name order), or the CREATE VIEW fails",
-				sqlvalue.QuoteIdent(v.Name), sqlvalue.QuoteIdent(db))})
+			emit(s.Warn, []Warning{{Message: fmt.Sprintf("view %s reads database %s: it must be restored before this one (files restore in file name order), or the CREATE VIEW fails",
+				sqlvalue.QuoteIdent(v.Name), sqlvalue.QuoteIdent(db))}})
 		}
 	}
 	ordered := make([]schemafile.View, 0, len(s.Views))

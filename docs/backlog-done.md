@@ -822,6 +822,19 @@
   - [x] 削除がない実行では何も出ない
   - [x] 出力ファイルの内容と失敗時のファイル扱いは変わらない
 
+## B-090 [done|P3] 警告に `table` 属性を付ける
+- 依存: B-052
+- 概要: writer の警告は文字列（`Schema.Warn func(msg string)`）で渡り、テーブル名は本文に埋まっている。`--log-format json` でテーブルを絞り込めない。警告を構造（メッセージ、テーブル名）で渡し、`dump` が `table` 属性を付ける。メッセージ本文は変えない。
+- 結果: `source.Warning{Table, Message}` を足し、`writer.Warning` はその alias。`Schema.Warn` は `func(Warning)`、`source.Tables` と `ExcludedRefs` は `[]Warning` を返す。`dump` の `logWarning` が、`Table` が空でないときだけ `table` 属性を付ける。ビューの警告（`view ... reads database ...`、`view ... is not output`、`view ... reads table ..., which is excluded`）は `Table` が空で、属性を付けない。外部キーの警告は、そのキーを持つテーブルを `Table` に持つ。README の「Warnings」節と除外の節に書いた。
+- 仕様:
+  - 前提: `writer.Schema.Warn`（`internal/writer/writer.go:48`）の型を、文字列から `writer.Warning{Table, Message string}` を受ける関数に変える。テーブルに紐づかない警告は `Table` を空にし、`dump` は空のときは `table` 属性を付けない。`database` 属性は今のまま `dump` が付ける（`dump.go:342`）。
+  - 前提: `source.Tables` の警告（`dump.go:281` と `288` の経路）も、テーブル名を持つ形で返し、`dump` が `table` 属性を付ける。
+  - 前提: テストは `Warn` を直接代入している（`internal/writer/*_test.go`）ので、型の変更に合わせて直す。
+- 受け入れ条件:
+  - [x] writer の警告のうちテーブルに紐づくものに `table` 属性が付く
+  - [x] メッセージ本文と警告の順序（決定性）は変わらない
+  - [x] `source.Tables` の警告にも `table` 属性が付く
+
 ## B-094 [done|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
 - 概要: B-069 の PR（#43）の CI で、MySQL 8.0 の `TestLockTimeout/jobs=2`（`internal/source/lock_test.go`）が `lock_test.go:114: Open succeeded although the lock could not be taken within the timeout` で失敗した。同じコードの 1 回目の run は 8.0 / 8.4 とも通り、2 回目は 8.4 が通って 8.0 だけが失敗した。6 秒の `SLEEP` の文と 1 秒の `--lock-timeout` を、時間で競わせる作りが原因と推測している（未確認）。原因を調べ、再現させてから、安定させる。
 - 結果: 原因はテストの作りで、実装（`lockGlobal`）は正しい。元の失敗は手元では再現できず（修正前に 8.0 / 8.4 で `-count=20` ずつ）、読みで特定した。別の失敗を 8.4 の `jobs=2` で 1 回再現した（`1 session(s) of ... are left on the server after the failed Open`）。(1) `Open` 失敗時の `sdb.Close` はクライアントのソケットを閉じるだけで、サーバーのセッション削除は非同期なのに、直後に `PROCESSLIST` を数えていた。(2) `waitFor` は `PROCESSLIST` に行が出れば進むが、その時点では文がテーブルを開いておらず、読み取りを止めない `FLUSH TABLES WITH READ LOCK` が先に取れて `Open` が成功しうる（元の失敗はこれと、6 秒対 1 秒の固定の競争と推測。再現はしていない）。直し方: 長い文を `SELECT id, SLEEP(60)` にして `KILL QUERY` で止め、`STATE = 'User sleep'` を待ってから `Open` し、残りセッションは期限つきでポーリングする。20 回の実行は 245 秒から 47 秒に縮んだ。

@@ -61,7 +61,7 @@ func TestJobsTablesAndWarningsSameAsSerial(t *testing.T) {
 	// (as TestWarningsLargeTable does) to get a warning for every table.
 	cfg.LargeTableRows = -1
 
-	tablesAndWarnings := func(jobs int) ([]TableInfo, []string) {
+	tablesAndWarnings := func(jobs int) ([]TableInfo, []Warning) {
 		cfg.Jobs = jobs
 		tables, warnings, err := openSnapshot(t, cfg, db).Tables(context.Background())
 		if err != nil {

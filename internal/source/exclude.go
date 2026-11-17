@@ -1,6 +1,7 @@
 package source
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -105,7 +106,7 @@ func (s *Snapshot) excludes(table string) bool {
 // may fail unless the table exists. A view is found by the server's own list of
 // what it reads (MySQL 8.0.13+) or else by a text search of its definition, and
 // a view of another database that reads a left-out table is not found.
-func (s *Snapshot) ExcludedRefs(ctx context.Context) ([]string, error) {
+func (s *Snapshot) ExcludedRefs(ctx context.Context) ([]Warning, error) {
 	if len(s.excluded) == 0 {
 		return nil, nil
 	}
@@ -113,7 +114,7 @@ func (s *Snapshot) ExcludedRefs(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var warnings []string
+	var warnings []Warning
 	var views []string
 	for _, r := range list {
 		if r.typ == "VIEW" {
@@ -134,9 +135,10 @@ func (s *Snapshot) ExcludedRefs(ctx context.Context) ([]string, error) {
 		}
 		for _, d := range found {
 			if isView[d.view] && own[d.ref] {
-				warnings = append(warnings, fmt.Sprintf(
+				// A view is not a table, so the warning has no Table.
+				warnings = append(warnings, Warning{Message: fmt.Sprintf(
 					"view %s reads table %s, which is excluded; the output still refers to it, so restoring it may fail unless the table exists",
-					sqlvalue.QuoteIdent(d.view), sqlvalue.QuoteIdent(d.ref)))
+					sqlvalue.QuoteIdent(d.view), sqlvalue.QuoteIdent(d.ref))})
 			}
 		}
 	}
@@ -145,19 +147,23 @@ func (s *Snapshot) ExcludedRefs(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	warnings = append(warnings, fks...)
-	slices.Sort(warnings)
+	// Sorted by message, as the strings were before Warning, so the order is kept;
+	// the table makes the order total.
+	slices.SortFunc(warnings, func(a, b Warning) int {
+		return cmp.Or(strings.Compare(a.Message, b.Message), strings.Compare(a.Table, b.Table))
+	})
 	return slices.Compact(warnings), nil
 }
 
 // excludedForeignKeys warns about each foreign key, in a table of the current
 // database that is dumped, that references a table left out of the dump.
-func (s *Snapshot) excludedForeignKeys(ctx context.Context) ([]string, error) {
+func (s *Snapshot) excludedForeignKeys(ctx context.Context) ([]Warning, error) {
 	rows, err := s.conn.QueryContext(ctx, s.dialect.defForeignKeys, s.name)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var out []string
+	var out []Warning
 	for rows.Next() {
 		var table, name, col, refSchema, refTable, refCol, onUpdate, onDelete string
 		if err := rows.Scan(&table, &name, &col, &refSchema, &refTable, &refCol, &onUpdate, &onDelete); err != nil {
@@ -166,9 +172,9 @@ func (s *Snapshot) excludedForeignKeys(ctx context.Context) ([]string, error) {
 		if s.excludes(table) || !s.excludedAnyCase(refSchema, refTable) {
 			continue
 		}
-		out = append(out, fmt.Sprintf(
+		out = append(out, Warning{Table: table, Message: fmt.Sprintf(
 			"foreign key %s of table %s references table %s.%s, which is excluded; the output still refers to it, so restoring it may fail unless the table exists",
-			sqlvalue.QuoteIdent(name), sqlvalue.QuoteIdent(table), sqlvalue.QuoteIdent(refSchema), sqlvalue.QuoteIdent(refTable)))
+			sqlvalue.QuoteIdent(name), sqlvalue.QuoteIdent(table), sqlvalue.QuoteIdent(refSchema), sqlvalue.QuoteIdent(refTable))})
 	}
 	return out, rows.Err()
 }

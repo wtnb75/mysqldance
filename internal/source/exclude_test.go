@@ -135,12 +135,18 @@ func TestExcludedRefsWarnings(t *testing.T) {
 	var fk, view int
 	for _, w := range got {
 		switch {
-		case strings.Contains(w, "foreign key `child_fk` of table `child`") && strings.Contains(w, "`parent`"):
+		case strings.Contains(w.Message, "foreign key `child_fk` of table `child`") && strings.Contains(w.Message, "`parent`"):
+			if w.Table != "child" {
+				t.Errorf("foreign key warning Table = %q, want child", w.Table)
+			}
 			fk++
-		case strings.Contains(w, "view `v_parent` reads table `parent`"):
+		case strings.Contains(w.Message, "view `v_parent` reads table `parent`"):
+			if w.Table != "" {
+				t.Errorf("view warning Table = %q, want none", w.Table)
+			}
 			view++
 		default:
-			t.Errorf("unexpected warning: %s", w)
+			t.Errorf("unexpected warning: %s", w.Message)
 		}
 	}
 	if fk != 1 || view != 1 {

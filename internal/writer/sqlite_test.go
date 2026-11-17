@@ -125,7 +125,7 @@ func TestSQLiteSchema(t *testing.T) {
 	w := NewSQLite(datafile.Options{})
 	var got bytes.Buffer
 	schema := relationalSchema()
-	schema.Warn = func(msg string) { warnings = append(warnings, msg) }
+	schema.Warn = func(w Warning) { warnings = append(warnings, w.Message) }
 	if err := w.WriteSchema(&got, schema); err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func TestSQLitePrimaryKeyPrefixWarns(t *testing.T) {
 	d.Indexes = []source.IndexDef{{Name: "PRIMARY", Unique: true, Kind: "BTREE", Parts: []source.IndexPart{{Column: "id", Prefix: true}}}}
 	s.Defs["t"] = d
 	var warnings []string
-	s.Warn = func(msg string) { warnings = append(warnings, msg) }
+	s.Warn = func(w Warning) { warnings = append(warnings, w.Message) }
 	if err := NewSQLite(datafile.Options{}).WriteSchema(io.Discard, s); err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +435,7 @@ func TestSQLiteDefaults(t *testing.T) {
 	w := NewSQLite(datafile.Options{})
 	var ddl bytes.Buffer
 	if err := w.WriteSchema(&ddl, Schema{DB: "d", Tables: []source.TableInfo{info}, Defs: map[string]source.TableDef{"t": def},
-		Warn: func(msg string) { warnings = append(warnings, msg) }}); err != nil {
+		Warn: func(w Warning) { warnings = append(warnings, w.Message) }}); err != nil {
 		t.Fatal(err)
 	}
 	db := memDB(t)

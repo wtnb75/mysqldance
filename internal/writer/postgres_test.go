@@ -44,7 +44,7 @@ func pgSchema() Schema {
 func writeSchemaText(t *testing.T, s Schema) (string, []string) {
 	t.Helper()
 	var warns []string
-	s.Warn = func(m string) { warns = append(warns, m) }
+	s.Warn = func(w Warning) { warns = append(warns, w.Message) }
 	var b bytes.Buffer
 	if err := NewPostgres(datafile.Options{}).WriteSchema(&b, s); err != nil {
 		t.Fatal(err)
@@ -128,7 +128,7 @@ func TestPostgresSchemaDeterministic(t *testing.T) {
 func TestPostgresConstraints(t *testing.T) {
 	s := pgSchema()
 	var warns []string
-	s.Warn = func(m string) { warns = append(warns, m) }
+	s.Warn = func(w Warning) { warns = append(warns, w.Message) }
 	var b bytes.Buffer
 	if err := NewPostgres(datafile.Options{}).WriteConstraints(&b, s); err != nil {
 		t.Fatal(err)
@@ -161,7 +161,7 @@ func longFKSchema(fk, other string) Schema {
 func writeConstraintsText(t *testing.T, s Schema) (string, []string, error) {
 	t.Helper()
 	var warns []string
-	s.Warn = func(m string) { warns = append(warns, m) }
+	s.Warn = func(w Warning) { warns = append(warns, w.Message) }
 	var b bytes.Buffer
 	err := NewPostgres(datafile.Options{}).WriteConstraints(&b, s)
 	return b.String(), warns, err
@@ -279,7 +279,7 @@ func TestPostgresConstraintsNeedAUniqueTarget(t *testing.T) {
 	parent.Indexes = []source.IndexDef{parent.Indexes[0], parent.Indexes[2]}
 	s.Defs["child"], s.Defs["parent"] = child, parent
 	var warns []string
-	s.Warn = func(m string) { warns = append(warns, m) }
+	s.Warn = func(w Warning) { warns = append(warns, w.Message) }
 	var b bytes.Buffer
 	if err := NewPostgres(datafile.Options{}).WriteConstraints(&b, s); err != nil {
 		t.Fatal(err)
