@@ -49,20 +49,32 @@ func shorten(esc string, maxLen int) string {
 // in every file of the database (so the files still sort together, schema
 // first), and is decided by the database and its tables alone.
 type Plan struct {
-	db     string
-	dbEsc  string // EscapeName(db)
-	dbComp string // the database part used in file names
+	db         string
+	escape     func(string) string // EscapeName, or EscapeNameCaseSafe
+	dbEsc      string              // escape(db)
+	dbComp     string              // the database part used in file names
+	ownedComps []string            // every form of the database part IsOwned accepts
 }
 
 // NewPlan returns the plan for db with the given tables. The database part is
 // shortened when some file of the database is over the limit and the database
 // part of that file is not shorter than its table part.
 func NewPlan(db string, tables []string) *Plan {
-	p := &Plan{db: db, dbEsc: EscapeName(db)}
+	return NewPlanCaseSafe(db, tables, false)
+}
+
+// NewPlanCaseSafe is NewPlan; with caseSafe the names are escaped with
+// EscapeNameCaseSafe.
+func NewPlanCaseSafe(db string, tables []string, caseSafe bool) *Plan {
+	esc := EscapeName
+	if caseSafe {
+		esc = EscapeNameCaseSafe
+	}
+	p := &Plan{db: db, escape: esc, dbEsc: esc(db), ownedComps: ownedComps(db)}
 	p.dbComp = p.dbEsc
 	over := len(p.dbEsc)+len(constraintsSuffix) > MaxFileNameBytes
 	for _, t := range tables {
-		et := EscapeName(t)
+		et := esc(t)
 		if len(p.dbEsc)+len(dataInfix)+len(et)+len(sqlExt) <= MaxFileNameBytes {
 			continue
 		}
@@ -89,14 +101,22 @@ func (p *Plan) DBComponent() string { return p.dbComp }
 // written as n files.
 func (p *Plan) TableComponent(table string, n int) string {
 	rest := len(p.dbComp) + len(dataInfix) + len(sqlExt) + partLen(n)
-	return shorten(EscapeName(table), MaxFileNameBytes-rest)
+	return shorten(p.escape(table), MaxFileNameBytes-rest)
 }
 
 // TableShortened reports whether the table part of the data file names of a
 // table written as n files is shortened.
 func (p *Plan) TableShortened(table string, n int) bool {
-	return p.TableComponent(table, n) != EscapeName(table)
+	return p.TableComponent(table, n) != p.escape(table)
 }
+
+// EscapedDB returns the database name as the file names spell it before any
+// shortening.
+func (p *Plan) EscapedDB() string { return p.dbEsc }
+
+// EscapedTable returns the table name as the file names spell it before any
+// shortening.
+func (p *Plan) EscapedTable(table string) string { return p.escape(table) }
 
 // partLen is the length of the part number (with its dot) in the names of a
 // table written as n files; 0 for a single file.
@@ -141,11 +161,28 @@ func (p *Plan) DataFileParts(table string, n int) []string {
 
 // IsOwned reports whether file is the schema file, the routines file, the
 // views file, the triggers file, the events file, the constraints file or a
-// data file of the database. Both forms of the database part count, shortened or not, whatever this run uses: whether it is
-// shortened depends on the tables, so the files of an earlier dump may have the
-// other form (the tables have changed since) and must not be left behind.
+// data file of the database. Every form of the database part counts, whatever
+// this run uses: shortened or not (that depends on the tables, so the files of an
+// earlier dump may have the other form), and escaped with or without the
+// case-safe escape (the option may have been switched). Such files must not be
+// left behind. The forms of two databases never coincide: a literal upper-case
+// letter only appears in the plain form, and %41..%5A only in the case-safe one.
 func (p *Plan) IsOwned(file string) bool {
-	return isOwned(file, p.dbEsc) || isOwned(file, shorten(p.dbEsc, dbShortLen))
+	for _, comp := range p.ownedComps {
+		if isOwned(file, comp) {
+			return true
+		}
+	}
+	return false
+}
+
+// ownedComps lists every form of the database part IsOwned accepts.
+func ownedComps(db string) []string {
+	var comps []string
+	for _, esc := range []string{EscapeName(db), EscapeNameCaseSafe(db)} {
+		comps = append(comps, esc, shorten(esc, dbShortLen))
+	}
+	return comps
 }
 
 func isOwned(file, dbComp string) bool {

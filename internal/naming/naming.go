@@ -19,12 +19,15 @@ const (
 
 // EscapeName keeps [A-Za-z0-9_-] as is and percent-encodes every other
 // UTF-8 byte (including '.' and '%') as %XX with upper-case hex.
-func EscapeName(s string) string {
+func EscapeName(s string) string { return escapeName(s, true) }
+
+// escapeName is EscapeName; keepUpper false escapes the upper-case letters too.
+func escapeName(s string, keepUpper bool) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
-		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_', c == '-':
+		case c >= 'A' && c <= 'Z' && keepUpper, c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_', c == '-':
 			b.WriteByte(c)
 		default:
 			fmt.Fprintf(&b, "%%%02X", c)
@@ -33,10 +36,17 @@ func EscapeName(s string) string {
 	return b.String()
 }
 
+// EscapeNameCaseSafe is EscapeName that also percent-encodes the ASCII
+// upper-case letters (A -> %41), so two names that differ only in case give file
+// names that differ in more than case: what stays literal is lower-case, and the
+// letters of an escape are always upper-case hex.
+func EscapeNameCaseSafe(s string) string { return escapeName(s, false) }
+
 // The standalone functions below (SchemaFile ... DataFileParts) name files of
 // one database and table without the others, so they cannot know whether the
 // database part is shortened because of another table; a run uses a Plan built
-// from all the tables (R-129).
+// from all the tables (R-129). They use the plain escape only, never the
+// case-safe one (NewPlanCaseSafe).
 
 // SchemaFile returns the schema file name of a database.
 func SchemaFile(db string) string {

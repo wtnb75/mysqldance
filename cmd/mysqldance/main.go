@@ -239,6 +239,11 @@ The password is read from --password-file, else from MYSQL_PWD.
                              PostgreSQL reserves. Repeatable; SCHEMA is at most
                              63 bytes and does not start with pg_. File names
                              keep the database name
+      --case-safe-names      also escape the upper-case letters of database and
+                             table names in file names (A -> %41), so names that
+                             differ only in case, such as Users and users, do not
+                             collide. Changes the file names that have an
+                             upper-case letter in them
       --rows-per-insert N    average rows per INSERT statement (default 1000)
       --max-insert-bytes N   size cap of one INSERT statement (default 1048576)
       --rows-per-file N      split a table into files of N rows on average,
@@ -286,7 +291,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 		host, user, socket, passwordFile, output string
 		sslMode, sslCA, target                   string
 		logLevel, logFormat                      string
-		noLock, showVersion                      bool
+		noLock, showVersion, caseSafeNames       bool
 		fileMode, dirMode                        string
 		sortMemory                               string
 		port, jobs                               int
@@ -308,6 +313,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.StringVar(&output, "o", "", "")
 	fs.StringVar(&output, "output", "", "")
 	fs.StringVar(&target, "target", targetMySQL, "")
+	fs.BoolVar(&caseSafeNames, "case-safe-names", false, "")
 	fs.Uint64Var(&rowsPerInsert, "rows-per-insert", 1000, "")
 	fs.IntVar(&maxInsertBytes, "max-insert-bytes", 1048576, "")
 	fs.Uint64Var(&rowsPerFile, "rows-per-file", 0, "")
@@ -427,6 +433,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 		OutDir:     output,
 		// Nil when the flag is not given, so the options stay as they were.
 		ExcludeTables: excludeTables,
+		CaseSafeNames: caseSafeNames,
 	}
 	// dump builds the MySQL writer from Data; another writer takes the options
 	// itself, and dump refuses both.

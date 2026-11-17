@@ -53,6 +53,10 @@ type Options struct {
 	// is not a base table of a database in DBs. The data file of such a table from
 	// an earlier dump is removed like any other file that is not written again.
 	ExcludeTables []string
+	// CaseSafeNames escapes the ASCII upper-case letters of the database and table
+	// names in file names too (A -> %41), so names that differ only in case do not
+	// collide (see naming.EscapeNameCaseSafe). Off, the file names are unchanged.
+	CaseSafeNames bool
 	// FileWriter, when set, wraps the writer of each output file, given the
 	// file's final path; nil writes to the file as is. Tests use it to inject
 	// write failures and to run code at a given point of the run. It is a field
@@ -377,10 +381,10 @@ func planFiles(opt Options, db string, schema writer.Schema, seen map[string]str
 	for i, t := range schema.Tables {
 		tableNames[i] = t.Name
 	}
-	plan := naming.NewPlan(db, tableNames)
+	plan := naming.NewPlanCaseSafe(db, tableNames, opt.CaseSafeNames)
 	if plan.DBShortened() {
 		opt.Log.Warn("the database part of the output file names is over the length limit and is shortened",
-			"database", db, "original", naming.EscapeName(db), "shortened", plan.DBComponent())
+			"database", db, "original", plan.EscapedDB(), "shortened", plan.DBComponent())
 	}
 	if err := claim(seen, plan.SchemaFile(), fmt.Sprintf("the schema of database %q", db)); err != nil {
 		return nil, err
@@ -463,7 +467,7 @@ func writeTables(ctx context.Context, opt Options, snap *source.Snapshot, db str
 		// files that are written (a part number can shorten the table part
 		// further than it is for a single file).
 		if plan.TableShortened(t.Name, len(names)) {
-			warnTableShortened(opt.Log, db, t.Name, plan.TableComponent(t.Name, len(names)))
+			warnTableShortened(opt.Log, db, t.Name, plan.EscapedTable(t.Name), plan.TableComponent(t.Name, len(names)))
 		}
 		if len(names) <= 1 {
 			continue
@@ -669,7 +673,8 @@ func claim(seen map[string]string, name, what string) error {
 		return fmt.Errorf("output file name for %s is %d bytes, over the %d-byte limit: %s",
 			what, len(name), naming.MaxFileNameBytes, name)
 	}
-	// Escaped names are ASCII, so lower-casing is exact.
+	// Escaped names are ASCII, so lower-casing is exact. With CaseSafeNames, two
+	// names that differ only in case no longer give names that differ only in case.
 	key := strings.ToLower(name)
 	if prev, ok := seen[key]; ok {
 		return fmt.Errorf("output file %s for %s collides case-insensitively with the file for %s",
@@ -682,9 +687,9 @@ func claim(seen map[string]string, name, what string) error {
 // warnTableShortened says that the table part of the data file names of a table
 // is shortened. Names that are shortened because they would collide are
 // reported by claim.
-func warnTableShortened(log *slog.Logger, db, table, shortened string) {
+func warnTableShortened(log *slog.Logger, db, table, original, shortened string) {
 	log.Warn("the table part of the output file names is over the length limit and is shortened",
-		"database", db, "table", table, "original", naming.EscapeName(table), "shortened", shortened)
+		"database", db, "table", table, "original", original, "shortened", shortened)
 }
 
 // ownedEntries returns the names of the entries in dir that belong to the dump

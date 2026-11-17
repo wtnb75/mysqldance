@@ -120,6 +120,25 @@ func TestParseArgsExcludeTableUsageErrors(t *testing.T) {
 	}
 }
 
+func TestParseArgsCaseSafeNames(t *testing.T) {
+	for _, target := range []string{"mysql", "sqlite", "postgres"} {
+		got, err := parseArgs([]string{"--target", target, "--case-safe-names", "-o", "out", "db1"}, noEnv)
+		if err != nil {
+			t.Fatalf("--target %s: parseArgs: %v", target, err)
+		}
+		if !got.CaseSafeNames {
+			t.Errorf("--target %s: CaseSafeNames is off", target)
+		}
+	}
+	got, err := parseArgs([]string{"-o", "out", "db1"}, noEnv)
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	if got.CaseSafeNames {
+		t.Error("CaseSafeNames is on by default")
+	}
+}
+
 func TestParseArgsPGSchema(t *testing.T) {
 	got, err := parseArgs([]string{"--target", "postgres", "--pg-schema", "pg_a=app", "--pg-schema", "pg_b=bee", "-o", "out", "pg_a", "pg_b", "c"}, noEnv)
 	if err != nil {

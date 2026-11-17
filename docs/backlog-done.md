@@ -959,6 +959,18 @@
   - [x] ファイル名の辞書順が、DB ごとの「スキーマ → データ」の順を壊さない（`cat dump/<db>.*.sql` で復元できる）ことをテストで確かめる
   - [x] README の「255-byte limit」の記述と、ファイル名の節を更新する
 
+## B-102 [done|P3] 大文字小文字だけが違う名前を、オプトインで衝突しないファイル名にする
+- 概要: `Users` と `users` のように、小文字にすると同じになる名前があると全ターゲットで実行が失敗する（大文字小文字を区別しないファイルシステムでの上書きを避けるため）。`--case-safe-names` を足し、ファイル名の ASCII 大文字を `%XX` にエスケープできるようにする。既定は変えない（既存の出力のファイル名を変えない）。
+- 仕様:
+  - 前提: エスケープは `internal/naming` の `EscapeName` の隣に、ASCII 大文字だけを `%XX`（大文字の 16 進）にする関数を足し、`Plan` に設定を持たせる。`%` が既に `%XX` にエスケープされていること（曖昧にならないこと）を、着手時に `EscapeName` で確かめる。
+  - 前提: 付けない実行の古いファイル削除（`Plan.IsOwned`）は、`--case-safe-names` の有無のどちらの形の名前も「この実行の持ち物」と見なすので、切り替えても古いファイルが残らない。
+- 結果: `internal/naming` に `EscapeNameCaseSafe`（ASCII 大文字も `%XX` にする）と `NewPlanCaseSafe` を足し、`dump.Options.CaseSafeNames` と `--case-safe-names` で有効にする。付けないときのファイル名は変わらない。`Plan.IsOwned` は、通常の形・大文字をエスケープした形・それぞれの短縮形のすべてを持ち物と見なすので、付ける・外すを切り替えても古いファイルが残らない（別の DB の名前とは重ならないことを `owned_test.go` で確かめた）。統合テストは `TestOddNamesAndCaseCollision` の「case-safe names」（MySQL 8.0 / 8.4。衝突する 2 表の出力、付けない実行の失敗でディレクトリが変わらないこと、衝突が消えた後の切り替えで古い形が消えること）。単体テストは `internal/naming/casesafe_test.go`、`owned_test.go`。README のフラグの表と「File name escaping」を更新した。
+- 受け入れ条件:
+  - [x] `--case-safe-names` を付けると、ファイル名の ASCII 大文字が `%XX`（16 進は大文字）にエスケープされ、`Users` と `users` が別のファイルになる。付けないときの出力は 1 バイトも変わらない
+  - [x] 付けたときも、ファイル名の辞書順が DB ごとの「スキーマ → データ」の順を壊さない。ファイル名が 255 バイトを超える扱いは B-101 に従う
+  - [x] `--case-safe-names` を付けたときに古い出力のファイルが残らず、付けない実行との間で切り替えても削除されるべきファイルが削除される（既存の古いファイル削除の動作に合う）ことをテストで確かめる
+  - [x] README のフラグの表と、ファイル名の節（大文字小文字の衝突の項）を更新する
+
 ## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
 - 概要: `task test:integration:mysql57` で、`internal/source` の `TestTriggers` と `internal/dump` の `TestTriggersRoundTrip` が失敗する（B-095 の作業中に、`origin/main`（117d4c7）でも同じ失敗を確認した既存の失敗）。5.7 の `SHOW CREATE TRIGGER` は、書いたとおりの名前を返し、`CREATE DEFINER=`root`@`%` TRIGGER z_first ...` のように名前が逆引用符で囲まれない。そのため、作成順を確かめる判定（`` CREATE TRIGGER `z_first` `` を探す）に合わない。テストが 5.7 の形を想定していないのか、5.7 でのトリガーの出力が実際に正しくないのかを確かめて直す。
 - 前提: `task test:integration:mysql57` で再現する。MySQL 5.6 は同じイベントに複数のトリガーを作れないので、この 2 つのテストは 5.6 では skip する（B-095）。
