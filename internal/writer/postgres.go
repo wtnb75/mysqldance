@@ -52,7 +52,8 @@ func (p *Postgres) NeedsDefs() bool { return true }
 
 // pgMaxIdent is PostgreSQL's identifier limit in bytes. A longer name is cut
 // silently by the server, which could make two names one, so it is refused
-// (pgIdent) or, for an index or foreign key name, shortened by us (pgShortName).
+// (pgIdent: database and column names) or, for a table, index or foreign key
+// name, shortened by us (pgShortName).
 const pgMaxIdent = 63
 
 const pgSettings = "SET client_encoding = 'UTF8';\n" +
@@ -99,7 +100,9 @@ func pgIdent(what, name string) error {
 // followed by its indexes. The primary key and the unique and ordinary indexes
 // are named table__index (shortened by pgShortName if over the limit), which is
 // unique in the schema (PostgreSQL keeps indexes and tables in one namespace)
-// or an error.
+// or an error. A table name over the limit is shortened too; taken is keyed by
+// these PostgreSQL names, while the index names are built from the MySQL name
+// of the table.
 func (p *Postgres) WriteSchema(w io.Writer, s Schema) error {
 	if err := pgIdent("database", s.DB); err != nil {
 		return err
@@ -115,12 +118,19 @@ func (p *Postgres) WriteSchema(w io.Writer, s Schema) error {
 	// about a file that was not produced.
 	var warnings warnList
 
+	// taken holds the PostgreSQL names. A table name over the limit is shortened
+	// here (and everywhere the table is named, through pgShortName); a failed run
+	// prints no warnings, so an error names the table as MySQL has it.
 	taken := make(map[string]string, len(s.Tables))
 	for _, t := range s.Tables {
-		if err := pgIdent("table", t.Name); err != nil {
-			return err
+		name, myTable := pgShortName(t.Name), sqlvalue.QuoteIdent(t.Name)
+		if prev, dup := taken[name]; dup {
+			return fmt.Errorf("the PostgreSQL name %s of table %s is already used by %s", sqlvalue.QuoteIdent(name), myTable, prev)
 		}
-		taken[t.Name] = "table " + sqlvalue.QuoteIdent(t.Name)
+		if name != t.Name {
+			warnings.add(t.Name, "table %s is named %s in PostgreSQL (over %d bytes)", myTable, sqlvalue.QuoteIdent(name), pgMaxIdent)
+		}
+		taken[name] = "table " + myTable
 	}
 	for _, t := range s.Tables {
 		def, ok := s.Defs[t.Name]
@@ -142,7 +152,7 @@ func (p *Postgres) WriteSchema(w io.Writer, s Schema) error {
 
 func writePostgresTable(out *strings.Builder, t source.TableInfo, def source.TableDef, taken map[string]string,
 	warnf func(table, format string, a ...any)) error {
-	table := sqlvalue.QuotePGIdent(t.Name)
+	table := sqlvalue.QuotePGIdent(pgShortName(t.Name))
 	myTable := sqlvalue.QuoteIdent(t.Name)
 	// warn prefixes the table; the name is an argument, never part of the format.
 	warn := func(format string, a ...any) { warnf(t.Name, "table %s: "+format, append([]any{myTable}, a...)...) }
@@ -195,8 +205,9 @@ func writePostgresTable(out *strings.Builder, t source.TableInfo, def source.Tab
 			warn("index %s covers a column prefix; the whole column is indexed", myName)
 		}
 		// An index name is built from two MySQL names, so MySQL's own limits do not
-		// keep it within PostgreSQL's. Only this name is shortened; the table and
-		// column names are the user's and fail the run (pgIdent).
+		// keep it within PostgreSQL's. It is built from the table's MySQL name, not
+		// from the shortened one, so it does not change when the table name is
+		// shortened; column names are the user's and fail the run (pgIdent).
 		full := t.Name + "__" + ix.Name
 		// who describes this index in an error. A failed run prints no warnings, so the
 		// error has to carry the name that was shortened.
@@ -453,7 +464,11 @@ func (p *Postgres) NewRowWriter(db string, t source.TableInfo, open OpenFile) (R
 		return out, nil
 	}
 	header := pgSettings + pgSearchPath(db) + "BEGIN;\n"
-	return newStreamWriter(t, open, header, "COMMIT;\n", sqlvalue.QuotePGIdent, p.data, literal), nil
+	// The INSERT names the table as WriteSchema created it.
+	// Errors keep naming the table as MySQL has it (wrap), so t itself is not changed.
+	named := t
+	named.Name = pgShortName(t.Name)
+	return newStreamWriter(named, open, header, "COMMIT;\n", sqlvalue.QuotePGIdent, p.data, literal), nil
 }
 
 // pgConstraintDB is one database of the run, with its tables by name.
@@ -505,13 +520,15 @@ func (p *Postgres) WriteConstraints(w io.Writer, s Schema) error {
 	for _, d := range dbs {
 		byDB[d.DB] = d
 	}
-	// qualified names a table of another database, which the search path of this
-	// file does not reach.
+	// qualified names a table (as WriteSchema created it, so shortened if the name
+	// is over the limit) of another database, which the search path of this file
+	// does not reach.
 	qualified := func(db, table string) string {
+		table = sqlvalue.QuotePGIdent(pgShortName(table))
 		if db == s.DB {
-			return sqlvalue.QuotePGIdent(table)
+			return table
 		}
-		return sqlvalue.QuotePGIdent(db) + "." + sqlvalue.QuotePGIdent(table)
+		return sqlvalue.QuotePGIdent(db) + "." + table
 	}
 
 	for _, d := range dbs {

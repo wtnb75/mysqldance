@@ -353,7 +353,6 @@ func TestPostgresSchemaErrors(t *testing.T) {
 	cases := map[string]func(*Schema){
 		"no definition":             func(s *Schema) { delete(s.Defs, "parent") },
 		"unknown type":              func(s *Schema) { setType(s, "parent", "code", "uuid") },
-		"table name over 63 bytes":  func(s *Schema) { s.Tables[1].Name = long; s.Defs[long] = s.Defs["parent"] },
 		"schema name over 63 bytes": func(s *Schema) { s.DB = long },
 		"schema name starts pg_":    func(s *Schema) { s.DB = "pg_x" },
 		"column name over 63 bytes": func(s *Schema) {
@@ -462,14 +461,7 @@ func TestPostgresShortensLongIndexName(t *testing.T) {
 func TestPostgresShortensLongPrimaryKeyName(t *testing.T) {
 	s := pgSchema()
 	table := strings.Repeat("t", 60) // within the limit, but table__PRIMARY is not
-	s.Tables[1].Name = table
-	s.Defs[table] = s.Defs["parent"]
-	delete(s.Defs, "parent")
-	for i, fk := range s.Defs["child"].ForeignKeys {
-		if fk.RefTable == "parent" {
-			s.Defs["child"].ForeignKeys[i].RefTable = table
-		}
-	}
+	renameTable(&s, "parent", table)
 	full := table + "__PRIMARY"
 	short := pgShortName(full)
 	got, warns := writeSchemaText(t, s)
@@ -478,6 +470,151 @@ func TestPostgresShortensLongPrimaryKeyName(t *testing.T) {
 	}
 	if want := "index `PRIMARY` is named `" + short + "` in PostgreSQL, not `" + full + "`"; !containsAny(warns, want) {
 		t.Errorf("no warning contains %q; got %q", want, warns)
+	}
+}
+
+// renameTable renames a table of pgSchema, and the foreign keys that point at it.
+func renameTable(s *Schema, from, to string) {
+	for i := range s.Tables {
+		if s.Tables[i].Name == from {
+			s.Tables[i].Name = to
+		}
+	}
+	s.Defs[to] = s.Defs[from]
+	delete(s.Defs, from)
+	for _, d := range s.Defs {
+		for i := range d.ForeignKeys {
+			if d.ForeignKeys[i].RefSchema == s.DB && d.ForeignKeys[i].RefTable == from {
+				d.ForeignKeys[i].RefTable = to
+			}
+		}
+	}
+}
+
+// A table name over the limit is shortened in the SQL: CREATE TABLE, the
+// foreign key's target and the INSERT use the same name, while the names of its
+// indexes are built from the name MySQL has, and then shortened by the same rule.
+func TestPostgresShortensLongTableName(t *testing.T) {
+	long := strings.Repeat("t", 64)
+	short := pgShortName(long)
+	if short == long || len(short) > pgMaxIdent {
+		t.Fatalf("short = %q", short)
+	}
+	s := pgSchema()
+	renameTable(&s, "parent", long)
+	got, warns := writeSchemaText(t, s)
+	for _, want := range []string{
+		"CREATE TABLE " + sqlvalue.QuotePGIdent(short) + " (\n",
+		"CONSTRAINT " + sqlvalue.QuotePGIdent(pgShortName(long+"__PRIMARY")) + " PRIMARY KEY",
+		"CREATE UNIQUE INDEX " + sqlvalue.QuotePGIdent(pgShortName(long+"__uk_code")) + " ON " + sqlvalue.QuotePGIdent(short) + ` ("code");`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, long) {
+		t.Errorf("the full name is still in the output:\n%s", got)
+	}
+	if want := "table `" + long + "` is named `" + short + "` in PostgreSQL"; !containsAny(warns, want) {
+		t.Errorf("no warning contains %q; got %q", want, warns)
+	}
+
+	// The foreign key of the other table points at the shortened name.
+	cons, _, err := writeConstraintsText(t, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "REFERENCES " + sqlvalue.QuotePGIdent(short) + " ("; !strings.Contains(cons, want) || strings.Contains(cons, long) {
+		t.Errorf("the foreign key does not point at %s:\n%s", short, cons)
+	}
+
+	// So does the table that has the key, and its data file.
+	renameTable(&s, "child", long+"c")
+	cons, _, err = writeConstraintsText(t, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "ALTER TABLE " + sqlvalue.QuotePGIdent(pgShortName(long+"c")) + " ADD CONSTRAINT"; !strings.Contains(cons, want) {
+		t.Errorf("no %q in:\n%s", want, cons)
+	}
+	info, _ := boolSchema()
+	info.Name = long
+	rows := [][]sqlvalue.Value{pgRow("1", "1", "\x01", "a", "<null>")}
+	data := renderParts(t, dataParts(NewPostgres(datafile.Options{}), "d", info, rows))
+	if want := "INSERT INTO " + sqlvalue.QuotePGIdent(short) + " VALUES"; len(data) != 1 || !strings.Contains(data[0], want) || strings.Contains(data[0], long) {
+		t.Errorf("the data file does not use %s:\n%q", short, data)
+	}
+}
+
+// A table name within the limit is kept and says nothing.
+func TestPostgresKeepsTableNameWithinLimit(t *testing.T) {
+	name := strings.Repeat("t", pgMaxIdent)
+	s := pgSchema()
+	renameTable(&s, "parent", name)
+	got, warns := writeSchemaText(t, s)
+	if !strings.Contains(got, "CREATE TABLE "+sqlvalue.QuotePGIdent(name)+" (") {
+		t.Errorf("the name was changed:\n%s", got)
+	}
+	if containsAny(warns, "table `"+name+"` is named") {
+		t.Errorf("a name within the limit was reported: %q", warns)
+	}
+}
+
+// Two long names that start alike stay apart; the warnings come in the order of
+// the tables, and the same input gives the same bytes.
+func TestPostgresLongTableNamesThatStartAlike(t *testing.T) {
+	a, b := strings.Repeat("t", 70)+"1", strings.Repeat("t", 70)+"2"
+	build := func() Schema {
+		s := pgSchema()
+		renameTable(&s, "parent", a)
+		renameTable(&s, "child", b)
+		return s
+	}
+	got, warns := writeSchemaText(t, build())
+	for _, n := range []string{a, b} {
+		if !strings.Contains(got, "CREATE TABLE "+sqlvalue.QuotePGIdent(pgShortName(n))+" (") {
+			t.Errorf("no table for %s in:\n%s", pgShortName(n), got)
+		}
+	}
+	var order []string
+	for _, w := range warns {
+		if strings.HasPrefix(w, "table `t") && strings.Contains(w, "` is named `") && !strings.Contains(w, ": index ") {
+			order = append(order, w)
+		}
+	}
+	// Tables are in the order of Schema.Tables (child, parent in pgSchema).
+	if len(order) != 2 || !strings.Contains(order[0], "`"+b+"`") || !strings.Contains(order[1], "`"+a+"`") {
+		t.Errorf("warnings are not in table order: %q", order)
+	}
+	again, _ := writeSchemaText(t, build())
+	if again != got {
+		t.Error("two renderings of the same schema differ")
+	}
+}
+
+// A shortened table name that is another table's name is an error, and the error
+// names both tables as MySQL has them (a failed run prints no warnings).
+func TestPostgresShortenedTableNameCollisionIsAnError(t *testing.T) {
+	long := strings.Repeat("t", 64)
+	for name, order := range map[string]bool{"long first": true, "short first": false} {
+		t.Run(name, func(t *testing.T) {
+			s := pgSchema()
+			renameTable(&s, "parent", long)
+			renameTable(&s, "child", pgShortName(long))
+			if order {
+				s.Tables[0], s.Tables[1] = s.Tables[1], s.Tables[0]
+			}
+			var b bytes.Buffer
+			err := NewPostgres(datafile.Options{}).WriteSchema(&b, s)
+			if err == nil {
+				t.Fatalf("WriteSchema succeeded:\n%s", b.String())
+			}
+			for _, want := range []string{long, pgShortName(long)} {
+				if !strings.Contains(err.Error(), "`"+want+"`") {
+					t.Errorf("the error does not name %q: %v", want, err)
+				}
+			}
+		})
 	}
 }
 

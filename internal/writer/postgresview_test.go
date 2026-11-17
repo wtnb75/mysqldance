@@ -10,6 +10,22 @@ import (
 	"mysqldance/internal/source"
 )
 
+// A view that reads a table whose name is shortened is not output: its text
+// names the table as MySQL has it, which PostgreSQL does not have.
+func TestPostgresViewOfTableWithLongNameIsNotOutput(t *testing.T) {
+	long := strings.Repeat("t", 64)
+	s := pgSchema()
+	renameTable(&s, "parent", long)
+	s.Views = []schemafile.View{{Name: "v_long", Create: viewHead + "select `" + long + "`.`id` AS `id` from `" + long + "`"}}
+	got, warns := writeSchemaText(t, s)
+	if strings.Contains(got, "VIEW") {
+		t.Errorf("the view is in the output:\n%s", got)
+	}
+	if !containsAny(warns, "view `v_long` is not output: the name `"+long+"` is 64 bytes, over PostgreSQL's 63-byte limit") {
+		t.Errorf("no warning about the view: %q", warns)
+	}
+}
+
 func TestPostgresViews(t *testing.T) {
 	views := []schemafile.View{
 		{Name: "b_over", Create: viewHead + "select `v_a`.`a` AS `a` from `v_a`"},
