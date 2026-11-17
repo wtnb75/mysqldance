@@ -1091,6 +1091,61 @@ func TestOddNamesAndCaseCollision(t *testing.T) {
 		}
 	})
 
+	t.Run("case-safe names", func(t *testing.T) {
+		var lctn int
+		if err := e.admin.QueryRowContext(context.Background(), "SELECT @@lower_case_table_names").Scan(&lctn); err != nil {
+			t.Fatal(err)
+		}
+		if lctn != 0 {
+			t.Skipf("lower_case_table_names = %d", lctn)
+		}
+		db := uniqueName(t)
+		e.createDB(t, db)
+		e.exec(t, "CREATE TABLE `Users` (id INT)", "CREATE TABLE `users` (id INT)",
+			"INSERT INTO `Users` VALUES (1)", "INSERT INTO `users` VALUES (2)")
+		dir := t.TempDir()
+		run := func(caseSafe bool) error {
+			return Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, CaseSafeNames: caseSafe})
+		}
+		if err := run(true); err != nil {
+			t.Fatalf("Run with CaseSafeNames: %v", err)
+		}
+		plan := naming.NewPlanCaseSafe(db, []string{"Users", "users"}, true)
+		got := readFiles(t, dir)
+		for _, n := range []string{plan.SchemaFile(), plan.DataFile("Users"), plan.DataFile("users")} {
+			if _, ok := got[n]; !ok {
+				t.Errorf("%s is missing; files = %q", n, sqlFiles(t, dir))
+			}
+		}
+		if len(got) != 3 {
+			t.Errorf("files = %q, want 3", sqlFiles(t, dir))
+		}
+		// Switching the option back fails on the collision and leaves the
+		// directory as it was; once the clash is gone, the files of the other
+		// form are removed as stale.
+		if err := run(false); err == nil {
+			t.Fatal("Run without CaseSafeNames succeeded on names that differ only in case")
+		}
+		if again := readFiles(t, dir); !reflect.DeepEqual(again, got) {
+			t.Errorf("output directory changed on error: %q, was %q", again, got)
+		}
+		e.exec(t, "DROP TABLE `Users`")
+		if err := run(false); err != nil {
+			t.Fatalf("Run without CaseSafeNames: %v", err)
+		}
+		plain := naming.NewPlan(db, []string{"users"})
+		want := map[string]bool{plain.SchemaFile(): true, plain.DataFile("users"): true}
+		for n := range readFiles(t, dir) {
+			if !want[n] {
+				t.Errorf("stale file of the other form left behind: %s", n)
+			}
+			delete(want, n)
+		}
+		for n := range want {
+			t.Errorf("%s is missing", n)
+		}
+	})
+
 	t.Run("file name too long is shortened", func(t *testing.T) {
 		db := uniqueName(t)
 		e.createDB(t, db)
