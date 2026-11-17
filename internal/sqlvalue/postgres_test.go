@@ -17,7 +17,16 @@ func TestPostgresLiteral(t *testing.T) {
 		{"integer", PGColumn{Kind: PGNumber}, "-42", false, "-42"},
 		{"unsigned bigint", PGColumn{Kind: PGNumber}, "18446744073709551615", false, "18446744073709551615"},
 		{"decimal", PGColumn{Kind: PGNumber}, "-0.05", false, "-0.05"},
-		{"float exponent", PGColumn{Kind: PGNumber}, "3.40282e+38", false, "3.40282e+38"},
+		{"float exponent", PGColumn{Kind: PGFloat}, "3.40282e+38", false, "3.40282e+38"},
+		// A bare -0 is the integer 0 negated, and a numeric -0e0 has no sign
+		// either; only a quoted literal reaches float4in / float8in (B-092).
+		{"float", PGColumn{Kind: PGFloat}, "3.4028235e+38", false, "3.4028235e+38"},
+		{"float negative", PGColumn{Kind: PGFloat}, "-0.1", false, "-0.1"},
+		{"float zero", PGColumn{Kind: PGFloat}, "0", false, "0"},
+		{"float negative zero", PGColumn{Kind: PGFloat}, "-0", false, "'-0'"},
+		{"float negative zero decimals", PGColumn{Kind: PGFloat}, "-0.0", false, "'-0'"},
+		{"float negative zero exponent", PGColumn{Kind: PGFloat}, "-0e0", false, "'-0'"},
+		{"float null", PGColumn{Kind: PGFloat}, "", true, "NULL"},
 		{"bool true", PGColumn{Kind: PGBool}, "1", false, "true"},
 		{"bool false", PGColumn{Kind: PGBool}, "0", false, "false"},
 		{"bit padded", PGColumn{Kind: PGBit, Bits: 8}, "\x15", false, "B'00010101'"},

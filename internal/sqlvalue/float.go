@@ -16,7 +16,9 @@ func IsFloat(typeName string) bool {
 }
 
 // isNegativeZero reports whether raw, the text of a FLOAT or DOUBLE, is a
-// negative zero in any spelling ("-0", "-0.0", "-0e0").
+// negative zero in any spelling ("-0", "-0.0", "-0e0"). The text is always the
+// server's print of an existing double, so an underflowing spelling such as
+// "-1e-400", which ParseFloat also reads as zero, never arrives (R-203).
 func isNegativeZero(raw []byte) bool {
 	if len(raw) == 0 || raw[0] != '-' {
 		return false
