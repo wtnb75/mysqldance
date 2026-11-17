@@ -1,16 +1,5 @@
 # Backlog
 
-## B-100 [ready|P3] PostgreSQL 向けの出力で、`pg_` で始まる DB 名のスキーマ名を指定できるようにする
-- 概要: MySQL の DB 名 1 つを同名の PostgreSQL スキーマにするため、`pg_` で始まる DB 名は予約名なのでエラーになり、救う方法がない。`--pg-schema DB=SCHEMA` を足し、その DB だけスキーマ名を変えられるようにする（繰り返し指定できる）。自動で名前を変える方式は、衝突と決定性の判断が増えるので採らない。
-- 仕様:
-  - 前提: フラグは `cmd/mysqldance/main.go` で `DB=SCHEMA` を繰り返し受け、`dump.Options` から PostgreSQL ライタに渡す。`SCHEMA` は PostgreSQL の識別子として 63 バイト以内であること（超えたら使い方のエラー）。
-  - 前提: 今の `pg_` の判定の場所（`internal/writer/postgres.go`）で、指定があればそのスキーマ名を使い、無ければ今のエラーに `--pg-schema` の案内を足す。
-- 受け入れ条件:
-  - [ ] `--pg-schema DB=SCHEMA` で、DB `DB` のスキーマ名が `SCHEMA` になる（`CREATE SCHEMA`、`search_path`、外部キー、ファイルの中身のすべて）。出力のファイル名は DB 名のまま変えない
-  - [ ] `--target postgres` 以外での指定、指定していない DB の指定、スキーマ名の重複、`pg_` で始まる指定先はエラーにする。指定が無い `pg_` の DB は、エラーのメッセージで `--pg-schema` を案内する
-  - [ ] 実機の PostgreSQL で、`pg_` で始まる DB を指定したスキーマ名で復元できる統合テストがある
-  - [ ] README のフラグの表と PostgreSQL の節を更新する
-
 ## B-102 [ready|P3] 大文字小文字だけが違う名前を、オプトインで衝突しないファイル名にする
 - 概要: `Users` と `users` のように、小文字にすると同じになる名前があると全ターゲットで実行が失敗する（大文字小文字を区別しないファイルシステムでの上書きを避けるため）。`--case-safe-names` を足し、ファイル名の ASCII 大文字を `%XX` にエスケープできるようにする。既定は変えない（既存の出力のファイル名を変えない）。
 - 仕様:
@@ -534,6 +523,7 @@
 ## B-097 [done|P2] PostgreSQL 向けの出力で、長すぎる外部キー制約名を決定的に短縮する
 ## B-098 [done|P3] PostgreSQL 向けの出力で、長すぎるテーブル名を決定的に短縮する
 ## B-099 [done|P3] PostgreSQL 向けの出力で、長すぎる列名を決定的に短縮する
+## B-100 [done|P3] PostgreSQL 向けの出力で、`pg_` で始まる DB 名のスキーマ名を指定できるようにする
 ## B-101 [done|P2] 255 バイトを超える出力ファイル名を決定的に短縮する
 ## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする

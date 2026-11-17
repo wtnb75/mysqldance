@@ -120,6 +120,48 @@ func TestParseArgsExcludeTableUsageErrors(t *testing.T) {
 	}
 }
 
+func TestParseArgsPGSchema(t *testing.T) {
+	got, err := parseArgs([]string{"--target", "postgres", "--pg-schema", "pg_a=app", "--pg-schema", "pg_b=bee", "-o", "out", "pg_a", "pg_b", "c"}, noEnv)
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	var b strings.Builder
+	if err := got.Writer.WriteSchema(&b, writer.Schema{DB: "pg_a"}); err != nil {
+		t.Fatalf("WriteSchema: %v", err)
+	}
+	if !strings.Contains(b.String(), `CREATE SCHEMA IF NOT EXISTS "app";`) {
+		t.Errorf("the schema name was not applied:\n%s", b.String())
+	}
+}
+
+func TestParseArgsPGSchemaUsageErrors(t *testing.T) {
+	long := strings.Repeat("x", 64)
+	for name, args := range map[string][]string{
+		"not postgres":    {"--pg-schema", "pg_a=a", "-o", "out", "pg_a"},
+		"sqlite":          {"--target", "sqlite", "--pg-schema", "pg_a=a", "-o", "out", "pg_a"},
+		"no equal sign":   {"--target", "postgres", "--pg-schema", "pg_a", "-o", "out", "pg_a"},
+		"db not dumped":   {"--target", "postgres", "--pg-schema", "x=a", "-o", "out", "pg_a"},
+		"given twice":     {"--target", "postgres", "--pg-schema", "pg_a=a", "--pg-schema", "pg_a=b", "-o", "out", "pg_a"},
+		"same schema":     {"--target", "postgres", "--pg-schema", "pg_a=s", "--pg-schema", "pg_b=s", "-o", "out", "pg_a", "pg_b"},
+		"pg_ schema":      {"--target", "postgres", "--pg-schema", "pg_a=pg_b", "-o", "out", "pg_a"},
+		"over 63 bytes":   {"--target", "postgres", "--pg-schema", "pg_a=" + long, "-o", "out", "pg_a"},
+		"clash with a db": {"--target", "postgres", "--pg-schema", "pg_a=c", "-o", "out", "pg_a", "c"},
+		"empty schema":    {"--target", "postgres", "--pg-schema", "pg_a=", "-o", "out", "pg_a"},
+		"empty value":     {"--target", "postgres", "--pg-schema", "", "-o", "out", "pg_a"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			_, err := parseArgsTo(args, noEnv, &stderr)
+			if !errors.Is(err, errUsage) {
+				t.Errorf("err = %v, want errUsage", err)
+			}
+			if !strings.Contains(stderr.String(), "--pg-schema") {
+				t.Errorf("stderr does not name the flag:\n%s", stderr.String())
+			}
+		})
+	}
+}
+
 func TestParseArgsLockTimeout(t *testing.T) {
 	for _, tt := range []struct {
 		args []string
