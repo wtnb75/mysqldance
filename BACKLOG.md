@@ -1,17 +1,5 @@
 # Backlog
 
-## B-090 [ready|P3] 警告に `table` 属性を付ける
-- 依存: B-052
-- 概要: writer の警告は文字列（`Schema.Warn func(msg string)`）で渡り、テーブル名は本文に埋まっている。`--log-format json` でテーブルを絞り込めない。警告を構造（メッセージ、テーブル名）で渡し、`dump` が `table` 属性を付ける。メッセージ本文は変えない。
-- 仕様:
-  - 前提: `writer.Schema.Warn`（`internal/writer/writer.go:48`）の型を、文字列から `writer.Warning{Table, Message string}` を受ける関数に変える。テーブルに紐づかない警告は `Table` を空にし、`dump` は空のときは `table` 属性を付けない。`database` 属性は今のまま `dump` が付ける（`dump.go:342`）。
-  - 前提: `source.Tables` の警告（`dump.go:281` と `288` の経路）も、テーブル名を持つ形で返し、`dump` が `table` 属性を付ける。
-  - 前提: テストは `Warn` を直接代入している（`internal/writer/*_test.go`）ので、型の変更に合わせて直す。
-- 受け入れ条件:
-  - [ ] writer の警告のうちテーブルに紐づくものに `table` 属性が付く
-  - [ ] メッセージ本文と警告の順序（決定性）は変わらない
-  - [ ] `source.Tables` の警告にも `table` 属性が付く
-
 ## B-091 [ready|P3] 完了時の要約を `Info` で出す
 - 依存: B-053
 - 概要: 全 DB の書き出しとファイルの入れ替えが終わった時点で、DB 数・テーブル数・行数・ファイル数・所要時間を 1 行の `Info` で出す。件数は B-053 の進捗の集計を使う。
@@ -580,6 +568,7 @@
 ## B-087 [done|P2] 最終エラーを `slog.Error` で出す
 ## B-088 [done|P2] 接続・スナップショット・ロックの方式をログに出す
 ## B-089 [done|P3] 削除したファイルをログに出す
+## B-090 [done|P3] 警告に `table` 属性を付ける
 ## B-094 [done|P2] `TestLockTimeout/jobs=2` が CI で間欠的に失敗するのを直す
 ## B-095 [done|P2] MySQL 5.6 に対応する
 ## B-096 [done|P2] PostgreSQL 向けの出力で、長すぎるインデックス名を決定的に短縮する

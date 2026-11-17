@@ -174,7 +174,15 @@ func warningsOf(t *testing.T, s *Snapshot) []string {
 	if err != nil {
 		t.Fatalf("Tables: %v", err)
 	}
-	return warnings
+	// Every warning of Tables concerns a table, and says which one (B-090).
+	msgs := make([]string, len(warnings))
+	for i, w := range warnings {
+		if w.Table == "" || !strings.Contains(w.Message, sqlvalue.QuoteIdent(w.Table)) {
+			t.Errorf("warning %q has Table %q, want the table it is about", w.Message, w.Table)
+		}
+		msgs[i] = w.Message
+	}
+	return msgs
 }
 
 // tableByName returns the TableInfo named name from Tables().

@@ -186,10 +186,16 @@ func chooseKey(keys map[string][]string, cols []columnRow) []string {
 	return nil
 }
 
+// Warning is a message about something found while reading. Table is the table
+// it concerns, or empty when it concerns no one table.
+type Warning struct {
+	Table, Message string
+}
+
 // Tables returns the base tables sorted by name, and the warnings found while
 // reading them: tables not using InnoDB, and tables whose row estimate
 // without a key exceeds Config.LargeTableRows. Warnings follow table name order.
-func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
+func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []Warning, error) {
 	list, err := s.listTables(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -204,7 +210,7 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
 	}
 
 	var out []TableInfo
-	var warnings []string
+	var warnings []Warning
 	for _, r := range list {
 		// A table left out is not read at all: no SHOW CREATE, and no warning
 		// about its engine or size (the lock decision of Open still counts it).
@@ -235,16 +241,16 @@ func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []string, error) {
 					"without a global read lock; run again, or pass --no-lock to read without consistency",
 					sqlvalue.QuoteIdent(ti.Name), ti.Engine)
 			}
-			warnings = append(warnings, fmt.Sprintf(
+			warnings = append(warnings, Warning{Table: ti.Name, Message: fmt.Sprintf(
 				"table %s uses the %s engine; its data is not covered by the consistent snapshot",
-				sqlvalue.QuoteIdent(ti.Name), ti.Engine))
+				sqlvalue.QuoteIdent(ti.Name), ti.Engine)})
 		}
 		// A table with a key is streamed, and needs neither a sort nor scratch files.
 		if len(ti.OrderBy) == 0 && ti.ApproxRows > s.largeTableRows {
-			warnings = append(warnings, fmt.Sprintf(
+			warnings = append(warnings, Warning{Table: ti.Name, Message: fmt.Sprintf(
 				"table %s has about %d rows, far beyond the scale this tool is designed for; "+
 					"its rows are sorted through temporary files because it has no primary key or NOT NULL unique key, which is slow for a table this large",
-				sqlvalue.QuoteIdent(ti.Name), ti.ApproxRows))
+				sqlvalue.QuoteIdent(ti.Name), ti.ApproxRows)})
 		}
 		out = append(out, ti)
 	}

@@ -113,8 +113,7 @@ func (p *Postgres) WriteSchema(w io.Writer, s Schema) error {
 	out.WriteString(pgSearchPath(s.DB))
 	// Reported only once the schema is written, so a failed run says nothing
 	// about a file that was not produced.
-	var warnings []string
-	warn := func(format string, a ...any) { warnings = append(warnings, fmt.Sprintf(format, a...)) }
+	var warnings warnList
 
 	taken := make(map[string]string, len(s.Tables))
 	for _, t := range s.Tables {
@@ -128,12 +127,12 @@ func (p *Postgres) WriteSchema(w io.Writer, s Schema) error {
 		if !ok {
 			return fmt.Errorf("table %s: no table definition was read", sqlvalue.QuoteIdent(t.Name))
 		}
-		if err := writePostgresTable(&out, t, def, taken, warn); err != nil {
+		if err := writePostgresTable(&out, t, def, taken, warnings.add); err != nil {
 			return fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
 		}
 	}
 	env := newPGViewEnv(s.Defs)
-	writeViews(&out, s, pgDialect, &env, taken, warn)
+	writeViews(&out, s, pgDialect, &env, taken, warnings.noTable)
 	if _, err := io.WriteString(w, out.String()); err != nil {
 		return err
 	}
@@ -142,11 +141,11 @@ func (p *Postgres) WriteSchema(w io.Writer, s Schema) error {
 }
 
 func writePostgresTable(out *strings.Builder, t source.TableInfo, def source.TableDef, taken map[string]string,
-	warnf func(format string, a ...any)) error {
+	warnf func(table, format string, a ...any)) error {
 	table := sqlvalue.QuotePGIdent(t.Name)
 	myTable := sqlvalue.QuoteIdent(t.Name)
 	// warn prefixes the table; the name is an argument, never part of the format.
-	warn := func(format string, a ...any) { warnf("table %s: "+format, append([]any{myTable}, a...)...) }
+	warn := func(format string, a ...any) { warnf(t.Name, "table %s: "+format, append([]any{myTable}, a...)...) }
 	cols, err := outputColumns(t, def, warn)
 	if err != nil {
 		return err
@@ -490,7 +489,7 @@ func (p *Postgres) WriteConstraints(w io.Writer, s Schema) error {
 	var out strings.Builder
 	out.WriteString(pgSettings)
 	out.WriteString(pgSearchPath(s.DB))
-	var warnings []string
+	var warnings warnList
 
 	dbs := make([]pgConstraintDB, 0, 1+len(s.Peers))
 	for _, d := range append([]Schema{s}, s.Peers...) {
@@ -537,8 +536,8 @@ func (p *Postgres) WriteConstraints(w io.Writer, s Schema) error {
 			for _, fk := range def.ForeignKeys {
 				skip := func(why string) {
 					if own {
-						warnings = append(warnings, fmt.Sprintf("table %s: foreign key %s %s and is not output",
-							sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(fk.Name), why))
+						warnings.add(t.Name, "table %s: foreign key %s %s and is not output",
+							sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(fk.Name), why)
 					}
 				}
 				refDB, dumped := byDB[fk.RefSchema]
@@ -571,8 +570,8 @@ func (p *Postgres) WriteConstraints(w io.Writer, s Schema) error {
 				name, myTable, myFK := pgShortName(fk.Name), sqlvalue.QuoteIdent(t.Name), sqlvalue.QuoteIdent(fk.Name)
 				who := "foreign key " + myFK
 				if name != fk.Name && own {
-					warnings = append(warnings, fmt.Sprintf("table %s: foreign key %s is named %s in PostgreSQL, not %s (over %d bytes)",
-						myTable, myFK, sqlvalue.QuoteIdent(name), myFK, pgMaxIdent))
+					warnings.add(t.Name, "table %s: foreign key %s is named %s in PostgreSQL, not %s (over %d bytes)",
+						myTable, myFK, sqlvalue.QuoteIdent(name), myFK, pgMaxIdent)
 				}
 				if prev, dup := used[name]; dup && own {
 					return fmt.Errorf("table %s: the PostgreSQL name %s of %s is already used by %s",

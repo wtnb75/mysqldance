@@ -169,7 +169,7 @@ func viewSchema(views []schemafile.View, deps map[string][]string) Schema {
 func writeViewSchema(t *testing.T, s Schema) (string, []string) {
 	t.Helper()
 	var warnings []string
-	s.Warn = func(msg string) { warnings = append(warnings, msg) }
+	s.Warn = func(w Warning) { warnings = append(warnings, w.Message) }
 	var buf bytes.Buffer
 	if err := NewSQLite(datafile.Options{}).WriteSchema(&buf, s); err != nil {
 		t.Fatal(err)

@@ -43,9 +43,9 @@ type Schema struct {
 	// put a foreign key between two databases in the file that runs last.
 	ConstraintsFile string
 	Peers           []Schema
-	// Warn receives a message for each thing the writer could not carry over
+	// Warn receives a Warning for each thing the writer could not carry over
 	// to its target. nil discards them.
-	Warn func(msg string)
+	Warn func(Warning)
 }
 
 // OpenFile opens the next data file of a table. The writer closes every file it
@@ -80,13 +80,29 @@ type Writer interface {
 	NewRowWriter(db string, t source.TableInfo, open OpenFile) (RowWriter, error)
 }
 
-// emit passes each message to warn, if there is one.
-func emit(warn func(string), msgs []string) {
+// Warning is a message about something that was not carried over. Table is the
+// table it concerns, or empty when it concerns no one table (a view, say).
+type Warning = source.Warning
+
+// warnList collects what a writer could not carry over, to be reported once the
+// output is written.
+type warnList []Warning
+
+// add records a warning about table, which is empty for one that has no table.
+func (w *warnList) add(table, format string, a ...any) {
+	*w = append(*w, Warning{Table: table, Message: fmt.Sprintf(format, a...)})
+}
+
+// noTable is add for a warning that concerns no one table.
+func (w *warnList) noTable(format string, a ...any) { w.add("", format, a...) }
+
+// emit passes each warning to warn, if there is one.
+func emit(warn func(Warning), ws []Warning) {
 	if warn == nil {
 		return
 	}
-	for _, m := range msgs {
-		warn(m)
+	for _, w := range ws {
+		warn(w)
 	}
 }
 
