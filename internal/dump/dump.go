@@ -589,6 +589,12 @@ func writeTable(ctx context.Context, opt Options, r rowSource, plan *naming.Plan
 		st.setFinal(idx, filepath.Join(opt.OutDir, names[i]))
 	}
 	res.names = names
+	// After the last failure point, so a table that is not output is not reported.
+	if w, ok := rw.(writer.Warner); ok {
+		for _, warning := range w.Warnings() {
+			logWarning(opt.Log, db, warning)
+		}
+	}
 	// Progress, not a result: the files are staged and the run can still fail
 	// before the commit (R-174).
 	opt.Log.Info("table dumped", "database", db, "table", t.Name,

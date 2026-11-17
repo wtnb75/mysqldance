@@ -27,6 +27,19 @@ func isNegativeZero(raw []byte) bool {
 	return err == nil && d == 0
 }
 
+// IsFloatOrDouble reports whether typeName (database/sql's DatabaseTypeName)
+// is FLOAT or DOUBLE, signed or not.
+func IsFloatOrDouble(typeName string) bool {
+	t := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(typeName)), "UNSIGNED ")
+	return t == "FLOAT" || t == "DOUBLE"
+}
+
+// IsNegativeZero reports whether v is a FLOAT or DOUBLE holding -0, in any
+// spelling. NULL and every other type are not.
+func (v Value) IsNegativeZero() bool {
+	return !v.null && IsFloatOrDouble(v.typeName) && isNegativeZero(v.raw)
+}
+
 // ExactFloat turns the text of a FLOAT read as a DOUBLE (`col * 1e0`, the exact
 // value of the float32) into the shortest notation that parses back to the same
 // float32, so 0.10000000149011612 becomes 0.1. A float32 maximum such as

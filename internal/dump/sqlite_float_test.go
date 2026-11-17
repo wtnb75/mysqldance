@@ -2,6 +2,7 @@ package dump
 
 import (
 	"math"
+	"strings"
 	"testing"
 
 	"mysqldance/internal/datafile"
@@ -15,7 +16,7 @@ import (
 // The one value that cannot come back is -0: a REAL-affinity column stores a
 // whole-number double as an integer, which drops the sign, whatever the
 // literal is (checked with the sqlite3 command: atan2(0.0, a) is 0 for a
-// stored -0.0, and pi for the bare -0.0 expression). The test pins that, so a
+// stored -0.0, and pi for the bare -0.0 expression). The test pins that, and that the dump warns of it, so a
 // change in either direction is noticed.
 func TestSQLiteFloatDoubleRoundTrip(t *testing.T) {
 	e := newEnv(t)
@@ -47,7 +48,14 @@ func TestSQLiteFloatDoubleRoundTrip(t *testing.T) {
 	before := e.floatBits(t)
 
 	dir := t.TempDir()
-	e.dumpSQLite(t, dir, datafile.Options{}, db)
+	log := e.dumpSQLite(t, dir, datafile.Options{}, db)
+	// The -0 that SQLite cannot keep is reported, once per column, without a value.
+	for _, col := range []string{"f", "d"} {
+		want := "column `" + col + "` holds 1 value of -0, which SQLite stores as 0"
+		if !strings.Contains(log, want) {
+			t.Errorf("the log does not say %q:\n%s", want, log)
+		}
+	}
 	lite := restoreSQLite(t, dir)
 	rows, err := lite.QueryContext(t.Context(), "SELECT id, f, d FROM fp ORDER BY id")
 	if err != nil {
