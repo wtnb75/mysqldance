@@ -476,6 +476,78 @@ func TestPostgresLongTableNames(t *testing.T) {
 	}
 }
 
+// MySQL allows 64 characters in a column name; PostgreSQL allows 63 bytes, and a
+// name of 22 Japanese characters is 66. Such a column is restored, with its
+// rows, indexes and foreign key, under a shortened name. The generated column
+// makes the data file list its columns, so the INSERT has to name them too.
+func TestPostgresLongColumnNames(t *testing.T) {
+	e := newEnv(t)
+	pg := newPGEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	pk := strings.Repeat("k", 64)
+	val := strings.Repeat("あ", 22) // 22 characters, 66 bytes
+	ref := strings.Repeat("r", 64)
+	e.exec(t,
+		"CREATE TABLE parent (`"+pk+"` INT NOT NULL, `"+val+"` VARCHAR(10), PRIMARY KEY (`"+pk+"`), UNIQUE KEY uk_val (`"+val+"`))",
+		"CREATE TABLE child (id INT NOT NULL, `"+ref+"` INT NOT NULL, twice INT AS (id * 2) VIRTUAL, PRIMARY KEY (id), KEY ix_ref (`"+ref+"`),"+
+			" CONSTRAINT fk_parent FOREIGN KEY (`"+ref+"`) REFERENCES parent (`"+pk+"`))",
+		"INSERT INTO parent VALUES (1, 'a'), (2, 'b')",
+		"INSERT INTO child (id, `"+ref+"`) VALUES (10, 1), (11, 2)",
+	)
+	dir := t.TempDir()
+	log := e.dumpPostgres(t, dir, datafile.Options{}, db)
+	again := t.TempDir()
+	e.dumpPostgres(t, again, datafile.Options{}, db)
+	if !reflect.DeepEqual(readFiles(t, dir), readFiles(t, again)) {
+		t.Error("two dumps of the same database differ")
+	}
+	for _, name := range []string{pk, val, ref} {
+		if !strings.Contains(log, "column `"+name+"` is named") {
+			t.Errorf("no warning about the shortened column %s:\n%s", name, log)
+		}
+	}
+
+	pg.restore(t, dir)
+	conn := pg.connect(t)
+	hashed := regexp.MustCompile(`^(k+|r+|(あ)+)_[0-9a-f]{8}$`)
+	cols := pgCells(t, conn, db, "SELECT column_name::text FROM information_schema.columns WHERE table_schema = current_schema() AND length(column_name) > 20 ORDER BY column_name")
+	if len(cols) != 3 {
+		t.Fatalf("long columns = %q, want 3", cols)
+	}
+	var names []string
+	for _, c := range cols {
+		c = strings.Trim(c, `"`)
+		names = append(names, c)
+		if len(c) > 63 || !hashed.MatchString(c) {
+			t.Errorf("column name %q is not a shortened name", c)
+		}
+	}
+	var pkCol, refCol, valCol string
+	for _, c := range names {
+		switch {
+		case strings.HasPrefix(c, "k"):
+			pkCol = c
+		case strings.HasPrefix(c, "r"):
+			refCol = c
+		default:
+			valCol = c
+		}
+	}
+	// The rows came along, the foreign key still holds, and the indexes exist.
+	rows := pgCells(t, conn, db, "SELECT c.id::text, p."+pgx.Identifier{pkCol}.Sanitize()+"::text, p."+pgx.Identifier{valCol}.Sanitize()+" FROM child c JOIN parent p ON p."+pgx.Identifier{pkCol}.Sanitize()+" = c."+pgx.Identifier{refCol}.Sanitize()+" ORDER BY c.id")
+	if !reflect.DeepEqual(rows, []string{`"10","1","a"`, `"11","2","b"`}) {
+		t.Errorf("rows = %q", rows)
+	}
+	if _, err := conn.Exec(context.Background(), "INSERT INTO child (id, "+pgx.Identifier{refCol}.Sanitize()+") VALUES (12, 999)"); err == nil {
+		t.Error("PostgreSQL accepted a row that breaks the foreign key")
+	}
+	idx := pgCells(t, conn, db, "SELECT count(*)::text FROM pg_indexes WHERE schemaname = current_schema()")
+	if !reflect.DeepEqual(idx, []string{`"4"`}) { // parent pk and uk_val, child pk and ix_ref
+		t.Errorf("indexes = %q, want 4", idx)
+	}
+}
+
 // MySQL allows 64 characters in a table name and in an index name; PostgreSQL
 // allows 63 bytes in table__index. Such an index is restored under a shortened
 // name, and the same name every run.
