@@ -41,11 +41,73 @@ import (
 // carried over, by design and without a warning (README; review ledger R-058).
 type Postgres struct {
 	data datafile.Options
+	// schemas maps a MySQL database name to the schema it becomes, for the
+	// databases named by --pg-schema; any other database keeps its own name.
+	schemas map[string]string
 }
 
 // NewPostgres returns a PostgreSQL writer. opt controls the INSERT statements
 // and the splitting of large tables.
 func NewPostgres(opt datafile.Options) *Postgres { return &Postgres{data: opt} }
+
+// WithSchemaNames sets the schema names given by --pg-schema (see
+// ParsePGSchemas) and returns p.
+func (p *Postgres) WithSchemaNames(m map[string]string) *Postgres {
+	p.schemas = m
+	return p
+}
+
+// schemaOf returns the name of the PostgreSQL schema the database db becomes.
+func (p *Postgres) schemaOf(db string) string {
+	if s, ok := p.schemas[db]; ok {
+		return s
+	}
+	return db
+}
+
+// ParsePGSchemas parses the values of --pg-schema (DB=SCHEMA) for the databases
+// dbs that are dumped. A DB must be dumped and given once, a SCHEMA must be a
+// name PostgreSQL can hold and not start with pg_, and no two databases may end
+// up with the same schema name. It returns nil when there are no specs.
+func ParsePGSchemas(specs, dbs []string) (map[string]string, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	m := make(map[string]string, len(specs))
+	for _, spec := range specs {
+		db, schema, ok := strings.Cut(spec, "=")
+		_, given := m[db]
+		switch {
+		case !ok || db == "" || schema == "":
+			return nil, fmt.Errorf("%q is not DB=SCHEMA", spec)
+		case !slices.Contains(dbs, db):
+			return nil, fmt.Errorf("database %s is not one of the databases to dump", sqlvalue.QuoteIdent(db))
+		case given:
+			return nil, fmt.Errorf("database %s is given more than once", sqlvalue.QuoteIdent(db))
+		case strings.HasPrefix(schema, "pg_") || schema == "information_schema":
+			return nil, fmt.Errorf("schema %s cannot be used: PostgreSQL reserves it (names starting with pg_, and information_schema)", sqlvalue.QuoteIdent(schema))
+		}
+		if err := pgIdent("schema", schema); err != nil {
+			return nil, err
+		}
+		m[db] = schema
+	}
+	// Each database ends up under one schema name, so two must not share one.
+	owner := make(map[string]string, len(dbs))
+	for _, db := range dbs {
+		name := db
+		if s, ok := m[db]; ok {
+			name = s
+		}
+		// A database named twice is not a clash of this flag.
+		if prev, dup := owner[name]; dup && prev != db {
+			return nil, fmt.Errorf("databases %s and %s would both become schema %s",
+				sqlvalue.QuoteIdent(prev), sqlvalue.QuoteIdent(db), sqlvalue.QuoteIdent(name))
+		}
+		owner[name] = db
+	}
+	return m, nil
+}
 
 // NeedsDefs implements Writer.
 func (p *Postgres) NeedsDefs() bool { return true }
@@ -109,16 +171,19 @@ func pgIdent(what, name string) error {
 // these PostgreSQL names, while the index names are built from the MySQL name
 // of the table.
 func (p *Postgres) WriteSchema(w io.Writer, s Schema) error {
-	if err := pgIdent("database", s.DB); err != nil {
+	schema := p.schemaOf(s.DB)
+	// The limit applies to the schema name, so a database over it can be renamed.
+	if err := pgIdent("database", schema); err != nil {
 		return err
 	}
-	if strings.HasPrefix(s.DB, "pg_") {
-		return fmt.Errorf("database %s cannot become a schema: PostgreSQL reserves names starting with pg_", sqlvalue.QuoteIdent(s.DB))
+	if strings.HasPrefix(schema, "pg_") {
+		return fmt.Errorf("database %s cannot become a schema: PostgreSQL reserves names starting with pg_ (name another schema with --pg-schema %s=SCHEMA)",
+			sqlvalue.QuoteIdent(s.DB), s.DB)
 	}
 	var out strings.Builder
 	out.WriteString(pgSettings)
-	out.WriteString("CREATE SCHEMA IF NOT EXISTS " + sqlvalue.QuotePGIdent(s.DB) + ";\n")
-	out.WriteString(pgSearchPath(s.DB))
+	out.WriteString("CREATE SCHEMA IF NOT EXISTS " + sqlvalue.QuotePGIdent(schema) + ";\n")
+	out.WriteString(pgSearchPath(schema))
 	// Reported only once the schema is written, so a failed run says nothing
 	// about a file that was not produced.
 	var warnings warnList
@@ -477,7 +542,7 @@ func (p *Postgres) NewRowWriter(db string, t source.TableInfo, open OpenFile) (R
 		}
 		return out, nil
 	}
-	header := pgSettings + pgSearchPath(db) + "BEGIN;\n"
+	header := pgSettings + pgSearchPath(p.schemaOf(db)) + "BEGIN;\n"
 	// pgQuote names the table and its columns as WriteSchema created them.
 	return newStreamWriter(t, open, header, "COMMIT;\n", pgQuote, p.data, literal), nil
 }
@@ -515,7 +580,7 @@ func (d pgConstraintDB) outputs(t source.TableInfo) map[string]bool {
 func (p *Postgres) WriteConstraints(w io.Writer, s Schema) error {
 	var out strings.Builder
 	out.WriteString(pgSettings)
-	out.WriteString(pgSearchPath(s.DB))
+	out.WriteString(pgSearchPath(p.schemaOf(s.DB)))
 	var warnings warnList
 
 	dbs := make([]pgConstraintDB, 0, 1+len(s.Peers))
@@ -539,7 +604,7 @@ func (p *Postgres) WriteConstraints(w io.Writer, s Schema) error {
 		if db == s.DB {
 			return table
 		}
-		return sqlvalue.QuotePGIdent(db) + "." + table
+		return sqlvalue.QuotePGIdent(p.schemaOf(db)) + "." + table
 	}
 
 	for _, d := range dbs {

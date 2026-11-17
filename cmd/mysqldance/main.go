@@ -233,6 +233,12 @@ The password is read from --password-file, else from MYSQL_PWD.
                              written for (default mysql). sqlite and postgres
                              write tables, indexes and data, not views; see the
                              README
+      --pg-schema DB=SCHEMA  with --target postgres, name the schema a database
+                             becomes (default: the database's own name). For a
+                             database whose name starts with pg_, which
+                             PostgreSQL reserves. Repeatable; SCHEMA is at most
+                             63 bytes and does not start with pg_. File names
+                             keep the database name
       --rows-per-insert N    average rows per INSERT statement (default 1000)
       --max-insert-bytes N   size cap of one INSERT statement (default 1048576)
       --rows-per-file N      split a table into files of N rows on average,
@@ -275,7 +281,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 `)
 	}
 
-	var excludeTables stringList
+	var excludeTables, pgSchemas stringList
 	var (
 		host, user, socket, passwordFile, output string
 		sslMode, sslCA, target                   string
@@ -323,6 +329,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.StringVar(&dirMode, "dir-mode", "", "")
 	fs.StringVar(&sortMemory, "sort-memory", "", "")
 	fs.Var(&excludeTables, "exclude-table", "")
+	fs.Var(&pgSchemas, "pg-schema", "")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -345,6 +352,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 		return usage("--target must be %s, %s or %s, not %q", targetMySQL, targetSQLite, targetPostgres, target)
 	case fs.NArg() == 0:
 		return usage("at least one database name is required")
+	case len(pgSchemas) > 0 && target != targetPostgres:
+		return usage("--pg-schema applies to --target %s only", targetPostgres)
 	case rowsPerInsert == 0 || rowsPerInsert > math.MaxUint32:
 		return usage("--rows-per-insert must be between 1 and %d", uint64(math.MaxUint32))
 	case rowsPerFile > math.MaxUint32:
@@ -389,6 +398,11 @@ The password is read from --password-file, else from MYSQL_PWD.
 		}
 	}
 
+	schemaNames, err := writer.ParsePGSchemas(pgSchemas, fs.Args())
+	if err != nil {
+		return usage("--pg-schema: %v", err)
+	}
+
 	// Unset (empty) leaves 0, which dump reads as its default. An explicit empty
 	// value counts as unset, as with --file-mode and --dir-mode (review ledger R-165).
 	var sortBytes int64
@@ -420,7 +434,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	case targetSQLite:
 		opt.Writer = writer.NewSQLite(data)
 	case targetPostgres:
-		opt.Writer = writer.NewPostgres(data)
+		opt.Writer = writer.NewPostgres(data).WithSchemaNames(schemaNames)
 	default:
 		opt.Data = data
 	}
