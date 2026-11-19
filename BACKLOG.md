@@ -629,22 +629,6 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
-## B-202 [ready|P2] 表の読み出し中に、一定時間ごとの進捗を `INFO` ログで出す
-- 概要: 今の進捗は、表を書き終えたときの 1 行（`table dumped`）だけで、数億行の表では途中が見えない。一定時間ごとに、行数・バイト数・速度（rows/s、bytes/s）と、`information_schema.TABLES.TABLE_ROWS`（概算）からの残り件数・残り時間を `INFO` ログに出す。値は含めない。概算を超えたら 99% で止め、概算である旨を示す。出力ファイルには影響させない（決定性）。`--jobs` が 2 以上のときの出し方を仕様で決める。README の「Progress」節を更新する。B-201 の計測、`scan`、`scan-k` でも使える土台。
-- 仕様:
-  - フラグは `--progress-interval DURATION`（既定 `10s`、`0` で無効、負の値と読めない値は使用法エラー）。
-  - 一定時間ごとに、全体で 1 行の `dump progress`（`INFO`）を出す（ユーザーが選択。`--jobs` が 2 以上でも 1 本）。属性: `rows`（これまでに読んだ行の合計）、`bytes`（書いたバイトの合計）、`tables_done`、`tables`（出力する表の数）、`approx_rows`（出力する表の `TableInfo.ApproxRows` の合計）、`percent`、`rows_per_sec`（直近の区間の速度）、`eta`（開始からの平均速度で残りを割った概算）、`running`（読んでいる表を `db.table` の名前順で並べたもの）。
-  - `approx_rows` が 0 のときは `percent` と `eta` を出さない。`rows` が `approx_rows` を超えたら、`percent` は 99 で頭打ちにし、`eta` を出さない（概算であることは README に書く）。`--exclude-table` で外した表とビューは数えない。
-  - 値（行の内容）、パスワード、接続文字列は含めない。出力ファイルには影響させず、全ファイルのバイト一致（決定性）を保つ。最初の記録は、`--progress-interval` が経ったとき。それより早く終わる実行には出ない。`dump finished` の後には出さない。
-  - 実装の前提: `writeTable` の行数のカウンタと `countingFile` のバイト数を atomic で共有する集計を `internal/dump` に置き、ticker の goroutine がそれを読んで記録する（行ごとの処理にロックを足さない）。時計は差し替えられるようにして、テストで時間を進める。ダンプが失敗・中断したら goroutine は止める。B-203 のバーもこの集計を読む。
-  - README の「Progress」の表と、`main.go` の usage を更新する。
-- 受け入れ条件:
-  - [ ] `--progress-interval`（既定 10s、0 で無効、不正な値は使用法エラー）が動く
-  - [ ] 偽の時計と偽の `rowSource` で、`dump progress` が一定時間ごとに上記の属性で出る（単体テスト）
-  - [ ] `--jobs` が 2 以上でも 1 本で、`running` に読んでいる表が名前順で出る
-  - [ ] `approx_rows` が 0 のとき `percent`・`eta` が出ず、超えたとき `percent` が 99 で止まり `eta` が出ない
-  - [ ] 出力ファイルが、記録を出さない場合とバイト一致する。README の「Progress」と usage を更新する
-
 ## B-203 [todo|P2] 端末のときにプログレスバーを描く（`--progress auto|bar|log|none`）
 - 依存: B-202
 - 概要: 標準エラーが端末のときだけ、B-202 の進捗から、`\r` で 1 行のバーを描く（ライブラリは使わない）。`--jobs` が 2 以上のときは、全体で 1 本にして、読んでいる表を示す。バーを出すときは、ログも同じ出力口を通し、バーを消してから出す。`auto` は端末ならバー、そうでなければログ。
@@ -772,3 +756,4 @@
 ## B-165 [done|P2] マスク: ルールファイルと salt を読み込んで検証する（`internal/mask`）
 ## B-176 [done|P2] スキャン: gitleaks / betterleaks 互換の設定ファイルを読み込んで、値に当てる（`internal/scan`）
 ## B-201 [done|P2] 調査: 行ごとの変換（HMAC、JSON の解釈）がダンプ時間とメモリに与える影響を測る
+## B-202 [done|P2] 表の読み出し中に、一定時間ごとの進捗を `INFO` ログで出す

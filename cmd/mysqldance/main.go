@@ -279,6 +279,11 @@ The password is read from --password-file, else from MYSQL_PWD.
                              64MiB, at least 1MiB); past that the sort goes
                              through temporary files in the output directory.
                              With --jobs N, N tables are sorted at once
+      --progress-interval DUR
+                             log a "dump progress" record (rows, bytes, speed,
+                             estimated remaining time) every DUR while the
+                             tables are read, e.g. 30s or 1m (default 10s;
+                             0 = none)
       --log-level LEVEL      debug, info, warn or error (default info). Logs go
                              to standard error
       --log-format FORMAT    text or json (default text)
@@ -299,6 +304,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 		maxInsertBytes                           int
 		lockTimeout                              time.Duration
 		connectTimeout, readTimeout              time.Duration
+		progressInterval                         time.Duration
 	)
 	fs.StringVar(&host, "h", "127.0.0.1", "")
 	fs.StringVar(&host, "host", "127.0.0.1", "")
@@ -326,6 +332,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	// large table (it also covers statements that send nothing until done). It is
 	// deliberately not checked against --lock-timeout: the README says to keep it higher.
 	fs.DurationVar(&readTimeout, "read-timeout", 0, "")
+	fs.DurationVar(&progressInterval, "progress-interval", dump.DefaultProgressInterval, "")
 	fs.IntVar(&jobs, "j", 1, "")
 	fs.IntVar(&jobs, "jobs", 1, "")
 	fs.StringVar(&logLevel, "log-level", "info", "")
@@ -376,6 +383,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 		return usage("--connect-timeout must not be negative")
 	case readTimeout < 0:
 		return usage("--read-timeout must not be negative")
+	case progressInterval < 0:
+		return usage("--progress-interval must not be negative")
 	case jobs > 1 && noLock:
 		// Without the lock the snapshots of the connections cannot be aligned.
 		return usage("--jobs above 1 cannot be combined with --no-lock: the lock is what makes " +
@@ -434,6 +443,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 		// Nil when the flag is not given, so the options stay as they were.
 		ExcludeTables: excludeTables,
 		CaseSafeNames: caseSafeNames,
+
+		ProgressInterval: progressInterval,
 	}
 	// dump builds the MySQL writer from Data; another writer takes the options
 	// itself, and dump refuses both.

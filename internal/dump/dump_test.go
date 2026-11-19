@@ -19,7 +19,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 
@@ -976,6 +978,47 @@ func TestSameDatabasesTwiceSameChecksum(t *testing.T) {
 	}
 	if a, b := sum(), sum(); a != b {
 		t.Errorf("checksums differ: %x vs %x", a, b)
+	}
+}
+
+// Progress records change nothing in the files, and none follows "dump finished".
+func TestProgressRecordsDoNotChangeOutput(t *testing.T) {
+	e := newEnv(t)
+	db := e.threeTables(t)
+	plain := t.TempDir()
+	e.dump(t, plain, db)
+
+	// A ticker that fires as fast as the goroutine takes it, until the run stops it.
+	ticks := make(chan time.Time)
+	stopped := make(chan struct{})
+	var stopOnce sync.Once
+	fc := clock{
+		now: time.Now,
+		newTicker: func(time.Duration) (<-chan time.Time, func()) {
+			go func() {
+				for {
+					select {
+					case ticks <- time.Now():
+					case <-stopped:
+						return
+					}
+				}
+			}()
+			return ticks, func() { stopOnce.Do(func() { close(stopped) }) }
+		},
+	}
+	withProgress := t.TempDir()
+	var log bytes.Buffer
+	if err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: withProgress, Log: testLogger(&log), ProgressInterval: time.Millisecond, clock: fc}); err != nil {
+		t.Fatal(err)
+	}
+	a, b := readFiles(t, plain), readFiles(t, withProgress)
+	if !maps.Equal(a, b) {
+		t.Error("the files differ when progress records are logged")
+	}
+	lines := strings.Split(strings.TrimSpace(log.String()), "\n")
+	if !strings.Contains(lines[len(lines)-1], "dump finished") {
+		t.Errorf("last record = %q, want dump finished", lines[len(lines)-1])
 	}
 }
 

@@ -65,6 +65,12 @@ type Options struct {
 	// Log receives the progress (Info) and the warnings (Warn); nil discards
 	// them. A record never carries a row value or a connection string.
 	Log *slog.Logger
+	// ProgressInterval is how often a "dump progress" record is logged while the
+	// tables are read; 0 logs none. It never changes the output files.
+	ProgressInterval time.Duration
+
+	clock clock     // time source of the progress records; the zero value is the real clock
+	prog  *progress // set by Run; nil without progress records
 }
 
 // DefaultSortMemory is the SortMemory used when none is set.
@@ -142,6 +148,10 @@ func Run(ctx context.Context, opt Options) (err error) {
 		return err
 	}
 	defer func() { err = errors.Join(err, st.discard()) }()
+	// A failed or canceled run stops the ticker too; the normal end stops it
+	// before "dump finished" (stop is idempotent).
+	opt.prog = startProgress(ctx, opt.Log, opt.ProgressInterval, opt.clock)
+	defer opt.prog.stop()
 	// Lower-cased output file name -> what it was generated for, across the
 	// whole run, so names that differ only in case are rejected.
 	seen := map[string]string{}
@@ -202,6 +212,7 @@ func Run(ctx context.Context, opt Options) (err error) {
 			return fmt.Errorf("database %q: %w", db, err)
 		}
 	}
+	opt.prog.stop()
 	// The last record of a successful run: the files are in place and the stale
 	// ones are gone. Run fails on an empty opt.DBs, so there is always a database.
 	opt.Log.Info("dump finished", "databases", len(opt.DBs), "tables", all.tables,
@@ -267,6 +278,7 @@ func dumpDB(ctx context.Context, opt Options, snap *source.Snapshot, db string, 
 	if err != nil {
 		return schema, err
 	}
+	opt.prog.addTables(schema.Tables)
 	// Run reads plans only when every database was staged, so a failed
 	// planFiles needs no entry.
 	plans[db] = plan
@@ -532,15 +544,20 @@ type tableResult struct {
 
 // countingFile counts the bytes written to a staged data file into *n. Only
 // Write and Close are passed on: the writers take an io.WriteCloser and use
-// nothing else (R-177).
+// nothing else (R-177). When total is not nil, the same bytes are added to it
+// (the bytes of the run's progress).
 type countingFile struct {
 	io.WriteCloser
-	n *int64
+	n     *int64
+	total *atomic.Int64
 }
 
 func (c countingFile) Write(p []byte) (int, error) {
 	n, err := c.WriteCloser.Write(p)
 	*c.n += int64(n)
+	if c.total != nil {
+		c.total.Add(int64(n))
+	}
 	return n, err
 }
 
@@ -561,18 +578,22 @@ func writeTable(ctx context.Context, opt Options, r rowSource, plan *naming.Plan
 			return nil, err
 		}
 		staged = append(staged, tf.idx)
-		return countingFile{tf, &res.bytes}, nil
+		return countingFile{tf, &res.bytes, opt.prog.bytesCounter()}, nil
 	}
 	rw, err := opt.Writer.NewRowWriter(db, t, open)
 	if err != nil {
 		return tableResult{}, err
 	}
+	opt.prog.begin(db, t.Name)
+	finished := false
+	defer func() { opt.prog.end(db, t.Name, finished) }()
 	// A failure of the writer is reported as it is; a failure of the read is
 	// worded with the table.
 	var writeErr error
 	readErr := r.EachRow(ctx, t, func(row []sqlvalue.Value) error {
 		if writeErr = rw.Write(row); writeErr == nil {
 			res.rows++
+			opt.prog.addRow()
 		}
 		return writeErr
 	})
@@ -593,6 +614,7 @@ func writeTable(ctx context.Context, opt Options, r rowSource, plan *naming.Plan
 		st.setFinal(idx, filepath.Join(opt.OutDir, names[i]))
 	}
 	res.names = names
+	finished = true
 	// After the last failure point, so a table that is not output is not reported.
 	if w, ok := rw.(writer.Warner); ok {
 		for _, warning := range w.Warnings() {
