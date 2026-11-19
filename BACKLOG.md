@@ -1,15 +1,5 @@
 # Backlog
 
-## B-103 [ready|P3] `DELIMITER` で始まる行を含むトリガーの出力方法を調べる
-- 概要: トリガー本体に `DELIMITER` で始まる行があると、`mysql` クライアントがその行をコマンドとして実行してしまうため、`--target mysql` は実行を失敗させる。トリガーを正しく出力できる方法があるか（本体の行頭をずらす方法が文字列リテラルの値を変えないか、クライアントのバージョンごとの挙動、`docker-entrypoint-initdb.d` での復元）を実機で調べ、結果を設計書に書く。コードは変えない。
-- 仕様:
-  - 前提: 結果は設計書（`docs/superpowers/specs/2026-11-09-mysqldance-design.md`）の 11 節に、クライアントごとの表で書く。コードは変えない（`internal/schemafile/triggers.go:195` の `DELIMITER` の検出も変えない）。
-  - 前提: クライアントは Docker の `mysql:8.0` / `mysql:8.4` の `mysql` と、`mariadb` の `mariadb`（`mysql`）。復元は、`mysql` クライアントにパイプする方法と、`/docker-entrypoint-initdb.d` に置く方法の両方で確かめる。
-  - 前提: 「本体の行頭をずらす」方法は、文字列リテラルの値が変わる（ずらした空白が値に入る）かを、トリガーを作り直して `SHOW CREATE` と `information_schema` の本体で比べる。
-- 受け入れ条件:
-  - [ ] `mysql` クライアント（8.0 / 8.4 と MariaDB のクライアント）で、`DELIMITER` で始まる行を含む本体（文字列リテラルの中、コメントの中、通常の文の継続行）の復元結果を実機で確かめ、設計書に表で記録する
-  - [ ] 本体を変えずに出力できる方法があるか、あるならどの方法かを結論として書く。実装は別の項目として積む（この項目では積まない）
-
 ## B-104 [ready|P3] FLUSH TABLES WITH READ LOCK の権限の説明に `FLUSH_TABLES` を加える
 - 概要: B-078 の調査（設計書 13.2 節）で、MySQL 8.4 では `RELOAD` がなくても `FLUSH_TABLES`（動的権限）だけで FTWRL が通り、`BACKUP_ADMIN` だけでは通らないと分かった。エラーは `you need (at least one of) the RELOAD or FLUSH_TABLES privilege(s)`。しかし `source.go` のエラー文言、`--jobs` のヘルプ、README の「Required privilege: RELOAD」は `RELOAD` だけを挙げている。8.0 と 8.x の他の版で `FLUSH_TABLES` が通るかを確かめたうえで、文言を直す。
 - 仕様:
@@ -647,6 +637,12 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
+## B-207 [todo|P3] トリガー・ルーチン・イベントの `DELIMITER` で始まる行の検査を、引用符とコメントの外の桁 0 の行だけに狭める
+- 依存: B-103
+- 概要: B-103 の実機の確認（設計書 11 節）で、既定の `mysql` / `mariadb` クライアントは本体の `DELIMITER` の行をコマンドとして実行せず、文字列・コメントの中の行と字下げした行は、そのまま復元できると分かった。危ないのは、引用符とコメントの外の、桁 0 が `delimiter` で始まる行だけ（クライアントが改行を落とす）。今の `hasDelimiterLine` はこれらを全部拒否するので、狭める。本体は変えず、残る場合はエラーのままにする。字句解析は B-162 と共有できるかを見る。
+- 受け入れ条件:
+  - [ ] 仕様を確定する（`refine-backlog`）
+
 # Done
 
 ## B-003 [done|P2] 複数 DB を 1 つのスナップショットで読む
@@ -742,6 +738,7 @@
 ## B-100 [done|P3] PostgreSQL 向けの出力で、`pg_` で始まる DB 名のスキーマ名を指定できるようにする
 ## B-101 [done|P2] 255 バイトを超える出力ファイル名を決定的に短縮する
 ## B-102 [done|P3] 大文字小文字だけが違う名前を、オプトインで衝突しないファイル名にする
+## B-103 [done|P3] `DELIMITER` で始まる行を含むトリガーの出力方法を調べる
 ## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 ## B-119 [done|P2] `--exclude-table` でテーブルを出力から外せるようにする

@@ -971,6 +971,17 @@
   - [x] `--case-safe-names` を付けたときに古い出力のファイルが残らず、付けない実行との間で切り替えても削除されるべきファイルが削除される（既存の古いファイル削除の動作に合う）ことをテストで確かめる
   - [x] README のフラグの表と、ファイル名の節（大文字小文字の衝突の項）を更新する
 
+## B-103 [done|P3] `DELIMITER` で始まる行を含むトリガーの出力方法を調べる
+- 概要: トリガー本体に `DELIMITER` で始まる行があると、`mysql` クライアントがその行をコマンドとして実行してしまうため、`--target mysql` は実行を失敗させる。トリガーを正しく出力できる方法があるか（本体の行頭をずらす方法が文字列リテラルの値を変えないか、クライアントのバージョンごとの挙動、`docker-entrypoint-initdb.d` での復元）を実機で調べ、結果を設計書に書く。コードは変えない。
+- 仕様:
+  - 前提: 結果は設計書（`docs/superpowers/specs/2026-11-09-mysqldance-design.md`）の 11 節に、クライアントごとの表で書く。コードは変えない（`internal/schemafile/triggers.go:195` の `DELIMITER` の検出も変えない）。
+  - 前提: クライアントは Docker の `mysql:8.0` / `mysql:8.4` の `mysql` と、`mariadb` の `mariadb`（`mysql`）。復元は、`mysql` クライアントにパイプする方法と、`/docker-entrypoint-initdb.d` に置く方法の両方で確かめる。
+  - 前提: 「本体の行頭をずらす」方法は、文字列リテラルの値が変わる（ずらした空白が値に入る）かを、トリガーを作り直して `SHOW CREATE` と `information_schema` の本体で比べる。
+- 結果: 設計書 11 節に記録した。既定のクライアント（8.0.46 / 8.4.13 / MariaDB 11.4.13）は、本体の `DELIMITER` の行をコマンドとして実行しない（`--named-commands` のときだけ実行する）。文字列・コメントの中の行と字下げした行は、そのまま復元できる。危ないのは、引用符とコメントの外の桁 0 の `delimiter` で始まる行だけで、クライアントがその行の改行を落とす。空白を足してずらす方法は、文字列の値を変える。実装は B-207。`SHOW CREATE TRIGGER` との比較は、見ていない（`information_schema` の本体と、入れた行の値で比べた）。
+- 受け入れ条件:
+  - [x] `mysql` クライアント（8.0 / 8.4 と MariaDB のクライアント）で、`DELIMITER` で始まる行を含む本体（文字列リテラルの中、コメントの中、通常の文の継続行）の復元結果を実機で確かめ、設計書に表で記録する
+  - [x] 本体を変えずに出力できる方法があるか、あるならどの方法かを結論として書く。実装は別の項目として積む（この項目では積まない）
+
 ## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
 - 概要: `task test:integration:mysql57` で、`internal/source` の `TestTriggers` と `internal/dump` の `TestTriggersRoundTrip` が失敗する（B-095 の作業中に、`origin/main`（117d4c7）でも同じ失敗を確認した既存の失敗）。5.7 の `SHOW CREATE TRIGGER` は、書いたとおりの名前を返し、`CREATE DEFINER=`root`@`%` TRIGGER z_first ...` のように名前が逆引用符で囲まれない。そのため、作成順を確かめる判定（`` CREATE TRIGGER `z_first` `` を探す）に合わない。テストが 5.7 の形を想定していないのか、5.7 でのトリガーの出力が実際に正しくないのかを確かめて直す。
 - 前提: `task test:integration:mysql57` で再現する。MySQL 5.6 は同じイベントに複数のトリガーを作れないので、この 2 つのテストは 5.6 では skip する（B-095）。
