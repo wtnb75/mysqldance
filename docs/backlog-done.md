@@ -1146,3 +1146,21 @@
   - [x] `DB.TABLE.COLUMN` のキーを分解し、カタログと照合して、上記のエラーをまとめて報告する（単体テスト）
   - [x] 変換の登録簿があり、テスト用の変換でルールの検証が通る。適用できない列の型はエラーになる
   - [x] salt を環境変数とファイルから読み、空・16 バイト未満・権限が緩いファイルをエラーにする。値はエラー文に出ない
+
+## B-176 [done|P2] スキャン: gitleaks / betterleaks 互換の設定ファイルを読み込んで、値に当てる（`internal/scan`）
+- 概要: マスク漏れを探す `scan` の検出ルールを、gitleaks 互換の TOML（`[[rules]]` の `regex`、`keywords`、`secretGroup`、エントロピーの閾値、`allowlists`）で受け取る。`path` は `DB.TABLE.COLUMN` に当てる正規表現として読み替える。betterleaks の CEL 式は対象外。サポートする項目の範囲と、`[extend]` の扱いを仕様で決める。
+- 仕様:
+  - 標準ルール集の同梱は B-204 に分ける（ユーザーが「同梱する」を選択）。この項目は、設定ファイルの読み込みと、値への当てはめまで。CLI への配線は B-177。
+  - 検出の意味に関わるキーを解釈する: ルールの `id`（必須）、`regex`、`path`、`keywords`、`entropy`、`secretGroup`、`allowlists`（`regexes`、`stopwords`、`paths`、`regexTarget`、`condition`）と、設定全体の `allowlists`（`[allowlist]` の旧形式も gitleaks 8.x が読むものは読む）。表示だけのキー（`title`、`description`、`tags`）は読んで捨てる。これ以外のキー（betterleaks の CEL 式を含む）は、キーの名前を添えてエラーにする（黙って検出を弱めない）。最終的なキーの一覧は、gitleaks の標準 `gitleaks.toml` が使うキーに合わせて実装時に確定し、設計書か README に書く。
+  - 正規表現は Go の `regexp`（RE2）。コンパイルできないもの、`secretGroup` がグループ数を超えるもの、`regex` も `path` もないルール、`id` の重複は、ルールの `id` を添えてエラー。
+  - `regex` と `path` が両方あれば両方に一致したときだけ、`path` だけなら `path` に一致したときだけ検出とする。`path` に当てる文字列は `DB.TABLE.COLUMN`。gitleaks の `regexTarget` の `line` は、値全体（セルの文字列）を指すものとして扱う。
+  - `keywords` は、大文字小文字を区別しない部分一致の前処理（gitleaks と同じ）。`entropy` は gitleaks と同じ式の Shannon エントロピー。
+  - 当てはめの結果は、一致したルール `id` と一致した位置・長さだけを返し、一致した値の文字列は返さない（報告に機密を載せないため）。
+  - `[extend]` は、この項目では「B-204 で対応する」旨のエラーにする。
+  - 前提: TOML のパーサーを依存に足す（候補は `github.com/pelletier/go-toml/v2`、`github.com/BurntSushi/toml`。未知のキーを検出できることを条件に、実装時に選ぶ）。
+- 結果: `internal/scan`（`scan.go`）。TOML は `github.com/BurntSushi/toml` v1.5.0 を、`MetaData.Undecoded()` で未対応のキーを拒否できるので選んだ。対応するキーは設計書の 20.1 の表。標準の `gitleaks.toml` は `internal/scan/testdata/` に置き、全ルールを読み込めることをテストした。レビューを受けて、選んだ `secretGroup` が一致に加わらない・空のときは、検出を落とさず一致の全体を報告する、とした。gitleaks 本体との検出結果の突き合わせはしていない（設計書 20.4）。
+- 受け入れ条件:
+  - [x] gitleaks 互換の TOML を読み、対応するキーを解釈する。表示だけのキーは捨て、それ以外の未対応のキーはキー名つきでエラーにする（単体テスト）
+  - [x] 不正な正規表現、範囲外の `secretGroup`、`regex` も `path` もないルール、重複した `id` が、ルールの `id` つきでエラーになる
+  - [x] 値と `DB.TABLE.COLUMN` を渡すと、一致したルールの `id` と位置・長さを返す（`keywords`、`secretGroup`、`entropy`、ルールごとと全体の `allowlists` を含む）。値の文字列は返さない
+  - [x] gitleaks の標準 `gitleaks.toml`（テストデータとして取り込む）を、エラーなく読める
