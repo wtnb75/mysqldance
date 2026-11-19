@@ -3,6 +3,7 @@ module mysqldance
 go 1.26.0
 
 require (
+	github.com/BurntSushi/toml v1.5.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.7.2
 	go.yaml.in/yaml/v3 v3.0.4
