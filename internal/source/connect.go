@@ -35,8 +35,8 @@ type Config struct {
 	NoLock bool
 	// Jobs is the number of connections that read rows in parallel; 0 means 1.
 	// Above 1, Open always takes the global read lock (it needs the RELOAD
-	// privilege) to start all the snapshots at one point in time, so it cannot
-	// be combined with NoLock.
+	// privilege, see lockPrivilegeNote) to start all the snapshots at one point
+	// in time, so it cannot be combined with NoLock.
 	Jobs int
 	// LockTimeout bounds how long FLUSH TABLES WITH READ LOCK may wait: it first
 	// waits for running statements, and every statement that arrives behind it
@@ -358,7 +358,7 @@ func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int
 		}
 		if first != "" {
 			s.lockedAt, err = lockGlobal(ctx, conn, lockTimeout, lg, fmt.Sprintf("needed because %s is not InnoDB; "+
-				"it requires the RELOAD privilege, or pass --no-lock to read without consistency", first))
+				"it requires the RELOAD privilege (%s), or pass --no-lock to read without consistency", first, lockPrivilegeNote))
 			if err != nil {
 				_ = conn.Close()
 				return nil, err
@@ -378,6 +378,12 @@ func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int
 	}
 	return s, nil
 }
+
+// lockPrivilegeNote completes "requires the RELOAD privilege" in the errors of
+// FLUSH TABLES WITH READ LOCK. MySQL 8.0 and later also accept the dynamic
+// privilege FLUSH_TABLES; MySQL 5.7 and MariaDB cannot grant it (design doc,
+// section 13.2).
+const lockPrivilegeNote = "the FLUSH_TABLES privilege also works on MySQL 8.0 and later"
 
 // startParallel opens jobs connections on one point in time (design doc,
 // section 6.1): a connection of its own takes FLUSH TABLES WITH READ LOCK,
@@ -435,7 +441,7 @@ func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int, loc
 		return nil, err
 	}
 	lockedAt, err := lockGlobal(ctx, lockConn, lockTimeout, lg, fmt.Sprintf("needed to start the snapshots of %d connections "+
-		"at one point in time; it requires the RELOAD privilege, or run with --jobs 1", jobs))
+		"at one point in time; it requires the RELOAD privilege (%s), or run with --jobs 1", jobs, lockPrivilegeNote))
 	if err != nil {
 		return nil, err
 	}

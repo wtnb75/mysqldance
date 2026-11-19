@@ -287,7 +287,8 @@ func TestLockNeedsReloadPrivilege(t *testing.T) {
 	if err == nil {
 		t.Fatal("Open succeeded without the RELOAD privilege")
 	}
-	for _, want := range []string{"RELOAD", "--no-lock", "`m`"} {
+	// The server's own text names FLUSH_TABLES on 8.x only, so look for ours.
+	for _, want := range []string{"RELOAD", "the FLUSH_TABLES privilege also works", "--no-lock", "`m`"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %s", err, want)
 		}
