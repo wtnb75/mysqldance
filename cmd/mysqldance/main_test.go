@@ -54,6 +54,9 @@ func TestRunUsageErrors(t *testing.T) {
 		{"connect timeout without unit", []string{"--connect-timeout", "30", "-o", t.TempDir(), "db1"}},
 		{"negative read timeout", []string{"--read-timeout", "-1s", "-o", t.TempDir(), "db1"}},
 		{"read timeout without unit", []string{"--read-timeout", "30", "-o", t.TempDir(), "db1"}},
+		{"negative progress interval", []string{"--progress-interval", "-1s", "-o", t.TempDir(), "db1"}},
+		{"progress interval without unit", []string{"--progress-interval", "5", "-o", t.TempDir(), "db1"}},
+		{"unreadable progress interval", []string{"--progress-interval", "soon", "-o", t.TempDir(), "db1"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var stderr bytes.Buffer
@@ -77,6 +80,8 @@ func TestParseArgsDefaults(t *testing.T) {
 		DBs:    []string{"db1", "db2"},
 		OutDir: "out",
 		Data:   datafile.Options{RowsPerInsert: 1000, MaxInsertBytes: 1048576},
+
+		ProgressInterval: dump.DefaultProgressInterval,
 	}
 	// The logger is checked in logflags_test.go.
 	if got.Log == nil {
@@ -224,6 +229,25 @@ func TestParseArgsConnectAndReadTimeout(t *testing.T) {
 	}
 }
 
+func TestParseArgsProgressInterval(t *testing.T) {
+	for _, tt := range []struct {
+		args []string
+		want time.Duration
+	}{
+		{nil, 10 * time.Second},
+		{[]string{"--progress-interval", "30s"}, 30 * time.Second},
+		{[]string{"--progress-interval", "0"}, 0},
+	} {
+		got, err := parseArgs(append(tt.args, "-o", "out", "d"), noEnv)
+		if err != nil {
+			t.Fatalf("parseArgs(%q): %v", tt.args, err)
+		}
+		if got.ProgressInterval != tt.want {
+			t.Errorf("parseArgs(%q): ProgressInterval = %v, want %v", tt.args, got.ProgressInterval, tt.want)
+		}
+	}
+}
+
 // --target mysql is the default and leaves the writer to dump.
 func TestParseArgsTargetMySQL(t *testing.T) {
 	got, err := parseArgs([]string{"--target", "mysql", "-o", "out", "d"}, noEnv)
@@ -367,8 +391,9 @@ func TestParseArgsFlags(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseArgs: %v", err)
 			}
-			// The logger is checked in logflags_test.go.
-			got.Log = nil
+			// The logger is checked in logflags_test.go, the progress interval in
+			// TestParseArgsProgressInterval.
+			got.Log, got.ProgressInterval = nil, 0
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("parseArgs = %+v, want %+v", got, tt.want)
 			}

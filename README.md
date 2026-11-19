@@ -137,6 +137,7 @@ Put flags **before** the database names (Go's standard `flag` package stops pars
 | `--no-lock` | off | Do not take the global read lock when a table is not InnoDB; warn instead (see "Non-InnoDB tables and the read lock" below) |
 | `--lock-timeout` | `30s` | How long `FLUSH TABLES WITH READ LOCK` may wait for the lock, as a duration (`30s`, `2m`; rounded up to whole seconds). When it has not got the lock by then, the run fails and nothing is written. `0` sets no limit of its own: the server's `lock_wait_timeout` applies (see "Non-InnoDB tables and the read lock" below) |
 | `--connect-timeout` | `30s` | How long to wait for the first connection to the server to be made (the TCP connect, the server's greeting and the login), as a duration. When it runs out, the run fails before anything is written. `0` sets no limit of its own (the TCP connect is then left to the operating system) |
+| `--progress-interval` | `10s` | How often the run logs a `dump progress` record while it reads the tables (see "Progress"), as a duration such as `30s` or `1m`. `0` logs none. A negative or unreadable value is a usage error. It never changes the output files |
 | `--read-timeout` | `0` | How long to wait for each response from the server, as a duration. A server that stops answering then fails the run instead of stalling it (the driver logs `i/o timeout` to standard error; when it happens while the run is starting, the error also names the read timeout). `0` sets no limit, so that a normal read of a large table is never cut off. It is a limit on one wait, not on the whole transfer, but it also covers a statement that sends nothing until it is done: a sort of a large table, and the wait for `FLUSH TABLES WITH READ LOCK`. A value below `--lock-timeout` therefore ends that wait first, so keep it well above both |
 | `--sort-memory` | `64MiB` | About how much memory a table without a primary key or NOT NULL unique key may use while its rows are sorted, from `1MiB` up (`64MiB`, `1GiB`, or a plain number of bytes). Past that, the sorted batches go to temporary files in the output directory and are merged (see "Limitations"). With `--jobs N`, N tables are sorted at once, so the total is up to N times this |
 | `-j`, `--jobs` | `1` | Number of tables read in parallel, each on a connection of its own, from 1 to 64. The default `1` reads everything on one connection, as before, and needs no `RELOAD` privilege. Above `1` the global read lock is always taken, so the account needs `RELOAD`, and `--no-lock` cannot be combined with it (see "Parallel reads" below) |
@@ -425,6 +426,7 @@ Besides the snapshot records, each database and each table is reported as `INFO`
 | Message | Attributes | When |
 | --- | --- | --- |
 | `dumping database` | `database` | before the first table of the database is read |
+| `dump progress` | `rows`, `bytes`, `tables_done`, `tables`, `approx_rows`, `percent`, `rows_per_sec`, `eta`, `running` | every `--progress-interval` while the tables are read (see below) |
 | `table dumped` | `database`, `table`, `rows`, `bytes`, `files`, `duration` | when the data files of the table are written |
 | `database dumped` | `database`, `tables`, `rows`, `bytes`, `files`, `duration` | when every file of the database is written (not on a failed run) |
 | `removed a file of an earlier dump` | `database`, `file` | after each stale file of the database is deleted, in file name order, one database after another. Stale files are deleted last, after every `database dumped` record and after the new files are in place (see "Re-dumping and removing stale files") |
@@ -432,6 +434,18 @@ Besides the snapshot records, each database and each table is reported as `INFO`
 | `dump finished` | `databases`, `tables`, `rows`, `bytes`, `files`, `duration` | once, as the last record of a successful run: after every database is written, the files are in place and the stale files are removed (not on a failed run) |
 
 `file` is the name relative to the output directory. A run that deletes nothing logs neither record.
+
+`dump progress` is one record for the whole run, however many tables are read at the same time with `--jobs` above 1. The first one comes when `--progress-interval` has passed, so a run that ends sooner logs none, and none follows `dump finished`. Its attributes:
+
+- `rows`, `bytes`: the rows read and the bytes of data files written so far, over all tables.
+- `tables_done`, `tables`: the tables whose data files are written, and the tables to output (views and tables left out with `--exclude-table` are not counted). With several databases, `tables` and `approx_rows` cover the databases read so far, because a database is listed only when its turn comes.
+- `approx_rows`: the sum of the estimated row counts (`information_schema.TABLES.TABLE_ROWS`) of those tables. It is an estimate, and for InnoDB it can be far off.
+- `percent`: `rows` against `approx_rows`, with one decimal. Because `approx_rows` is an estimate, it stops at `99` once `rows` reaches it. It is left out when `approx_rows` is `0`.
+- `rows_per_sec`: the speed over the time since the previous record (or the start).
+- `eta`: the remaining time, from `approx_rows` and the average speed since the start. It is left out when `approx_rows` is `0`, when no row has been read yet, and when `rows` has reached `approx_rows` (the estimate was too low, so no time can be promised).
+- `running`: the tables being read, as `database.table`, sorted by name and joined with `,`.
+
+The records are written while the files are staged, so, like `table dumped`, they do not mean the files are in place. They carry no row value and do not change the output files.
 
 In `dump finished`, `tables`, `rows`, `bytes` and `files` are the sums of the `database dumped` records (the data files only, as above), and `duration` is the time from just after the output directory lock is taken to the end of the run (opening the snapshot, which comes before the lock, is not included).
 
