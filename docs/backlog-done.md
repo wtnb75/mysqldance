@@ -982,6 +982,16 @@
   - [x] `mysql` クライアント（8.0 / 8.4 と MariaDB のクライアント）で、`DELIMITER` で始まる行を含む本体（文字列リテラルの中、コメントの中、通常の文の継続行）の復元結果を実機で確かめ、設計書に表で記録する
   - [x] 本体を変えずに出力できる方法があるか、あるならどの方法かを結論として書く。実装は別の項目として積む（この項目では積まない）
 
+## B-104 [done|P3] FLUSH TABLES WITH READ LOCK の権限の説明に `FLUSH_TABLES` を加える
+- 概要: B-078 の調査（設計書 13.2 節）で、MySQL 8.4 では `RELOAD` がなくても `FLUSH_TABLES`（動的権限）だけで FTWRL が通り、`BACKUP_ADMIN` だけでは通らないと分かった。エラーは `you need (at least one of) the RELOAD or FLUSH_TABLES privilege(s)`。しかし `source.go` のエラー文言、`--jobs` のヘルプ、README の「Required privilege: RELOAD」は `RELOAD` だけを挙げている。8.0 と 8.x の他の版で `FLUSH_TABLES` が通るかを確かめたうえで、文言を直す。
+- 仕様:
+  - 前提: 直す場所は `internal/source` のロック失敗のエラー文言（`rg 'RELOAD'` で探す）、`cmd/mysqldance/main.go` の `--jobs` のヘルプ、`README.md` の「Required privilege: RELOAD」の 2 か所。
+  - 前提: 統合テストは、`FLUSH_TABLES` だけを付与したアカウントを作る（8.0 / 8.4）。5.7 と MariaDB は `FLUSH_TABLES` が付与できない、または付与しても FTWRL が通らないことを `task test:integration:mysql57` / `:mariadb` で確かめ、結果を設計書 13.2 節に足す。
+- 結果: 8.0 と 8.4 で、`SELECT` と `FLUSH_TABLES` だけのアカウントが `--jobs 1` / `--jobs 2` と MyISAM の表のあるダンプ（ロックあり）を実行できた（`TestFlushTablesPrivilegeIsEnough`）。5.7.44 と MariaDB 10.11 / 11.4 は `GRANT FLUSH_TABLES` が構文エラー（1064）。5.6 は試していない（README は 5.7 と MariaDB だけを挙げる）。エラー文言（`lockPrivilegeNote`）、`--jobs` のヘルプ、README の 3 か所（フラグの表、ロックの節、並列の節）を直した。結果は設計書 13.2 節に記録した。
+- 受け入れ条件:
+  - [x] 実機（8.0 と 8.4）で、`FLUSH_TABLES` だけを持つアカウントが `--jobs 2` と、非 InnoDB の表のあるダンプ（ロックあり）を実行できることを統合テストで確かめる
+  - [x] エラー文言、`--jobs` のヘルプ、README の該当 2 か所が、`RELOAD`（8.0 以降は `FLUSH_TABLES` でも可。5.7 と MariaDB は `RELOAD`）と書く。5.7 と MariaDB で `FLUSH_TABLES` が通らないことを確かめて書く
+
 ## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
 - 概要: `task test:integration:mysql57` で、`internal/source` の `TestTriggers` と `internal/dump` の `TestTriggersRoundTrip` が失敗する（B-095 の作業中に、`origin/main`（117d4c7）でも同じ失敗を確認した既存の失敗）。5.7 の `SHOW CREATE TRIGGER` は、書いたとおりの名前を返し、`CREATE DEFINER=`root`@`%` TRIGGER z_first ...` のように名前が逆引用符で囲まれない。そのため、作成順を確かめる判定（`` CREATE TRIGGER `z_first` `` を探す）に合わない。テストが 5.7 の形を想定していないのか、5.7 でのトリガーの出力が実際に正しくないのかを確かめて直す。
 - 前提: `task test:integration:mysql57` で再現する。MySQL 5.6 は同じイベントに複数のトリガーを作れないので、この 2 つのテストは 5.6 では skip する（B-095）。

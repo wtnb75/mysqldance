@@ -273,6 +273,7 @@ The password is read from --password-file, else from MYSQL_PWD.
   -j, --jobs N               read N tables in parallel on N connections that
                              show the same point in time (default 1). Above 1
                              the lock is always taken, so the RELOAD privilege
+                             (on MySQL 8.0 and later, FLUSH_TABLES also works)
                              is needed, and --no-lock cannot be used
       --sort-memory SIZE     about how much memory a table without a key may use
                              while it is sorted, e.g. 64MiB or 1GiB (default

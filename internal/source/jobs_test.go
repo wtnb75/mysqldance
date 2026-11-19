@@ -3,11 +3,15 @@ package source
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 // Tests of Config.Jobs: several connections reading one database at the same
@@ -309,7 +313,9 @@ func TestJobsNeedsReloadPrivilege(t *testing.T) {
 	if err == nil {
 		t.Fatal("Open with Jobs=2 succeeded without the RELOAD privilege")
 	}
-	for _, want := range []string{"RELOAD", "--jobs 1"} {
+	// FLUSH_TABLES is named too: MySQL 8.0 and later take it in place of RELOAD.
+	// The server's own text names it on 8.x only, so look for ours.
+	for _, want := range []string{"RELOAD", "the FLUSH_TABLES privilege also works", "--jobs 1"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %s", err, want)
 		}
@@ -317,6 +323,51 @@ func TestJobsNeedsReloadPrivilege(t *testing.T) {
 	// The failed Open must not leave sessions behind.
 	waitNoSessions(t, conn, user)
 }
+
+// TestFlushTablesPrivilegeIsEnough: on MySQL 8.0 and later, FLUSH TABLES WITH
+// READ LOCK needs RELOAD or the dynamic privilege FLUSH_TABLES (B-104), so an
+// account with SELECT and FLUSH_TABLES only can read with --jobs 2 and take the
+// lock for a MyISAM table. MySQL 5.x and MariaDB cannot grant FLUSH_TABLES at
+// all (a syntax error), so only RELOAD works there.
+func TestFlushTablesPrivilegeIsEnough(t *testing.T) {
+	cfg, db, conn := testDB(t)
+	mustExec(t, conn,
+		"CREATE TABLE m (id INT PRIMARY KEY) ENGINE=MyISAM",
+		"INSERT INTO m VALUES (1), (2)",
+	)
+	fastLockTimeout(t, conn)
+	user := userWithRights(t, conn, db, false)
+
+	_, err := conn.ExecContext(context.Background(), "GRANT FLUSH_TABLES ON *.* TO '"+user+"'@'%'")
+	if err != nil {
+		var me *mysql.MySQLError
+		// 5.x and MariaDB: the privilege does not exist, so RELOAD stays the only way.
+		if errors.As(err, &me) && me.Number == errSyntax && (isMySQL5(t, conn) || isMariaDB(t, conn)) {
+			t.Skipf("this server has no FLUSH_TABLES privilege: %v", err)
+		}
+		t.Fatalf("GRANT FLUSH_TABLES: %v", err)
+	}
+
+	cfg.User, cfg.Password = user, "pw"
+	for _, jobs := range []int{1, 2} {
+		t.Run(fmt.Sprintf("jobs=%d", jobs), func(t *testing.T) {
+			cfg := cfg
+			cfg.Jobs = jobs
+			s := openSnapshot(t, cfg, db) // closed at the end of the subtest
+			if got, want := len(rowsOf(t, s, "m")), 2; got != want {
+				t.Errorf("rows = %d, want %d", got, want)
+			}
+			// The MyISAM table keeps the global read lock until Close.
+			if !writeBlocked(t, conn, "m") {
+				t.Error("write was not blocked by the global read lock")
+			}
+		})
+	}
+}
+
+// errSyntax is MySQL's syntax error, which GRANT FLUSH_TABLES gets on a server
+// that has no such privilege.
+const errSyntax = 1064
 
 // TestJobsCloseEndsEverySession: Close ends the transactions of all readers
 // and the lock connection, so no session of the account is left and the lock

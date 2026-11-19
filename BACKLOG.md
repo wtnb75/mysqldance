@@ -1,14 +1,5 @@
 # Backlog
 
-## B-104 [ready|P3] FLUSH TABLES WITH READ LOCK の権限の説明に `FLUSH_TABLES` を加える
-- 概要: B-078 の調査（設計書 13.2 節）で、MySQL 8.4 では `RELOAD` がなくても `FLUSH_TABLES`（動的権限）だけで FTWRL が通り、`BACKUP_ADMIN` だけでは通らないと分かった。エラーは `you need (at least one of) the RELOAD or FLUSH_TABLES privilege(s)`。しかし `source.go` のエラー文言、`--jobs` のヘルプ、README の「Required privilege: RELOAD」は `RELOAD` だけを挙げている。8.0 と 8.x の他の版で `FLUSH_TABLES` が通るかを確かめたうえで、文言を直す。
-- 仕様:
-  - 前提: 直す場所は `internal/source` のロック失敗のエラー文言（`rg 'RELOAD'` で探す）、`cmd/mysqldance/main.go` の `--jobs` のヘルプ、`README.md` の「Required privilege: RELOAD」の 2 か所。
-  - 前提: 統合テストは、`FLUSH_TABLES` だけを付与したアカウントを作る（8.0 / 8.4）。5.7 と MariaDB は `FLUSH_TABLES` が付与できない、または付与しても FTWRL が通らないことを `task test:integration:mysql57` / `:mariadb` で確かめ、結果を設計書 13.2 節に足す。
-- 受け入れ条件:
-  - [ ] 実機（8.0 と 8.4）で、`FLUSH_TABLES` だけを持つアカウントが `--jobs 2` と、非 InnoDB の表のあるダンプ（ロックあり）を実行できることを統合テストで確かめる
-  - [ ] エラー文言、`--jobs` のヘルプ、README の該当 2 か所が、`RELOAD`（8.0 以降は `FLUSH_TABLES` でも可。5.7 と MariaDB は `RELOAD`）と書く。5.7 と MariaDB で `FLUSH_TABLES` が通らないことを確かめて書く
-
 ## B-105 [ready|P3] `latin1` の列に入った Shift_JIS / EUC-JP など UTF-8 以外の文字コードの扱いを調べる
 - 依存: B-081
 - 概要: B-081 の案（設計書 14 節）は、`latin1` の列に入った UTF-8 だけを扱う。日本語の古いシステムでは、`cp932` / `EUC-JP` のバイト列を `latin1` の列に入れたものもある（検出の集計では「不正」に分類される）。`--latin1-as-utf8` を文字コードの指定（例: `SPEC=cp932`）に広げる案を、実機で確かめて設計書に書く。コードは変えない。
@@ -739,6 +730,7 @@
 ## B-101 [done|P2] 255 バイトを超える出力ファイル名を決定的に短縮する
 ## B-102 [done|P3] 大文字小文字だけが違う名前を、オプトインで衝突しないファイル名にする
 ## B-103 [done|P3] `DELIMITER` で始まる行を含むトリガーの出力方法を調べる
+## B-104 [done|P3] FLUSH TABLES WITH READ LOCK の権限の説明に `FLUSH_TABLES` を加える
 ## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 ## B-119 [done|P2] `--exclude-table` でテーブルを出力から外せるようにする
