@@ -35,6 +35,7 @@ task fmt                # go fmt と go fix
 | `internal/writer` | 出力ライタのインターフェースと、MySQL・SQLite・PostgreSQL 向けの実装（MySQL 向けは `datafile` / `schemafile` を包む） |
 | `internal/extsort` | メモリに収まらない (key, value) レコードの外部ソート |
 | `internal/sqlvalue` | 値の SQL リテラル化 |
+| `internal/maskbench` | マスクの変換コストを測る Go ベンチマーク（`_test.go` のみ。製品のコードは含まない） |
 | `internal/naming` | ファイル名のスキーム・エスケープ |
 
 ## 守るべき不変条件
