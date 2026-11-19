@@ -35,8 +35,20 @@ func wantContains(t *testing.T, got string, subs ...string) {
 	}
 }
 
+// standardConfigPath returns the path of the standard gitleaks.toml, which is
+// downloaded by `task fetch:gitleaks-config` and not kept in the repository.
+// It skips the test when the file has not been downloaded.
+func standardConfigPath(t *testing.T) string {
+	t.Helper()
+	const p = "testdata/gitleaks.toml"
+	if _, err := os.Stat(p); err != nil {
+		t.Skipf("%s is missing; run `task fetch:gitleaks-config`", p)
+	}
+	return p
+}
+
 func TestStandardGitleaksConfigLoads(t *testing.T) {
-	c, err := Load("testdata/gitleaks.toml")
+	c, err := Load(standardConfigPath(t))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -676,7 +688,7 @@ path = '\.password$'
 }
 
 func TestScanIsDeterministic(t *testing.T) {
-	c, err := Load("testdata/gitleaks.toml")
+	c, err := Load(standardConfigPath(t))
 	if err != nil {
 		t.Fatal(err)
 	}

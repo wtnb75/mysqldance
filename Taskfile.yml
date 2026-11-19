@@ -5,6 +5,7 @@ version: "3"
 # in one place, to the versions recorded in the design document; override one
 # for a single run, e.g. `task compat:up NAME=tidb COMPAT_TIDB_IMAGE=pingcap/tidb:v8.1.0`.
 vars:
+  GITLEAKS_VERSION: '{{.GITLEAKS_VERSION | default "v8.30.1"}}'
   COMPAT_TIDB_IMAGE: '{{.COMPAT_TIDB_IMAGE | default "pingcap/tidb:v8.5.7"}}'
   COMPAT_COCKROACH_IMAGE: '{{.COMPAT_COCKROACH_IMAGE | default "cockroachdb/cockroach:v26.4.0"}}'
   COMPAT_CLICKHOUSE_IMAGE: '{{.COMPAT_CLICKHOUSE_IMAGE | default "clickhouse/clickhouse-server:26.10"}}'
@@ -14,15 +15,34 @@ tasks:
   default:
     cmds:
       - task -l --sort=alphanumeric
+
+  # Downloads the standard gitleaks.toml that internal/scan's tests load (MIT
+  # licensed, not kept in this repository). The tag is pinned in
+  # GITLEAKS_VERSION; to move it, change the var (or pass it for one run) and
+  # delete the file, e.g. `rm internal/scan/testdata/gitleaks.toml && task
+  # fetch:gitleaks-config`. The file is skipped if it already exists.
+  fetch:gitleaks-config:
+    desc: Download the standard gitleaks.toml used by the scan tests
+    vars:
+      DEST: internal/scan/testdata/gitleaks.toml
+    status:
+      - test -s {{.DEST}}
+    cmds:
+      - mkdir -p internal/scan/testdata
+      - curl -fsSL -o {{.DEST}}.tmp https://raw.githubusercontent.com/gitleaks/gitleaks/{{.GITLEAKS_VERSION}}/config/gitleaks.toml
+      - mv {{.DEST}}.tmp {{.DEST}}
+
   test:
     desc: Run unit tests
     cmds:
+      - task: fetch:gitleaks-config
       - go test ./...
 
   # Unit tests with the race detector (needs cgo and a C compiler).
   test:race:
     desc: Run unit tests with the race detector
     cmds:
+      - task: fetch:gitleaks-config
       - go test -race ./...
 
   # Writes the profile to COVER (default coverage.out, ignored by git) and
@@ -32,6 +52,7 @@ tasks:
     vars:
       COVER: '{{.COVER | default "coverage.out"}}'
     cmds:
+      - task: fetch:gitleaks-config
       - go test -coverprofile={{.COVER}} ./...
       - go tool cover -func={{.COVER}}
 

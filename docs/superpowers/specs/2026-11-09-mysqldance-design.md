@@ -1428,7 +1428,7 @@ README の「Failure handling」の 2 つの段階（一時ファイルに書く
 
 ### 20.1 読むキー
 
-標準の `gitleaks.toml`（`internal/scan/testdata/gitleaks.toml`、gitleaks 8.x の最新版）が使うキーと、gitleaks が読む旧形式に合わせた。
+標準の `gitleaks.toml`（`internal/scan/testdata/gitleaks.toml`。リポジトリには置かず、`task fetch:gitleaks-config` が gitleaks v8.30.1 のタグから取得する。`task test` は事前に自動で実行する）が使うキーと、gitleaks が読む旧形式に合わせた。
 
 | 場所 | キー | 扱い |
 | --- | --- | --- |

@@ -6,5 +6,8 @@
 /dist/
 # Dump output used for local trials.
 /dump/
+# Standard gitleaks.toml downloaded by `task fetch:gitleaks-config`.
+/internal/scan/testdata/gitleaks.toml
+/internal/scan/testdata/gitleaks.toml.tmp
 # Scratch notes and reports of agent sessions.
 .superpowers/
