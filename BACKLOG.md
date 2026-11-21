@@ -66,29 +66,52 @@
   - [ ] `keep` の出力も決定的で、`DEFINER` のユーザーがいる復元先で復元できる（統合テスト）
   - [ ] README の使い方と、`DEFINER` の記述（「Stored routines」「Triggers」「Limitations」）をフラグに合わせる
 
-## B-112 [todo|P3] `--sql-security=keep|invoker` でビュー・ルーチンの `SQL SECURITY` を書き換えられるようにする
+## B-112 [ready|P3] `--sql-security=keep|invoker` でビュー・ルーチンの `SQL SECURITY` を書き換えられるようにする
 - 概要: `DEFINER` を除くと、`SQL SECURITY DEFINER`（既定）のビューとルーチンは、復元したユーザーの権限で動く。復元するのが管理者だと、元の定義者より高い権限で動く。オプトインで `SQL SECURITY INVOKER` に書き換えられるようにする（`--sql-security=keep`（既定）と `--sql-security=invoker`）。書き換えるとビューの見え方など定義の意味が変わるので、既定は書き換えない。トリガーには `SQL SECURITY` がないので対象外。
+- 仕様:
+  - 実機で確かめた（MySQL 8.4 / 5.7.44、MariaDB 10.11。`SHOW CREATE`）:
+    - ビューは、どの版でも `SQL SECURITY DEFINER` か `SQL SECURITY INVOKER` を必ず書く（`CREATE ALGORITHM=UNDEFINED DEFINER=... SQL SECURITY DEFINER VIEW ...`）。書き換えは、ヘッダーのこの語の置き換え。
+    - ルーチンは、`DEFINER`（既定）のときは `SQL SECURITY` を**書かない**。`INVOKER` のときだけ、シグネチャ行の次に 4 つの空白で字下げした `SQL SECURITY INVOKER` の行が出る（8.4 / 5.7.44 / MariaDB 10.11 で同じ）。本体は、字下げの無い行から始まる。したがって、ルーチンの `invoker` は「行を足す」処理になる。
+  - ルーチン: 特性の行に `SQL SECURITY INVOKER` が既にあれば何もしない。無ければ、シグネチャ行（`CREATE ... PROCEDURE|FUNCTION name(...) [RETURNS ...]`）の末尾の改行の直前に、`\n    SQL SECURITY INVOKER` を足す。シグネチャ行の終わりは、引用符・バッククォート・括弧の外の最初の改行とする（`ENUM('a\nb')` のような型の中の改行で誤らない）。`DETERMINISTIC` などの特性の順序は問われない。
+  - 前提: ビューは、ヘッダー（`VIEW` より前）にある `SQL SECURITY DEFINER` だけを置き換える。`DEFINER=...` の有無（B-111 の `keep` / `strip`）に依らず動く。`schemafile.StripDefiner` の隣に、同じ流儀（本体に触れない）で関数を足し、`internal/writer/mysql.go` の `WriteViews` と `WriteRoutines` から、`StripDefiner` の後に呼ぶ。
+  - 前提: フラグは `cmd/mysqldance/main.go` で受け、`dump.Options` から `writer.MySQL` に渡す。`--target sqlite` / `postgres` では、ビューを別の変換で出し（`SQL SECURITY` は落とす）、ルーチンは出さないので、何もしない（エラーにしない）。
+  - 前提: B-111 とは独立で、どちらが先でも動く。
 - 受け入れ条件:
-  - [ ] `--sql-security=keep`（既定）は今と同じ出力で、`invoker` はビューとルーチンの `SQL SECURITY DEFINER`（明示した場合と、書かれていない既定の場合）を `SQL SECURITY INVOKER` にする
-  - [ ] 本体や文字列の中の `SQL SECURITY DEFINER` という文字列は書き換えない（ヘッダーと特性だけを書き換える）
+  - [ ] `--sql-security=keep`（既定）は今と同じ出力。`invoker` は、ビューの `SQL SECURITY DEFINER` を `SQL SECURITY INVOKER` にし、ルーチンは上記のとおり `SQL SECURITY INVOKER` の行を足す（既に `INVOKER` のものは変えない）
+  - [ ] 本体や文字列の中の `SQL SECURITY DEFINER` という文字列、`ENUM` の型の中の改行を含むシグネチャは、書き換えを誤らない（単体テスト）
   - [ ] 不正な値は使い方のエラー。`--target sqlite` / `postgres` では何もしない（README に書く）
-  - [ ] `invoker` の出力が決定的で、復元して `SECURITY_TYPE` が `INVOKER` になる（統合テスト）
+  - [ ] `invoker` の出力が決定的で、復元して `information_schema` の `VIEWS.SECURITY_TYPE` と `ROUTINES.SECURITY_TYPE` が `INVOKER` になる（統合テスト。`SQL SECURITY DEFINER` を明示したビューと、何も書かないルーチンの両方）
   - [ ] README に、意味が変わること（ビューの見え方、権限）を書く
 
-## B-113 [todo|P3] SQLite 向けのビューの注意の警告を、列の型と照合順序を使って正確にする
+## B-113 [ready|P3] SQLite 向けのビューの注意の警告を、列の型と照合順序を使って正確にする
 - 依存: B-062
 - 概要: B-062 の SQLite 向けビューの注意の警告は、構文だけで決める（文字列リテラル、`LIKE`、`GROUP BY` など）。列の型を知らないため、次の差は警告されない。`DECIMAL` / `BIGINT UNSIGNED` / `BIT(64)` の列は SQLite では `TEXT` なので、整数との比較（`price > 5`）や算術（`price + tax`）の結果が MySQL と変わる。大文字小文字を区別しない照合順序の文字列列どうしの比較（`a.name = b.name`、`IN`、`MIN` / `MAX`、`JOIN ... ON`）が、SQLite では 1 バイトずつの比較になる。ビューが読む列の型と照合順序（`source.TableDef`）を使って、該当するビューに理由つきの警告を出す。B-062 のレビューで指摘された。
+- 仕様:
+  - 実機で確かめた（MySQL 8.4、MariaDB 10.11。`SHOW CREATE VIEW`）: ビューの列は、必ず `` `別名`.`列` `` と修飾して書かれる（`` from (`t` `a` join `u` `b` on(...)) ``）。表の別名は FROM / JOIN の `` `表` `別名` `` で分かる。派生表（`from (select ...) `x```）とビューを読むビュー（`` from `v1` ``）の列は、修飾が派生表・ビューの別名になる。
+  - 列の解決: 修飾された列を、FROM / JOIN の別名から同じ DB の表（`sc.Defs`）の列に引く。派生表・ビューの列、引けない列は「型が分からない」ものとして扱い、新しい警告の理由にしない（今の構文だけの警告は、そのまま出る）。README に、この限界を書く。
+  - 前提: 列の照合順序は `source.ColumnDef` に無い。`defColumns`（`internal/source/dialect.go`）の 4 つの方言（8.x、5.7、5.6、MariaDB）に `COLLATION_NAME`（と `CHARACTER_SET_NAME`）を足して `ColumnDef.Collation` / `CharacterSet` に読む（B-166 の `fixed` の文字集合の検査も使う。先に入った方が足す）。
+  - 「数値を TEXT で持つ列」: `sqliteType` が `TEXT` を返す `decimal` / `numeric`、`bigint unsigned`、幅が 64 以上の `bit`。この列が次の位置にあるとき警告する: 比較演算子（`=` `<` `>` `<=` `>=` `<>` `!=`）または算術演算子（`+` `-` `*` `/` `%`）の隣のオペランド、`BETWEEN` の項、`SUM` / `AVG` / `MIN` / `MAX` / `ROUND` / `ABS` の引数。理由の文言は、列を `TEXT` で持つことと、比較・算術が文字列として行われる（SQLite）ことを言う。
+  - 「大文字小文字を区別しない文字列の列」: 文字列型（`char` / `varchar` / `text` 系 / `enum` / `set`）で、`Collation` が `_ci` で終わるもの。この列が、別の解決できた文字列の列と比較演算子（`=` `<` `>` `<=` `>=` `<>` `!=`、`JOIN ... ON` の中も同じ）で比べられている、または `MIN` / `MAX` の引数にあるとき警告する。リテラルとの比較は、今の「a string literal」の警告に任せる。
+  - 範囲外（README に書く）: `IN (副問い合わせ)`、`CASE`、上記以外の関数の引数、派生表・ビューの列。
+  - 警告は `sqliteDialect` のビューだけ（PostgreSQL 向けの警告は変えない）。理由は `cautionOrder` に足し、報告の順序を決定的に保つ。
 - 受け入れ条件:
-  - [ ] `DECIMAL` / `BIGINT UNSIGNED` / `BIT` の列を比較・算術に使うビューが、理由つきの警告になる
-  - [ ] 大文字小文字を区別しない照合順序の文字列列どうしの比較を含むビューが、理由つきの警告になる
-  - [ ] 該当しないビューの警告は増えない
+  - [ ] `DECIMAL` / `BIGINT UNSIGNED` / `BIT(64)` の列を、比較・算術・上記の関数の引数に使うビューが、理由つきの警告になる
+  - [ ] 大文字小文字を区別しない照合順序の文字列列どうしの比較（`JOIN ... ON` を含む）と `MIN` / `MAX` を含むビューが、理由つきの警告になる
+  - [ ] 該当しないビュー（整数・`_bin` の列、別名が派生表の列、リテラルだけの比較）の警告は増えない。出力は決定的
+  - [ ] 4 つの方言のカタログから `Collation` を読む（統合テスト。8.0 / 8.4 と、`task test:integration:mysql57` / `mysql56` / `mariadb`）
+  - [ ] README の SQLite の節の、ビューの注意を、上記の範囲と限界に合わせて更新する
 
-## B-114 [todo|P3] SQLite 向けの出力で、親テーブルが出力されない外部キーを警告して落とす
+## B-114 [ready|P3] SQLite 向けの出力で、親テーブルが出力されない外部キーを警告して落とす
 - 依存: B-036
 - 概要: B-063 のレビューで指摘された（B-063 以前からの挙動）。`writeSQLiteTable` は、親が `sc.Defs` に無い（出力されない）外部キーをそのまま出力する。親が存在しない SQLite ファイルになり、外部キーを有効にすると子への書き込みが `no such table` で失敗する。PostgreSQL のライタは、親が出力に無い外部キーを理由つきの警告にして落とす（`byName`）。SQLite もこれに揃え、警告して落とす。
+- 仕様:
+  - 親が出力されない = `fk.RefTable` が `sc.Defs` に無い。`Snapshot.Defs`（`internal/source/def.go`）は、`--exclude-table` で外した表とビューを含めないので、外した表を親にする外部キーが、今はそのまま出力される。
+  - 前提: 判定の順序は `writeSQLiteTable` の今の順（別 DB の参照 → 生成列 → 親の有無 → 親のキー（`isSQLiteParentKey`）の順）に、「親が `defs` に無い」を、`isSQLiteParentKey` の前に足す。`defs[fk.RefTable]` の引き方（完全一致）は今のまま変えない。「親を読んでいなければ判定しない」という `writeSQLiteTable` のコメントは、この項目で直す。
+  - 警告の文言は PostgreSQL のライタに揃える（`foreign key X references table Y, which is not output`）。自己参照（親が自分）は `defs` にあるので変わらない。
 - 受け入れ条件:
-  - [ ] 親テーブルが出力されない外部キーは、出力せず、理由つきの警告になる
-  - [ ] 親テーブルが出力される外部キーの出力は変わらない
+  - [ ] 親テーブルが出力されない（`--exclude-table` で外した）外部キーは、出力せず、理由つきの警告になる（単体テスト）
+  - [ ] 親テーブルが出力される外部キー（自己参照を含む）の出力は変わらない
+  - [ ] 外した親を持つ子の表を含む出力を SQLite に復元し、外部キーを有効にして子へ書き込める（統合テスト。SQLite の統合テストがある場合。無ければ単体テストで足りる）
   - [ ] README の SQLite の節を、外部キーの扱いに合わせて更新する
 
 ## B-115 [todo|P3] PostgreSQL 向けのビューの静的検査を広げる
@@ -401,11 +424,31 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
-## B-166 [todo|P2] マスク: 読んだ行を書き出す前に変換する仕組みと、固定値・NULL 化の変換
+## B-166 [ready|P2] マスク: 読んだ行を書き出す前に変換する仕組みと、固定値・NULL 化の変換
 - 依存: B-165, B-201
 - 概要: `rowSource` を包み、行ごとにルールの変換を適用してから writer に渡す（`--target` を問わず 1 か所で効く。生データはディスクに載らない）。最初の変換は固定値と NULL 化だけ。NOT NULL の列への NULL 化はエラーにする。決定性（同じデータと設定ならバイト一致）を保つ。B-165 では配線しなかった `--mask-rules` と `--salt-file` を CLI に配線し、README を更新する（適用する変換が無い状態で配線すると、マスクされないままの生データが出るため、この項目で初めて配線する）。変換の入力は値だけでなく、同じ行のほかの列と、列の定義（型、長さ、文字集合、NULL 可、UNIQUE か）を含める（`shift_date` の `by` や派生列が行の外を読むため）。変換名とバージョンを HMAC の入力に含め、ツールの更新だけで出力が変わらないようにする（値が変わる改修は新しいバージョンとして足す）。
+- 仕様:
+  - **変換を入れる場所**（調査で分かった）: `rowSource` の外側を包むだけでは足りない。キーの無い表は、`source.Snapshot.EachRow`（`internal/source/rows.go`）が、**変換の前の生の行**を `extsort` に積んで並べ替える。メモリの上限を超えると、生の行が出力ディレクトリの一時ファイル（`stage.newScratch`）に載る（SIGKILL で残りうる）。さらに、並びが生の値の文字列順になり、マスク後の出力の並びから元の値の順序が漏れる。したがって、変換は `EachRow` の中の、行を読んだ直後（`emit` の前）に掛ける（`EachRow` に変換の引数を足す、など。形は実装時に決める）。キーのある表はサーバーが `ORDER BY` した順のまま、キーの無い表は変換後の行の文字列順で並べる。`dump.rowSource` のインターフェースはそれに合わせて変える。`--target` を問わず、writer に渡る行は変換後だけ。
+  - **フラグ**: `--mask-rules FILE`（B-165 の YAML）と `--salt-file FILE`（環境変数 `MYSQLDANCE_SALT` も。B-165 の `internal/mask/salt.go` を使う）。`--salt-file` だけ（`--mask-rules` なし）は使い方のエラー。
+  - **salt**（ユーザーが選択）: 使う変換があるときだけ必須。この項目の `fixed` / `nullify` は使わないので、salt なしで動く。`--salt-file` や `MYSQLDANCE_SALT` が渡されたときは、使う変換が無くても検証する（16 バイト未満、権限が緩いファイルはエラー）。変換の登録（`mask.Transform`）に `NeedsSalt` を足す。
+  - **変換**（`internal/mask` に登録）:
+    - `fixed`: 引数 `value`（必須。YAML の文字列・整数・小数・真偽値）。元の値が NULL のときは NULL のまま。適用する型は、文字列型（`CHAR` / `VARCHAR` / `TEXT` 系）、整数、`DECIMAL`、`FLOAT` / `DOUBLE`、`DATE` / `DATETIME` / `TIMESTAMP` / `TIME` / `YEAR`。`BIT` / `BLOB` / `BINARY` / `JSON` / `ENUM` / `SET` / 空間型は対象外（B-165 の型の検査でエラー）。
+    - `nullify`: 引数なし。全ての型に使える。NULL 可でない列はエラー。名前を `null` にしないのは、YAML が `use: null` を文字列でなく null と読むため。
+  - **`fixed` の値の検査**（ダンプの前。列の定義は `source.TableDef.Columns` の `Type` / `Nullable` と、`CharacterSet`（B-113 と共有。無ければ足す）で見る）: 文字列は、`CHAR(n)` / `VARCHAR(n)` の n 文字以内で、列の文字集合で表せる（ASCII 以外は `utf8mb4` / `utf8mb3` / `utf8` の列だけ）。整数は型の範囲（`UNSIGNED` を考慮）、`DECIMAL(M,D)` は桁数と小数部に収まる、`FLOAT` / `DOUBLE` は有限の数、日付・時刻はその型の書式（小数秒は列の精度以内）。YAML の型は、文字列型と日付・時刻には文字列、数値型には数値のみ（`"12"` を整数の列に書くとエラー）。
+  - **キーの列の制限**: `fixed` は、`TableInfo.OrderBy` の列（主キー、なければ NOT NULL の一意キー）、いずれかの UNIQUE インデックスの列、外部キーの子側の列に使えない（重複・参照切れになる。UNIQUE の検出は B-168、外部キーの追従は B-170）。外部キーの親側（他の表から参照される）の列には、どの変換も使えない。`nullify` は、NULL 可の UNIQUE の列と、NULL 可の外部キーの子側の列には使える（NULL は重複・参照切れにならない）。エラー文に理由（キーの種類）を入れる。
+  - **共通キーの扱い**: `domain`、`when`、`on_null`、`on_collision` と `paths`（JSON のパスごとのルール）は、この項目では意味を持たせない。書かれていたら、黙って無視せず、「この版では未対応」というエラーにする（B-165 は読むだけで、値の意味は後の項目）。
+  - **変換の入力**: 変換は、値だけでなく、同じ行の全ての列と列の添字、列の定義（型、長さ、文字集合、NULL 可、UNIQUE / 外部キーか）を受け取る形にする（`shift_date` の `by` や派生列が行の外を読むため）。ルールの無い表は変換を掛けない（行ごとのコストを足さない）。ルールのある列の変換は、表ごとに先に解決しておき、行ごとにマップを引かない。
+  - **HMAC の鍵の導出**: 変換の登録に `Version`（1 から）を持たせ、`DeriveKey(salt, 変換名, Version)`（HMAC-SHA256）を `internal/mask` に置く。`fixed` / `nullify` は使わない（B-167 が使う）。名前・バージョンが違えば鍵が違うこと、同じ入力は同じ鍵になることをテストする。
+  - **カタログ**: ダンプの前に、読んだ DB・表・列から `mask.Catalog` を作って `Rules.Validate` を呼ぶ。`FoldTableCase` は `--exclude-table` と同じ判定（`lower_case_table_names`）に揃える。出力ディレクトリに触れる前（検査 → 古いファイル削除 → 書き出しの「検査」）に失敗させる。
+  - **マスクされないもの（README に書く）**: マスクは行のデータだけに掛かる。スキーマの文字列（列の `DEFAULT` と `COMMENT`、`ENUM` / `SET` の値、`CHECK`、パーティションの境界値、ビュー・トリガー・ルーチン・イベントの本体のリテラル、`AUTO_INCREMENT` の現在値）、表名・列名、行数、キーのある表の行の並び（主キーの順）は、変換されない。
+  - 前提: `internal/maskbench` は、B-167 で本物の変換が入るまで今のまま置く（B-201 が B-166 で決めるとした点。`fixed` / `nullify` は計測するほどの費用がない）。
+  - 前提: ログ・エラー・進捗に、行の値を出さない（列の名前と型は出してよい）。
 - 受け入れ条件:
-  - [ ] 仕様を確定する（`refine-backlog`）
+  - [ ] `--mask-rules` / `--salt-file` / `MYSQLDANCE_SALT` が配線され、salt は使う変換があるときだけ必須、渡されたときは常に検証される。不正なルール（B-165 の検査と、未対応のキー、キーの列への `fixed`、`fixed` の値の不適合、NOT NULL への `nullify`）は、出力ディレクトリに触れる前にまとめてエラーになる
+  - [ ] `fixed` と `nullify` が、`--target mysql` / `sqlite` / `postgres` の全てで、writer に渡る行に効く。NULL は `fixed` で NULL のまま
+  - [ ] キーの無い表で、生の行がソートの一時ファイルに載らず（偽の `SortFile` に書かれたバイトに、生の値が含まれない）、出力の並びは変換後の行の文字列順になる（単体テスト）
+  - [ ] 同じデータとルールで全ファイルがバイト一致する（2 回の実行、`--jobs 1` と `--jobs 2`）。ログとエラーに値が出ない。MySQL に復元して、変換した列だけが変わっていることを確かめる（統合テスト）
+  - [ ] README にフラグ、ルールの書式（`fixed` / `nullify`）、マスクされないもの、`--jobs` と並びの扱いを書く
 
 ## B-167 [todo|P2] マスク: 長さと文字種を保つ決定的な変換（`hash_keep_shape`）
 - 依存: B-166
@@ -479,17 +522,56 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
-## B-180 [todo|P2] スキャン: 個人情報を値から検出する組み込みルール集（メール・電話・郵便番号・カード・マイナンバー・IP）
+## B-180 [ready|P2] スキャン: 個人情報を値から検出する組み込みルール集（メール・電話・郵便番号・カード・マイナンバー・IP）
 - 依存: B-176
 - 概要: gitleaks 互換の TOML として組み込む。カード番号は Luhn、マイナンバーはチェックデジットで偽陽性を減らす。利用者の設定で足したり外したりできる。検出は目安で、漏れがないことの保証にならない旨を README に書く。
+- 仕様:
+  - **組み込みの形**（ユーザーが選択）: `internal/scan/builtin/pii.toml` を `go:embed` で取り込む。設定の `[extend]` に `useBuiltin = ["pii"]`（組み込みの名前の配列）と `disabledRules = ["pii-ipv4"]`（rule の `id`。gitleaks にもあるキー）を読めるようにする。利用者の `[[rules]]` が同じ `id` を持てば、利用者のルールが組み込みのルールに優先する。`useBuiltin` の知らない名前と、`disabledRules` の存在しない `id` は、名前を添えてエラー（打ち間違いで無効にしたつもりのルールが残るのを防ぐ）。`[extend]` の `useDefault` と `path` は、今まで通り B-204 までエラー。設定を渡さないときの既定（組み込みを使うか）は B-177（CLI の配線）で決める。B-181 の `pii-columns` も同じ仕組みに乗せる（この項目で `[extend]` の読み込みを作る）。
+  - **値の検証（`validate` キー）**: gitleaks 互換の TOML に、ルールのキー `validate` を足す（`luhn` と `my_number`）。正規表現が一致した秘密の値に対して、検証が通ったときだけ検出とする。gitleaks はこのキーを知らないので、検出が増える向き（偽陽性が増えるだけ）にしか影響しない。知らない名前はルールの `id` を添えてエラー。`luhn` は、数字以外（空白・ハイフン）を除いた桁に Luhn。`my_number` は、12 桁の数字（空白区切りを除く）で、最後の桁が検査数字（前の 11 桁を、右から 1〜6 桁目に 2〜7、7〜11 桁目に 1〜6 を掛けた和を 11 で割った余りが 0 か 1 なら 0、それ以外なら 11 から余りを引いた数）と一致すること。設計書 20.1 の表に `validate` を足す。
+  - **ルール**（`id` と、検出の要点。正規表現は実装時に決め、肯定・否定の例でテストする）:
+    - `pii-email`: `ローカル部@ドメイン`（ドメインに `.` を含む）。`keywords = ["@"]`。
+    - `pii-phone-jp`: 国内形式のハイフン区切り（`0X-XXXX-XXXX`、`0XX-XXXX-XXXX`、`0X0-XXXX-XXXX` など）。ハイフンなしの 10〜11 桁は ID と区別できないので対象外。
+    - `pii-phone-intl`: `+` と国番号で始まる E.164（`+` の後に 7〜15 桁。空白・ハイフンの区切りは可）。
+    - `pii-postal-jp`: `NNN-NNNN`（先頭の `〒` は可）。ハイフンなしの 7 桁は対象外。
+    - `pii-credit-card`: 13〜19 桁（空白・ハイフン区切り可）、`validate = "luhn"`。前後が数字のときは一致させない（長い数字列の一部を拾わない）。
+    - `pii-my-number`: 12 桁（4-4-4 の空白区切り可）、`validate = "my_number"`。前後が数字のときは一致させない。
+    - `pii-ipv4`: 各 8 ビットが 0〜255 の 4 つ組。許可リストは持たない（外したい利用者は `disabledRules`）。
+    - `pii-ipv6`: 8 グループの完全形と、`::` を含む省略形。コロンだけの時刻（`12:34:56`）は一致させない。
+  - Go の `regexp`（RE2）で書く（先読みなし）。前後の境界は、非数字・非英数字の捕捉グループと `secretGroup` で表す。
+  - 前提: README の「検出は目安で、漏れがないことの保証にならない」という注意は、`scan` のフラグと一緒に B-177 が README に書く（今は `scan` が README に無い）。この項目は、同じ注意を設計書 20 節と `pii.toml` の冒頭のコメントに書く。
+  - 前提: 規則に許可リストの `paths` は使わない（B-206 の取りこぼしの影響を受けない）。
 - 受け入れ条件:
-  - [ ] 仕様を確定する（`refine-backlog`）
+  - [ ] `validate`（`luhn`、`my_number`）が動く。検査数字が合わない 12 桁、Luhn が合わない 16 桁は検出されず、合うものは検出される。知らない名前はエラー（単体テスト）
+  - [ ] `pii.toml` の全ルールが `Parse` で読め、ルールごとに、検出される例と検出されない例（桁数違い、区切り違い、長い数字列の一部、時刻）の表のテストがある
+  - [ ] `[extend]` の `useBuiltin` と `disabledRules` が動く（同じ `id` の上書き、知らない名前のエラー、`useDefault` / `path` は引き続きエラー）
+  - [ ] 検出の結果に一致した値の文字列を載せない（B-176 のまま）。出力は決定的
+  - [ ] 設計書 20 節に、組み込みの形、`validate`、各ルール、「目安である」旨を書く
 
-## B-181 [todo|P2] スキャン: 氏名・住所などを列名から推定する組み込みルール集
-- 依存: B-176
+## B-181 [ready|P2] スキャン: 氏名・住所などを列名から推定する組み込みルール集
+- 依存: B-176, B-180
 - 概要: 値からは検出できない氏名・住所・自由記述を、`path` だけのルール（regex なし）で列名から推定する（`name`、`氏名`、`address`、`tel` など）。利用者の設定で足したり外したりできる。
+- 仕様:
+  - **組み込みの形**: B-180 の `[extend] useBuiltin` に乗せる。名前は `pii-columns`（`internal/scan/builtin/pii-columns.toml`）。外すのは `disabledRules`、足すのは利用者の `[[rules]]`（同じ `id` で上書き）。
+  - **ルール**は `path` だけ（`regex` なし）。`path` に当てる文字列は `DB.TABLE.COLUMN` なので、列名の部分だけを見る（最後の `.` の後。`(?i)` で大文字小文字を区別しない）。値が NULL・空のセルは `Config.Scan` が検出にしないので、空の列は報告されない。
+  - **語の当て方**: 長くて紛れにくい語（`email`、`address`、`birthday`、`postal`、`firstname` など）は、列名の中の部分一致。短い語（`tel`、`zip`、`dob`、`fax`、`name` など）は、`_` / `-` か列名の端で区切られた 1 つの語として一致したときだけ（`tel`、`user_tel`、`tel_no` は一致し、`hotel`、`total` は一致しない）。日本語の語（`氏名`、`住所`、`電話` など）は部分一致。
+  - **ルール**（`id` と、当てる語の例。語の一覧は実装時に決め、README でなく設計書 20 節に書く）:
+    - `pii-column-person-name`: `first_name`、`last_name`、`full_name`、`family_name`、`given_name`、`surname`、`氏名`、`姓名`、`名前`、`フリガナ`、`ふりがな` など。
+    - `pii-column-email`: `email`、`e_mail`、`mail_address`、`メール` など（`mail` だけは `mail_address` のように語として）。
+    - `pii-column-phone`: `tel`、`phone`、`mobile`、`fax`、`電話`、`携帯` など。
+    - `pii-column-address`: `address`、`addr`、`street`、`住所`、`番地` など。
+    - `pii-column-postal`: `zip`、`postal`、`郵便` など。
+    - `pii-column-birth`: `birth`、`dob`、`生年月日`、`誕生日` など。
+    - `pii-column-gov-id`: `my_number`、`ssn`、`passport`、`マイナンバー`、`旅券`、`card_number`、`card_no` など。
+    - `pii-column-freetext`: `comment`、`note`、`notes`、`memo`、`remark`、`備考`、`メモ`、`コメント` など（自由記述。個人情報が混ざりうる）。`description` と `body` は、商品説明などの誤検出が多いので入れない。
+    - `pii-column-name-generic`: 列名がちょうど `name` のもの。`products.name` のような誤検出が多いので、上の `pii-column-person-name` とは別のルールにして、外しやすくする。`product_name`、`table_name` は、どのルールにも一致させない。
+  - 前提: パスワード・トークンなどの秘密の列名は、この項目の範囲外（個人情報の推定。必要なら別項目）。
+  - 前提: 設定ファイルで B-180 の `[extend]` が読めること。B-180 が先に入る。
 - 受け入れ条件:
-  - [ ] 仕様を確定する（`refine-backlog`）
+  - [ ] `pii-columns.toml` の全ルールが `Parse` で読め、`regex` を持たず `path` だけである
+  - [ ] ルールごとに、一致する列名と一致しない列名の表のテストがある（例: `users.first_name`、`customers.氏名`、`a.b.user_tel`、`t.birthday` は一致。`t.hotel`、`t.total`、`products.product_name`、`t.description` は一致しない。`products.name` は `pii-column-name-generic` だけ）
+  - [ ] `useBuiltin = ["pii-columns"]` で有効になり、`disabledRules` で個別に外せ、同じ `id` の利用者のルールが優先する
+  - [ ] 値が空のセルは検出にならない。出力は決定的
+  - [ ] 設計書 20 節に、各ルールの語と、「列名からの推定は目安である」旨を書く
 
 ## B-182 [todo|P3] スキャン: 決定的なサンプリング（件数または割合の指定）
 - 依存: B-177
@@ -503,11 +585,22 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
-## B-184 [todo|P2] マスク: ルールに判断のない列があればエラーにする（`--strict-columns`、`keep` ルール）
-- 依存: B-165
+## B-184 [ready|P2] マスク: ルールに判断のない列があればエラーにする（`--strict-columns`、`keep` ルール）
+- 依存: B-165, B-166
 - 概要: ルールに書かれていない列をエラーにするモードを、オプションで足す（デフォルトは今のまま、書いた列だけ変換する）。残す列は `keep` と明示する。列が増えたとき、判断なしでは本番のダンプが通らなくなる。B-172 の `--strict-rules`（当たらないルールの検出）とは逆向きの検査。
+- 仕様:
+  - `keep` は変換の登録（`internal/mask`）に足す。引数なし、全ての型に使える、値を変えない（`NeedsSalt` なし）。B-166 が入れた「ルールの無い列は何もしない」と同じ結果になるだけで、「判断した」という記録になる。
+  - `--strict-columns`（既定は無効）: `--mask-rules` が無いときは使い方のエラー。ダンプの前（出力ディレクトリに触れる前）に、出力する全ての表（読む DB の基本表のうち `--exclude-table` で外れないもの）の、出力する全ての列（生成列は出力しないので対象外）に「判断」があるかを調べる。判断は、その列のルール（`keep` を含む、どの変換でも）、または、下のワイルドカードのルール。判断のない列は、`DB.TABLE.COLUMN` の名前を全て並べて 1 つのエラーにする（値は出さない）。
+  - **ワイルドカード**（ユーザーが選択）: キーの列の部分に `*` を書いた `DB.TABLE.*` だけを許し、使える変換は `keep` だけ（ほかの変換はエラー）。意味は「その表の、個別のルールが無い列を、全て `keep` とする」。個別の列のルールが優先する。`DB.*.*` と表の部分の `*` は許さない（エラー）。存在しない DB・表、ビュー、`--exclude-table` で外れた表への `DB.TABLE.*` は、通常のルールと同じエラー。同じ表への `DB.TABLE.*` の重複もエラー。`*` という名前の列は、ワイルドカードとして読まれ、個別には書けない（README に書く）。`--strict-columns` なしでも、`DB.TABLE.*` は書ける（結果は同じ）。
+  - 前提: `mask.SplitKey` はそのまま使い、`Rules.Validate` が列の部分の `*` を見て、表の全列に展開する。
+  - 前提: `quasi` だけを書いた規則（B-196）は、判断に数えない。
+  - 前提: README に、フラグ、`keep`、ワイルドカード、列が増えたときの動き（`--strict-columns` ならエラー）、`--strict-rules`（B-172）との違いを書く。
 - 受け入れ条件:
-  - [ ] 仕様を確定する（`refine-backlog`）
+  - [ ] `keep` が登録され、値を変えない。`--strict-columns` は `--mask-rules` なしで使い方のエラー
+  - [ ] `--strict-columns` で、判断のない列が `DB.TABLE.COLUMN` の一覧つきのエラーになり、出力ディレクトリに触れない。生成列、ビュー、`--exclude-table` の表は数えない（単体テスト）
+  - [ ] `DB.TABLE.*: {use: keep}` が、個別のルールの無い列を判断済みにする。ほかの変換、`DB.*.*`、表の部分の `*`、存在しない表への指定、重複はエラー
+  - [ ] `--strict-columns` なしの動きは変わらない（書いた列だけ変換する）
+  - [ ] README を更新する
 
 ## B-185 [todo|P2] マスク: メールアドレスの変換でドメインを予約ドメインに固定する
 - 依存: B-167
@@ -574,11 +667,23 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
-## B-196 [todo|P2] k の測定: 準識別子の列の組で、k の最小値と k 未満の行数を報告する
+## B-196 [ready|P2] k の測定: 準識別子の列の組で、k の最小値と k 未満の行数を報告する
 - 依存: B-165
 - 概要: `quasi: true` の印を付けた列の組について、同じ値の組を持つ行数（k）の分布を、スナップショットの集計で数えて報告する。値は出さず、件数だけを出す。`--k N` を付けると、N 未満の行があれば 0 以外の終了コードで終わる。
+- 仕様:
+  - **印の置き場所**（ユーザーが選択）: マスクのルールファイル（B-165）の共通キー `quasi`（真偽値）。`use` と一緒に書いてもよく、`quasi: true` だけを書いた規則（`use` も `paths` も無い）も許す。後者は、ダンプでは何もしない（B-166 が入っていれば、変換の解決で `Use` が空の規則を飛ばす。B-184 の `--strict-columns` は、これを判断に数えない）。`paths` と一緒の `quasi` はエラー。`quasi: false` は、書いていないのと同じ。`reservedKeys`（`internal/mask/rules.go`）に足し、`Rule.Quasi` として読む。検証（存在しない列、生成列、重複、ビュー）は B-165 の `Rules.Validate` をそのまま使う。変換の型の検査は、`use` がある規則だけ。
+  - **コマンド**: サブコマンド `mysqldance scan-k`（B-202 の記述の名前）。`os.Args[1]` が、サブコマンドの名前と完全に一致するときだけサブコマンドとして扱い、そうでなければ今のダンプ（`mysqldance [flags] -o DIR DB...`）。DB の名前がサブコマンドと同じなら、フラグを先に書く（`mysqldance -o out scan-k`）。README に書く。B-122 の `check` と B-177 の `scan` も同じ仕組みに乗る（最初に入れた項目が、この振り分けを作る）。
+  - **フラグ**: ダンプと同じ接続フラグ（`-h` `-P` `-u` `--socket` `--password-file` `--ssl-*`）、`--log-level`、`--log-format`、`--exclude-table`、`--no-lock`、`--mask-rules FILE`（印を読む。salt は要らない）、`--k N`（1 以上の整数。無ければ報告だけ）、`--format table|json`（既定 `table`）、対象 DB。出力ディレクトリ（`-o`）は取らない。ファイルを作らない。
+  - **測り方**: 印のある列を 1 つ以上持つ表ごとに、その表の印のある列全てを 1 つの組（準識別子）とする。`SELECT cnt, COUNT(*) FROM (SELECT COUNT(*) AS cnt FROM 表 GROUP BY 列...) g GROUP BY cnt ORDER BY cnt` を、ダンプと同じスナップショットで流す（値はサーバーから出ない）。NULL は 1 つの値（NULL どうしが同じ組）。文字列の列（`CHAR` / `VARCHAR` / `TEXT` 系 / `ENUM` / `SET`）は、`CAST(列 AS BINARY)` でバイト単位に比べる（照合順序で `A` と `a` が同じ組になると、k を大きく見積もる。保守側に倒す）。表をまたぐ組、JOIN は対象外（README に書く）。`GROUP BY` の費用（全行を読み、一時表を使う）を README に書く。
+  - **報告**: 表ごとに、行数、組の数、最小の k、k の分布（k = 1、2、3、4、5、6〜9、10〜99、100 以上の、それぞれの行数）、`--k N` のときは k < N の行数。空の表は、行数 0、最小の k は無し（違反にしない）。列名は出してよいが、値は出さない。表は DB・表の名前順（決定性）。`table` は標準出力に表、`json` は 1 行 1 表の JSON Lines。ログは標準エラー出力（`check` の 13.5 と同じ流儀）。
+  - **終了コード**（`check` の設計書 13.5 に揃える。ダンプの 0 / 1 とは別）: 0 = 実行でき、`--k` が無いか、k < N の行が無い。1 = `--k N` で、k < N の行がある。2 = 実行できなかった（フラグの誤り、接続の失敗、ルールファイルの誤り、問い合わせの失敗）。
+  - 前提: `--jobs` は取らない（表を順に測る）。測るのは、マスクの前の、サーバーの値。マスク後のダンプファイルを測るのは B-197。
 - 受け入れ条件:
-  - [ ] 仕様を確定する（`refine-backlog`）
+  - [ ] `quasi` が `use` と一緒でも単独でも読め、`paths` との組み合わせと、存在しない・生成列・ビューへの印は、B-165 と同じ形のエラーになる。ダンプは `quasi` だけの規則で何も変えない
+  - [ ] 偽のクエリ結果で、分布・最小の k・k < N の行数が正しく出る。空の表、NULL を含む組、`--k` の有無（単体テスト）
+  - [ ] 実機（MySQL 8.0 / 8.4 と、5.7・MariaDB は `task test:integration:mysql57` / `mariadb`）で、NULL が 1 つの組になり、`A` と `a` が別の組になる。出力に値が含まれない（統合テスト）
+  - [ ] 終了コード 0 / 1 / 2 と、`table` / `json` の出力が決定的。既存のダンプのコマンドラインは変わらない（`mysqldance -o out scan-k` は DB `scan-k` のダンプ）
+  - [ ] README（サブコマンド、フラグ、`quasi`、測り方と限界、終了コード）を更新する
 
 ## B-197 [todo|P3] k の測定: ダンプファイルを入力にして、マスク後の k を測る
 - 依存: B-193, B-196
@@ -610,11 +715,23 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
-## B-203 [todo|P2] 端末のときにプログレスバーを描く（`--progress auto|bar|log|none`）
+## B-203 [ready|P2] 端末のときにプログレスバーを描く（`--progress auto|bar|log|none`）
 - 依存: B-202
 - 概要: 標準エラーが端末のときだけ、B-202 の進捗から、`\r` で 1 行のバーを描く（ライブラリは使わない）。`--jobs` が 2 以上のときは、全体で 1 本にして、読んでいる表を示す。バーを出すときは、ログも同じ出力口を通し、バーを消してから出す。`auto` は端末ならバー、そうでなければログ。
+- 仕様:
+  - **フラグ**: `--progress auto|bar|log|none`（既定 `auto`。ほかの値は使い方のエラー）。`auto` は、標準エラーが端末ならバー、そうでなければ `log`。`bar` は、端末でなくてもバー（`\r` を含む行をそのまま書く。README に書く）。`log` は B-202 の `dump progress` の記録（今の動き）。`none` はバーも記録も出さない。
+  - `--progress-interval`（B-202）は `log` の間隔だけを決める。バーの更新には効かない。`bar` のときは `dump progress` の記録を出さない（バーが同じ情報を示す）。`--progress-interval 0` は `log` の記録を出さない（今のまま）。端末で `auto` にすると、バーが出て記録は出なくなる（今までと変わる点。README に書く）。
+  - **バーの内容**: `internal/dump/progress.go` の `report` が組み立てる値（rows、bytes、tables_done / tables、`percent`（概算に達したら 99 で止める）、`rows_per_sec`、`eta`（出す条件は `report` と同じ））を、記録とバーの両方が使えるよう関数に切り出す。1 行 = 進み具合のバー（`percent` があるときだけ。無いときはバーなしで件数だけ）、行数、バイト数、速度、`eta`、読んでいる表（`--jobs` が 2 以上でも全体で 1 本。名前順で先頭の何件かと `+N`）。`approx_rows` が 0 のときは `percent` と `eta` を出さない。
+  - **更新**: バーは 250ms ごとに描く（`--progress-interval` と独立の固定値。時計は B-202 の `clock` を使い、テストで差し替える）。1 行の幅は、端末の桁数（取れなければ `COLUMNS`、それも無ければ 80）から 1 を引いた文字数までに切り詰める（折り返すと `\r` で消せなくなる）。バーを消すときは `\r` と空白で上書きし、ANSI のエスケープは使わない（Windows の古いコンソールでも動かすため）。
+  - **ログとの両立**: バーを出す間は、ログ（`slog` のハンドラー）の出力先を、バーの出力口と同じ `io.Writer` に包む。ログ 1 件の書き込みの前にバーの行を消し、書いた後にバーを描き直す（ロックで直列にする）。ダンプの終了時（`dump finished`、エラーの記録の前）にバーを止めて消す。バーの goroutine は、`progress.stop` と同じく、失敗・中断でも止める。
+  - **端末の判定**: 標準エラーが端末か、桁数はいくつか。新しい依存は足さず、`go.mod` にある `github.com/mattn/go-isatty` と `golang.org/x/sys` で足りるかを確かめる（足りないときだけ `golang.org/x/term` を検討する）。
+  - 出力ファイルには影響させない（決定性）。バーとログに値を出さない。
 - 受け入れ条件:
-  - [ ] 仕様を確定する（`refine-backlog`）
+  - [ ] `--progress`（既定 `auto`、不正な値は使い方のエラー）が動き、`auto` は端末ならバー、端末でなければ今までと同じ `dump progress` の記録になる
+  - [ ] 偽の時計と偽の端末で、バーが `\r` つきの 1 行で描かれ、`percent` / `eta` の出る条件、`--jobs` が 2 以上のときの 1 本と読んでいる表、幅での切り詰めが期待どおり（単体テスト）
+  - [ ] バーの途中でログを出すと、バーが消されてからログが書かれ、描き直される。ダンプの終了・失敗・中断でバーが残らない
+  - [ ] `none` はバーも記録も出さず、`bar` では `dump progress` の記録が出ない。出力ファイルは変わらない（バイト一致）
+  - [ ] README の「Progress」節と `main.go` の usage を更新する
 
 ## B-205 [todo|P3] マスク: MariaDB の JSON 列（`LONGTEXT`）にも `paths` のルールを使えるようにする
 - 依存: B-169
@@ -622,11 +739,17 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
-## B-206 [todo|P2] スキャン: 許可リストが検出を取りこぼす 2 つの場合（`paths` と `regexTarget = "line"`）を決める
+## B-206 [ready|P2] スキャン: 許可リストが検出を取りこぼす 2 つの場合（`paths` と `regexTarget = "line"`）を決める
 - 依存: B-176
 - 概要: B-176 の許可リストは、gitleaks の形のまま次の 2 点で検出を弱めうる（B-176 のセキュリティレビューの指摘）。(1) `paths` を `DB.TABLE.COLUMN` に当てるので、標準の `[allowlist]` の `\.(?:…|pdf|bin|exe|…)$` のようなファイル向けの正規表現が、`bin`・`pdf` という名前の列を全ルールで許可してしまう。(2) `regexTarget = "line"` は値の全体に当てるので、複数行のセルでは、別の行に当たった許可が、本物の秘密の検出を消す。B-177（CLI への配線）と B-204（標準ルール集の同梱）より前に、対策（DB 向けに書き直した許可リストを同梱する、ファイル向けの `paths` を警告・拒否する、`line` を一致を含む行に絞るなど）を仕様で決める。R-204 の判断（値の全体）の見直しを含む。
+- 仕様:
+  - 調べて分かったこと（gitleaks v8.30.1 の標準 `gitleaks.toml`）: (1) 全体の `[allowlist]`（条件は既定の `OR`）の `paths` は、`gitleaks\.toml`、`\.(?:docx?|xlsx?|pdf|bin|…|exe|…)$`、`go\.(?:mod|sum|…)$`、`\.gem$` などのファイル向けの正規表現を持つ。`DB.TABLE.COLUMN` に当てると、列名が `bin`・`pdf`・`doc`・`exe`・`v2` などの列、`go` で終わる表の `sum` の列が、全ルールで許可される。(2) `regexTarget = "line"` は、標準では 2 つのルールの許可リストだけが使う（`--mount=type=secret,` などの正規表現、`.bb` ファイルの `AND` つき）。
+  - **`line` の意味**（ユーザーが選択。R-204 の判断を変える）: 「行」を、一致の開始位置を含む行から、一致の終了位置を含む行まで（`\n` で区切る。`\r` は取り除かない。複数行にまたがる一致は、その全ての行）にする。gitleaks の「行」と同じ意味。`regex` を持たない（`path` だけの）ルールでは、値の全体のまま。`allowlist.allowed` に渡す `line` を、`Config.Scan` が一致ごとに作る。単一行のセルでは今と変わらない。設計書 20.2 と、台帳の R-204（見直した旨と、新しい意味）を更新する。
+  - **`paths` の扱い**: 利用者が書く設定では、`paths` は `DB.TABLE.COLUMN` に当たる正規表現として今のまま（変えない）。設計書 20 節に、「ファイル向けの正規表現（gitleaks の標準の許可リストなど）をそのまま持ち込むと、列名に当たって検出を弱める」と書く。B-204 の標準ルール集の取り込みの方針も、この節に書く（B-204 はそれに従う）: 取り込むとき、`paths` を持つ許可リストは、条件が `OR` なら `paths` だけを捨て（残りが無ければ許可リストごと捨てる）、`AND` なら許可リストごと捨てる。`paths` を捨てる向きは、許可が減る＝検出が増える向きで、安全。`AND` の許可リストを `paths` なしで残すと許可が広がるので、残さない。
+  - 前提: この項目では、B-204 の取り込みそのものは実装しない（B-204 は `[extend] useDefault` を読む項目）。実装するのは `line` の変更と、設計書・台帳の更新だけ。
 - 受け入れ条件:
-  - [ ] 仕様を確定する（`refine-backlog`）
+  - [ ] `regexTarget = "line"` の許可が、一致を含む行だけに当たる。複数行のセルで、別の行に当たった許可が、本物の秘密の検出を消さない（単体テスト）。複数行にまたがる一致は、全ての行を対象にする。単一行のセルと `path` だけのルールの結果は変わらない
+  - [ ] 設計書 20.2 と台帳の R-204 を新しい意味に更新し、20 節に、`paths` の扱いと、B-204 が標準ルール集を取り込む方針（上記）を書く
 
 ## B-207 [todo|P3] トリガー・ルーチン・イベントの `DELIMITER` で始まる行の検査を、引用符とコメントの外の桁 0 の行だけに狭める
 - 依存: B-103
