@@ -66,6 +66,10 @@ type Transform struct {
 	// value that no parent row has, so that it cannot be used on a column of a
 	// key (the ordering key, a unique index, the child side of a foreign key).
 	BreaksKeys bool
+	// NoChange is true for a transform that leaves every value as it is (keep). It
+	// only records that the column was looked at, so it costs nothing per row and
+	// may be used on any column, a column of a key included.
+	NoChange bool
 	// Build prepares the transform for one rule: it checks the arguments against
 	// the definition of the column and returns the Func that is applied to each
 	// row. A nil Build is for a transform that is only registered (tests).
@@ -107,6 +111,9 @@ func (r *Registry) Register(t Transform) error {
 	}
 	if t.Version < 0 || (t.NeedsSalt && t.Version < 1) {
 		return fmt.Errorf("transform %q: the version of a transform that uses the salt starts at 1", t.Name)
+	}
+	if t.NoChange && (len(t.Args) > 0 || t.NeedsSalt || t.Build != nil) {
+		return fmt.Errorf("transform %q: a transform that changes nothing takes no argument, salt or Build", t.Name)
 	}
 	if _, dup := r.byName[t.Name]; dup {
 		return fmt.Errorf("transform %q is registered twice", t.Name)

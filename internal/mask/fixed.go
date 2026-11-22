@@ -17,7 +17,7 @@ import (
 // DefaultRegistry returns the registry of the transforms this build has.
 func DefaultRegistry() *Registry {
 	reg := NewRegistry()
-	for _, t := range []Transform{fixedTransform, nullifyTransform} {
+	for _, t := range []Transform{fixedTransform, nullifyTransform, keepTransform} {
 		if err := reg.Register(t); err != nil {
 			panic(err) // a mistake in this file, caught by the tests
 		}
@@ -49,6 +49,15 @@ var nullifyTransform = Transform{
 	Name:    "nullify",
 	Version: 1,
 	Build:   buildNullify,
+}
+
+// keepTransform writes the value as it is. Without --strict-columns it does the
+// same as no rule; it is the record that someone decided the column needs no
+// masking, which --strict-columns asks for.
+var keepTransform = Transform{
+	Name:     "keep",
+	Version:  1,
+	NoChange: true,
 }
 
 func buildNullify(c BuildContext) (Func, error) {

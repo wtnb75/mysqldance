@@ -40,6 +40,11 @@ func resolveMask(ctx context.Context, opt Options, snap *source.Snapshot) (*mask
 	if err != nil {
 		return nil, fmt.Errorf("mask rules: %w", err)
 	}
+	if opt.StrictColumns {
+		if err := opt.Mask.CheckStrictColumns(cat); err != nil {
+			return nil, fmt.Errorf("mask rules: %w", err)
+		}
+	}
 	return plan, nil
 }
 

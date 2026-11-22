@@ -49,6 +49,26 @@ func TestParseArgsMaskRulesErrors(t *testing.T) {
 	}
 }
 
+func TestParseArgsStrictColumns(t *testing.T) {
+	// Without rules there is nothing to be strict about: a usage error.
+	_, err := parseArgs([]string{"--strict-columns", "-o", "out", "d"}, noEnv)
+	if !errors.Is(err, errUsage) {
+		t.Fatalf("err = %v, want a usage error", err)
+	}
+	rules := writeFile(t, "rules.yaml", goodRules, 0o600)
+	got, err := parseArgs([]string{"--mask-rules", rules, "--strict-columns", "-o", "out", "d"}, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.StrictColumns {
+		t.Error("StrictColumns is not set")
+	}
+	got, err = parseArgs([]string{"--mask-rules", rules, "-o", "out", "d"}, noEnv)
+	if err != nil || got.StrictColumns {
+		t.Fatalf("by default StrictColumns = %v, err = %v; want off", got.StrictColumns, err)
+	}
+}
+
 func TestParseArgsSaltFileNeedsRules(t *testing.T) {
 	salt := writeFile(t, "salt", "0123456789abcdef\n", 0o600)
 	_, err := parseArgs([]string{"--salt-file", salt, "-o", "out", "d"}, noEnv)
