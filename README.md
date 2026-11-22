@@ -139,7 +139,8 @@ The first argument may name a subcommand. It counts only when it is exactly the 
 | `--no-lock` | off | Do not take the global read lock when a table is not InnoDB; warn instead (see "Non-InnoDB tables and the read lock" below) |
 | `--lock-timeout` | `30s` | How long `FLUSH TABLES WITH READ LOCK` may wait for the lock, as a duration (`30s`, `2m`; rounded up to whole seconds). When it has not got the lock by then, the run fails and nothing is written. `0` sets no limit of its own: the server's `lock_wait_timeout` applies (see "Non-InnoDB tables and the read lock" below) |
 | `--connect-timeout` | `30s` | How long to wait for the first connection to the server to be made (the TCP connect, the server's greeting and the login), as a duration. When it runs out, the run fails before anything is written. `0` sets no limit of its own (the TCP connect is then left to the operating system) |
-| `--progress-interval` | `10s` | How often the run logs a `dump progress` record while it reads the tables (see "Progress"), as a duration such as `30s` or `1m`. `0` logs none. A negative or unreadable value is a usage error. It never changes the output files |
+| `--progress` | `auto` | How the progress is shown while the tables are read (see "Progress"): `bar` draws one line on standard error, `log` logs `dump progress` records, `none` shows neither, `auto` is `bar` when standard error is a terminal and `log` otherwise. Any other value is a usage error. It never changes the output files |
+| `--progress-interval` | `10s` | How often the run logs a `dump progress` record while it reads the tables (see "Progress"), as a duration such as `30s` or `1m`. `0` logs none. It applies to `--progress log` only: the bar is drawn every 250 ms whatever the value. A negative or unreadable value is a usage error. It never changes the output files |
 | `--read-timeout` | `0` | How long to wait for each response from the server, as a duration. A server that stops answering then fails the run instead of stalling it (the driver logs `i/o timeout` to standard error; when it happens while the run is starting, the error also names the read timeout). `0` sets no limit, so that a normal read of a large table is never cut off. It is a limit on one wait, not on the whole transfer, but it also covers a statement that sends nothing until it is done: a sort of a large table, and the wait for `FLUSH TABLES WITH READ LOCK`. A value below `--lock-timeout` therefore ends that wait first, so keep it well above both |
 | `--sort-memory` | `64MiB` | About how much memory a table without a primary key or NOT NULL unique key may use while its rows are sorted, from `1MiB` up (`64MiB`, `1GiB`, or a plain number of bytes). Past that, the sorted batches go to temporary files in the output directory and are merged (see "Limitations"). With `--jobs N`, N tables are sorted at once, so the total is up to N times this |
 | `--mask-rules` | (none) | A YAML file of rules that transform column values as the rows are read, so that the output holds only the transformed rows (see "Masking rows" below). The file is read and checked before the connection is opened, and the rules are checked against the databases before the output directory is touched. A file that cannot be read, a rule that is wrong and a rule for a column that does not exist are errors, and every problem found is reported at once |
@@ -510,6 +511,30 @@ Besides the snapshot records, each database and each table is reported as `INFO`
 - `running`: the tables being read, as `database.table`, sorted by name and joined with `,`.
 
 The records are written while the files are staged, so, like `table dumped`, they do not mean the files are in place. They carry no row value and do not change the output files.
+
+#### Progress bar
+
+`--progress` chooses between the records above and a bar:
+
+| Value | Shows |
+| --- | --- |
+| `auto` (default) | the bar when standard error is a terminal, otherwise the `dump progress` records. On a terminal the records of `dump progress` therefore no longer appear unless you ask for `--progress log` |
+| `bar` | the bar, even when standard error is not a terminal. The bar is then written as it is, one line redrawn with `\r`, so a file or a pipe receives the carriage returns |
+| `log` | the `dump progress` records, every `--progress-interval` |
+| `none` | neither the bar nor the records |
+
+With the bar, no `dump progress` record is logged (the bar shows the same numbers), and `--progress-interval` has no effect. The bar is one line on standard error, redrawn every 250 ms with a carriage return and spaces (no ANSI escape sequence, so older consoles work too):
+
+```
+[=========>          ]  50.0%  12345 rows  3.0 MiB  1234 rows/s  eta 1m2s  tables 3/10  db.a,db.b
+```
+
+- The bar and the percentage come from the same estimate as `percent` above, and are left out when `approx_rows` is `0`; `eta` follows the rules of the record. The speed is the average since the start.
+- It is one bar for the whole run, also with `--jobs` above 1. After the counts it names the tables being read, the first three in name order and `+N` for the rest.
+- The line is cut to the width of the terminal minus one character (the terminal's own size, else the `COLUMNS` variable, else 80), because a line that wraps cannot be erased with a carriage return.
+- Log records still appear while the bar is shown: the bar is erased, the record is written, and the bar is drawn again below it. The bar is erased when the run ends, fails or is interrupted, before the final `dump finished` or error record.
+
+The bar and the records carry no row value, and neither changes the output files.
 
 In `dump finished`, `tables`, `rows`, `bytes` and `files` are the sums of the `database dumped` records (the data files only, as above), and `duration` is the time from just after the output directory lock is taken to the end of the run (opening the snapshot, which comes before the lock, is not included).
 
