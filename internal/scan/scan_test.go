@@ -556,6 +556,79 @@ regexes = ['^key=']
 	}
 }
 
+func TestAllowlistRegexTargetLineIsTheMatchLines(t *testing.T) {
+	const cfg = `
+[[rules]]
+id = "r"
+regex = 'key=(\w+)'
+secretGroup = 1
+[[rules.allowlists]]
+regexTarget = "line"
+regexes = ['EXAMPLE']
+`
+	multi := `[[rules]]
+id = "m"
+regex = '(?s)begin=\w+\n\w+'
+[[rules.allowlists]]
+regexTarget = "line"
+regexes = ['EXAMPLE']
+`
+	tests := map[string]struct {
+		cfg, value string
+		want       int
+	}{
+		"allow on another line does not hide the finding": {cfg, "EXAMPLE\nkey=real", 1},
+		"allow on the line after the match":               {cfg, "key=real\nEXAMPLE", 1},
+		"allow on the same line hides the finding":        {cfg, "EXAMPLE\nkey=real EXAMPLE\nother", 0},
+		"single line unchanged":                           {cfg, "EXAMPLE key=real", 0},
+		"match ending in newline excludes the next line": {`
+[[rules]]
+id = "n"
+regex = 'key=\w+\n'
+[[rules.allowlists]]
+regexTarget = "line"
+regexes = ['EXAMPLE']
+`, "key=real\nEXAMPLE", 1},
+		"match starting with newline takes the previous line": {`
+[[rules]]
+id = "n"
+regex = '\nkey=\w+'
+[[rules.allowlists]]
+regexTarget = "line"
+regexes = ['EXAMPLE']
+`, "EXAMPLE\nkey=real", 0},
+		"match at the end of the value":             {cfg, "a\nkey=real", 1},
+		"CRLF is kept in the line":                  {cfg, "a\r\nkey=real EXAMPLE\r\nb", 0},
+		"multi-line match: allow on its first line": {multi, "x\nbegin=abc EXAMPLE\ndef\ny", 0},
+		"multi-line match: allow on its last line":  {multi, "x\nbegin=abc\ndef EXAMPLE\ny", 0},
+		"multi-line match: allow outside its lines": {multi, "EXAMPLE\nbegin=abc\ndef\nEXAMPLE", 1},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := mustParse(t, tt.cfg).Scan("d.t.c", tt.value); len(got) != tt.want {
+				t.Errorf("Scan(%q) = %+v, want %d finding(s)", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAllowlistLineWithoutRegexIsTheWholeValue(t *testing.T) {
+	c := mustParse(t, `
+[[rules]]
+id = "r"
+path = '^d\.t\.c$'
+[[rules.allowlists]]
+regexTarget = "line"
+regexes = ['EXAMPLE']
+`)
+	if got := c.Scan("d.t.c", "a\nEXAMPLE\nb"); len(got) != 0 {
+		t.Errorf("path-only rule: %+v, want none (the line is the whole value)", got)
+	}
+	if got := c.Scan("d.t.c", "a\nb"); len(got) != 1 {
+		t.Errorf("path-only rule without the allowed text: %+v, want 1", got)
+	}
+}
+
 func TestAllowlistStopwords(t *testing.T) {
 	c := mustParse(t, `
 [[rules]]

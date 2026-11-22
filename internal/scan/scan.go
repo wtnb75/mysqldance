@@ -299,7 +299,7 @@ func (p *parser) allowlist(ad allowlistDoc, label string) *allowlist {
 // allowed reports whether the finding is allowlisted. With condition OR one
 // criterion that holds is enough; with AND every criterion the allowlist
 // names must hold. Stopwords are checked against the secret.
-func (a *allowlist) allowed(path, secret, match, line string) bool {
+func (a *allowlist) allowed(path, secret, match string, line func() string) bool {
 	hit := func(res []*regexp.Regexp, s string) bool {
 		return slices.ContainsFunc(res, func(re *regexp.Regexp) bool { return re.MatchString(s) })
 	}
@@ -308,8 +308,9 @@ func (a *allowlist) allowed(path, secret, match, line string) bool {
 	case "match":
 		target = match
 	case "line":
-		// A cell has no lines of its own: "line" is the whole value (spec 20.2, R-204).
-		target = line
+		// The caller passes the lines the match touches (see matchLines), or
+		// the whole value for a rule without a regex (spec 20.2, R-204).
+		target = line()
 	}
 	var checks []bool
 	if len(a.paths) > 0 {
@@ -353,7 +354,7 @@ func (c *Config) Scan(path, value string) []Match {
 		}
 		if r.regex == nil {
 			// A rule with only a path flags the whole column.
-			if !c.allowed(r, path, value, value, value) {
+			if !c.allowed(r, path, value, value, func() string { return value }) {
 				out = append(out, Match{RuleID: r.id, Start: 0, Length: len(value)})
 			}
 			continue
@@ -385,7 +386,7 @@ func (c *Config) Scan(path, value string) []Match {
 			if r.validate != nil && !r.validate(secret) {
 				continue
 			}
-			if c.allowed(r, path, secret, value[loc[0]:loc[1]], value) {
+			if c.allowed(r, path, secret, value[loc[0]:loc[1]], func() string { return matchLines(value, loc[0], loc[1]) }) {
 				continue
 			}
 			out = append(out, Match{RuleID: r.id, Start: start, Length: end - start})
@@ -394,7 +395,22 @@ func (c *Config) Scan(path, value string) []Match {
 	return out
 }
 
-func (c *Config) allowed(r *rule, path, secret, match, line string) bool {
+// matchLines is the "line" an allowlist with regexTarget = "line" sees: every
+// line of value that the match [start, end) touches, from the line holding its
+// first byte to the line holding its last byte. Lines are split at "\n" only;
+// a "\r" stays in the line. A match that ends with "\n" belongs to the line
+// that "\n" ends, so the next line is not pulled in.
+func matchLines(value string, start, end int) string {
+	last := max(end-1, start)
+	from := strings.LastIndexByte(value[:start], '\n') + 1
+	to := len(value)
+	if i := strings.IndexByte(value[last:], '\n'); i >= 0 {
+		to = last + i
+	}
+	return value[from:to]
+}
+
+func (c *Config) allowed(r *rule, path, secret, match string, line func() string) bool {
 	for _, a := range r.allow {
 		if a.allowed(path, secret, match, line) {
 			return true
