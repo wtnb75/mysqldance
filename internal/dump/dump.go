@@ -77,6 +77,10 @@ type Options struct {
 	// the databases before it touches OutDir.
 	Mask     *mask.Rules
 	MaskSalt *mask.Salt
+	// StrictColumns (B-184) makes a column that is output and has no decision
+	// (a rule of its own, keep included, or a DB.TABLE.* rule) an error, checked
+	// with the rules. It needs Mask.
+	StrictColumns bool
 
 	clock    clock      // time source of the progress records; the zero value is the real clock
 	prog     *progress  // set by Run; nil without progress records
@@ -108,6 +112,9 @@ func Run(ctx context.Context, opt Options) (err error) {
 	}
 	if len(opt.DBs) == 0 {
 		return errors.New("no database to dump")
+	}
+	if opt.StrictColumns && opt.Mask == nil {
+		return errors.New("StrictColumns needs Mask")
 	}
 	if opt.Log == nil {
 		opt.Log = slog.New(slog.DiscardHandler)

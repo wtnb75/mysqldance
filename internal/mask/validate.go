@@ -86,6 +86,90 @@ func (c Catalog) database(name string) (string, []CatalogTable, bool) {
 	return "", nil, false
 }
 
+// Wildcard is the column part of a key that stands for every column of a table
+// that has no rule of its own (DB.TABLE.*). Only keep can be used on it, so a
+// column named "*" cannot be given a rule.
+const Wildcard = "*"
+
+// lookupTable finds the base table a key names among the tables being dumped,
+// and returns it with the catalog's spelling of its database. A table that does
+// not exist, a view and a table left out by --exclude-table are errors, since
+// none of them has rows in the output.
+func (c Catalog) lookupTable(k Key) (string, *CatalogTable, error) {
+	dbName, tables, ok := c.database(k.DB)
+	if !ok {
+		return "", nil, fmt.Errorf("database %q is not one of the databases to dump", k.DB)
+	}
+	for i := range tables {
+		if !c.sameTable(tables[i].Name, k.Table) {
+			continue
+		}
+		switch tbl := &tables[i]; {
+		case tbl.View:
+			return "", nil, fmt.Errorf("%q is a view, not a base table; its rows are not output", k.Table)
+		case tbl.Excluded:
+			return "", nil, fmt.Errorf("table %q is excluded from the dump", k.Table)
+		default:
+			return dbName, tbl, nil
+		}
+	}
+	return "", nil, fmt.Errorf("no such table %q in database %q", k.Table, k.DB)
+}
+
+// normKey is the form of a column in which two spellings of it are equal; the
+// arguments are the catalog's spelling.
+func (c Catalog) normKey(db, table, column string) string {
+	if c.FoldTableCase {
+		table = strings.ToLower(table)
+	}
+	return db + "\x00" + table + "\x00" + strings.ToLower(column)
+}
+
+// CheckStrictColumns is the check behind --strict-columns: every column that is
+// output (a column of a base table that --exclude-table leaves in, not a
+// generated one) needs a decision, that is, a rule of its own with any
+// transform (keep included), or a DB.TABLE.* rule for its table. The columns
+// without one are all listed, as DB.TABLE.COLUMN and never with a value, in the
+// order of the databases' names, then of the catalog. It expects rules that
+// Resolve accepted; a rule that names nothing in the catalog decides nothing.
+func (r *Rules) CheckStrictColumns(cat Catalog) error {
+	decided := map[string]bool{}
+	for _, e := range r.Entries {
+		// A rule that has neither a transform nor paths decides nothing.
+		if e.Rule.Use == "" && len(e.Rule.Paths) == 0 {
+			continue
+		}
+		dbName, tbl, err := cat.lookupTable(e.Key)
+		if err != nil {
+			continue
+		}
+		decided[cat.normKey(dbName, tbl.Name, e.Key.Column)] = true
+	}
+	dbs := make([]string, 0, len(cat.Databases))
+	for name := range cat.Databases {
+		dbs = append(dbs, name)
+	}
+	slices.Sort(dbs)
+	var undecided []string
+	for _, db := range dbs {
+		for _, tbl := range cat.Databases[db] {
+			if tbl.View || tbl.Excluded || decided[cat.normKey(db, tbl.Name, Wildcard)] {
+				continue
+			}
+			for _, col := range tbl.Columns {
+				if !col.Generated && !decided[cat.normKey(db, tbl.Name, col.Name)] {
+					undecided = append(undecided, db+"."+tbl.Name+"."+col.Name)
+				}
+			}
+		}
+	}
+	if len(undecided) == 0 {
+		return nil
+	}
+	return fmt.Errorf("--strict-columns: %d column(s) have no rule; give each one a rule, or \"use: keep\" if it needs no masking (DB.TABLE.%s covers every column of a table that has no rule of its own):\n  %s",
+		len(undecided), Wildcard, strings.Join(undecided, "\n  "))
+}
+
 // Validate checks every rule against the catalog and the registry, before any
 // output is written; see Resolve. It passes no salt, so a rule that uses a
 // transform that needs one is an error.
@@ -111,27 +195,31 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 		bad := func(format string, args ...any) {
 			errs = append(errs, fmt.Errorf("rule %s (line %d): %s", e.Spec, e.Line, fmt.Sprintf(format, args...)))
 		}
-		dbName, tables, ok := cat.database(e.Key.DB)
-		if !ok {
-			bad("database %q is not one of the databases to dump", e.Key.DB)
+		if e.Key.Table == Wildcard {
+			bad("the table part cannot be %q: only the column part may be (DB.TABLE.%s)", Wildcard, Wildcard)
 			continue
 		}
-		var tbl *CatalogTable
-		for i := range tables {
-			if cat.sameTable(tables[i].Name, e.Key.Table) {
-				tbl = &tables[i]
-				break
+		dbName, tbl, err := cat.lookupTable(e.Key)
+		if err != nil {
+			bad("%v", err)
+			continue
+		}
+		if e.Key.Column == Wildcard {
+			// DB.TABLE.*: every column of the table that has no rule of its own is
+			// kept. It changes nothing, so it plans nothing.
+			if e.Rule.Use != keepTransform.Name {
+				bad("only %q can be used on a wildcard (DB.TABLE.%s), not %q", keepTransform.Name, Wildcard, e.Rule.Use)
+				continue
 			}
-		}
-		switch {
-		case tbl == nil:
-			bad("no such table %q in database %q", e.Key.Table, e.Key.DB)
-			continue
-		case tbl.View:
-			bad("%q is a view, not a base table; its rows are not output", e.Key.Table)
-			continue
-		case tbl.Excluded:
-			bad("table %q is excluded from the dump", e.Key.Table)
+			norm := cat.normKey(dbName, tbl.Name, Wildcard)
+			if first, dup := seen[norm]; dup {
+				bad("table %q already has a wildcard rule (%s)", tbl.Name, first)
+				continue
+			}
+			seen[norm] = e.Spec
+			if err := checkUnsupported(e.Rule); err != nil {
+				bad("%v", err)
+			}
 			continue
 		}
 		var col *CatalogColumn
@@ -151,11 +239,7 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 		}
 		// The catalog's spelling names the column, so two spellings of one
 		// column meet here.
-		tblKey := tbl.Name
-		if cat.FoldTableCase {
-			tblKey = strings.ToLower(tblKey)
-		}
-		norm := dbName + "\x00" + tblKey + "\x00" + strings.ToLower(col.Name)
+		norm := cat.normKey(dbName, tbl.Name, col.Name)
 		if first, dup := seen[norm]; dup {
 			bad("column %q of table %q already has a rule (%s)", col.Name, tbl.Name, first)
 			continue
@@ -172,6 +256,10 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 			continue
 		}
 		t, _ := reg.Lookup(e.Rule.Use)
+		if t.NoChange {
+			// Nothing is transformed, so no key can break.
+			continue
+		}
 		if err := cat.checkKeys(dbName, *tbl, *col, t); err != nil {
 			bad("%v", err)
 			continue

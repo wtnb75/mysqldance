@@ -288,9 +288,13 @@ The password is read from --password-file, else from MYSQL_PWD.
                              0 = none)
       --mask-rules FILE      YAML file of rules that transform column values as
                              they are read, so the output holds only the
-                             transformed rows (transforms: fixed, nullify).
-                             Checked against the databases before the output
-                             directory is touched; see the README
+                             transformed rows (transforms: fixed, nullify,
+                             keep). Checked against the databases before the
+                             output directory is touched; see the README
+      --strict-columns       make a column with no rule an error: every output
+                             column needs a rule (use: keep if it needs no
+                             masking) or a DB.TABLE.* rule of keep for its
+                             table. Needs --mask-rules
       --salt-file FILE       file holding the salt for the transforms that need
                              one (at least 16 bytes; group and others must not
                              be able to read or write it), else MYSQLDANCE_SALT.
@@ -309,6 +313,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 		maskRules, saltFile                      string
 		logLevel, logFormat                      string
 		noLock, showVersion, caseSafeNames       bool
+		strictColumns                            bool
 		fileMode, dirMode                        string
 		sortMemory                               string
 		port, jobs                               int
@@ -349,6 +354,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.IntVar(&jobs, "jobs", 1, "")
 	fs.StringVar(&maskRules, "mask-rules", "", "")
 	fs.StringVar(&saltFile, "salt-file", "", "")
+	fs.BoolVar(&strictColumns, "strict-columns", false, "")
 	fs.StringVar(&logLevel, "log-level", "info", "")
 	fs.StringVar(&logFormat, "log-format", "text", "")
 	fs.BoolVar(&showVersion, "version", false, "")
@@ -383,6 +389,10 @@ The password is read from --password-file, else from MYSQL_PWD.
 		// A salt with no rules would be read and dropped, and the run would
 		// look masked when nothing was.
 		return usage("--salt-file needs --mask-rules")
+	case strictColumns && maskRules == "":
+		// Without rules every column would be undecided; asking for the check
+		// with nothing to check is a mistake, not a request to refuse the dump.
+		return usage("--strict-columns needs --mask-rules")
 	case len(pgSchemas) > 0 && target != targetPostgres:
 		return usage("--pg-schema applies to --target %s only", targetPostgres)
 	case rowsPerInsert == 0 || rowsPerInsert > math.MaxUint32:
@@ -480,6 +490,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 			return dump.Options{}, fmt.Errorf("--mask-rules: %w", err)
 		}
 		opt.Mask = rules
+		opt.StrictColumns = strictColumns
 		// A salt that is given is checked whether or not a transform uses it, so
 		// a wrong one is found before it is needed. MYSQLDANCE_SALT alone, without
 		// rules, is ignored: it may be set for every run of a machine.

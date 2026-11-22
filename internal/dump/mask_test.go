@@ -329,6 +329,88 @@ func TestMaskRulesAreCheckedBeforeTheOutputDirectory(t *testing.T) {
 	}
 }
 
+// StrictColumns without rules is refused before anything is opened.
+func TestStrictColumnsNeedsRules(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "out")
+	err := Run(context.Background(), Options{DBs: []string{"d"}, OutDir: missing, StrictColumns: true})
+	if err == nil || !strings.Contains(err.Error(), "StrictColumns needs Mask") {
+		t.Fatalf("err = %v", err)
+	}
+	if exists(t, missing) {
+		t.Error("the output directory was created")
+	}
+}
+
+// With --strict-columns every output column needs a decision, the columns
+// without one are listed by name, and the output directory is not touched.
+// Without it the same rules dump as they always did.
+func TestStrictColumns(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(40) NOT NULL, note VARCHAR(30) NULL, email_lower VARCHAR(40) AS (LOWER(email)) STORED)",
+		"INSERT INTO users (id, email, note) VALUES (1,'alice-RAW@x.test','n1')",
+		"CREATE TABLE logs (msg VARCHAR(40), n INT)",
+		"CREATE TABLE skipped (secret VARCHAR(10))",
+		"CREATE VIEW v_users AS SELECT id FROM users",
+	)
+	parse := func(body string) *mask.Rules {
+		t.Helper()
+		rules, err := mask.Parse([]byte("version: 1\nrules:\n"+strings.ReplaceAll(body, "DB", db)), mask.DefaultRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rules
+	}
+	run := func(out string, rules *mask.Rules, strict bool) error {
+		return Run(context.Background(), Options{
+			Source: e.cfg, DBs: []string{db}, OutDir: out, Mask: rules, StrictColumns: strict,
+			ExcludeTables: []string{db + ".skipped"}, Log: testLogger(io.Discard),
+		})
+	}
+
+	partial := parse("  DB.users.email:\n    use: fixed\n    value: masked@example.invalid\n  DB.users.id:\n    use: keep\n")
+	missing := filepath.Join(t.TempDir(), "new", "out")
+	err := run(missing, partial, true)
+	if err == nil {
+		t.Fatal("Run succeeded with undecided columns")
+	}
+	for _, want := range []string{db + ".users.note", db + ".logs.msg", db + ".logs.n"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error lacks %s:\n%v", want, err)
+		}
+	}
+	for _, no := range []string{db + ".users.id", db + ".users.email", "email_lower", "skipped", "v_users", "RAW"} {
+		if strings.Contains(err.Error(), no) {
+			t.Errorf("the error mentions %q:\n%v", no, err)
+		}
+	}
+	if exists(t, filepath.Dir(missing)) {
+		t.Errorf("%s was created by a failed run", filepath.Dir(missing))
+	}
+
+	// Without the flag the same rules dump what they name, and nothing else changes.
+	dir := t.TempDir()
+	if err := run(dir, partial, false); err != nil {
+		t.Fatalf("without --strict-columns: %v", err)
+	}
+	all := ""
+	files := readFiles(t, dir)
+	for _, name := range slices.Sorted(maps.Keys(files)) {
+		all += files[name]
+	}
+	if strings.Contains(all, "RAW") || !strings.Contains(all, "masked@example.invalid") || !strings.Contains(all, "'n1'") {
+		t.Errorf("the rows are not masked as the rules say:\n%s", all)
+	}
+
+	// A decision for every column, wildcard included, lets the dump through.
+	full := parse("  DB.users.email:\n    use: fixed\n    value: masked@example.invalid\n  DB.users.*:\n    use: keep\n  DB.logs.*:\n    use: keep\n")
+	if err := run(t.TempDir(), full, true); err != nil {
+		t.Fatalf("every column decided: %v", err)
+	}
+}
+
 // With several databases the rules are checked against all of them, and the
 // dump still starts on the first one.
 func TestMaskWithSeveralDatabases(t *testing.T) {
