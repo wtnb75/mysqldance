@@ -263,15 +263,34 @@ rules:
   shop.users.born:
     use: shift
     days: 1
-  shop.users.profile:
-    paths:
-      $.a:
-        use: "null"
   shop.Orders.note:
     use: "null"
 `)
 	if err != nil {
 		t.Fatalf("Validate: %v", err)
+	}
+}
+
+// B-166: the keys the parser reads but gives no meaning yet are errors, not
+// ignored, so that a rule never masks less than it says.
+func TestValidateRefusesKeysWithoutMeaning(t *testing.T) {
+	cases := map[string]string{
+		"domain":       "    domain: mail\n",
+		"when":         "    when: x\n",
+		"on_null":      "    on_null: keep\n",
+		"on_collision": "    on_collision: error\n",
+	}
+	for key, line := range cases {
+		t.Run(key, func(t *testing.T) {
+			err := validate(t, testCatalog(), "version: 1\nrules:\n  shop.users.email:\n    use: fixed\n    value: x\n"+line)
+			if err == nil || !strings.Contains(err.Error(), key+" is not supported in this version") {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+	err := validate(t, testCatalog(), "version: 1\nrules:\n  shop.users.profile:\n    paths:\n      $.a:\n        use: \"null\"\n")
+	if err == nil || !strings.Contains(err.Error(), "paths is not supported in this version") {
+		t.Fatalf("paths: err = %v", err)
 	}
 }
 

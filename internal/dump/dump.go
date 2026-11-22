@@ -20,6 +20,7 @@ import (
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/extsort"
+	"mysqldance/internal/mask"
 	"mysqldance/internal/naming"
 	"mysqldance/internal/source"
 	"mysqldance/internal/sqlvalue"
@@ -69,8 +70,17 @@ type Options struct {
 	// tables are read; 0 logs none. It never changes the output files.
 	ProgressInterval time.Duration
 
-	clock clock     // time source of the progress records; the zero value is the real clock
-	prog  *progress // set by Run; nil without progress records
+	// Mask holds the masking rules (B-166), or nil for none. Every value the
+	// rules name is transformed as it is read, so the writers, and the scratch
+	// files of a sort, only ever see the transformed row. MaskSalt is the salt a
+	// transform may need; nil when none was given. Run checks the rules against
+	// the databases before it touches OutDir.
+	Mask     *mask.Rules
+	MaskSalt *mask.Salt
+
+	clock    clock      // time source of the progress records; the zero value is the real clock
+	prog     *progress  // set by Run; nil without progress records
+	maskPlan *mask.Plan // set by Run from Mask; nil without rules
 }
 
 // DefaultSortMemory is the SortMemory used when none is set.
@@ -127,6 +137,14 @@ func Run(ctx context.Context, opt Options) (err error) {
 		return err
 	}
 	defer func() { err = errors.Join(err, snap.Close()) }()
+	// The rules are checked against the databases before the output directory
+	// is touched, so a wrong rule leaves it as it was.
+	if opt.Mask != nil {
+		if opt.maskPlan, err = resolveMask(ctx, opt, snap); err != nil {
+			return err
+		}
+		opt.Log.Info("masking rows", "rules", len(opt.Mask.Entries))
+	}
 	if err := prepareOutDir(opt.OutDir, opt.DirMode); err != nil {
 		return err
 	}
@@ -568,6 +586,11 @@ func (c countingFile) Write(p []byte) (int, error) {
 // renamed to their final names then.
 func writeTable(ctx context.Context, opt Options, r rowSource, plan *naming.Plan, db string, t source.TableInfo, st *stage) (tableResult, error) {
 	start := time.Now()
+	// Before the writer sees the table and before the first row is read.
+	var err error
+	if t.Mask, err = opt.maskPlan.Table(db, t.Name, t.Columns); err != nil {
+		return tableResult{}, fmt.Errorf("table %q: %w", t.Name, err)
+	}
 	// Hooks and error messages see this path for every file of the table.
 	provisional := filepath.Join(opt.OutDir, plan.DataFile(t.Name))
 	var staged []int

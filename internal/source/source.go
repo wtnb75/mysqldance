@@ -28,6 +28,10 @@ type TableInfo struct {
 	OrderByTypes []string
 	// ApproxRows is the TABLE_ROWS estimate.
 	ApproxRows int64
+	// Mask, when set, changes each row in place right after it is read, before
+	// the row is sorted or passed on (see EachRow). Tables does not fill it. It
+	// must be safe to call from several goroutines, and must not keep the row.
+	Mask func(row []sqlvalue.Value) error
 	// Def is the structure of the table. Tables does not fill it; the caller
 	// sets it from Defs for a writer that builds its definitions from structure,
 	// so that the writer sees it on every call without remembering anything.

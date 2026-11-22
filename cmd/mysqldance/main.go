@@ -19,6 +19,7 @@ import (
 
 	"mysqldance/internal/datafile"
 	"mysqldance/internal/dump"
+	"mysqldance/internal/mask"
 	"mysqldance/internal/source"
 	"mysqldance/internal/writer"
 )
@@ -285,6 +286,15 @@ The password is read from --password-file, else from MYSQL_PWD.
                              estimated remaining time) every DUR while the
                              tables are read, e.g. 30s or 1m (default 10s;
                              0 = none)
+      --mask-rules FILE      YAML file of rules that transform column values as
+                             they are read, so the output holds only the
+                             transformed rows (transforms: fixed, nullify).
+                             Checked against the databases before the output
+                             directory is touched; see the README
+      --salt-file FILE       file holding the salt for the transforms that need
+                             one (at least 16 bytes; group and others must not
+                             be able to read or write it), else MYSQLDANCE_SALT.
+                             Needs --mask-rules. Checked whenever it is given
       --log-level LEVEL      debug, info, warn or error (default info). Logs go
                              to standard error
       --log-format FORMAT    text or json (default text)
@@ -296,6 +306,7 @@ The password is read from --password-file, else from MYSQL_PWD.
 	var (
 		host, user, socket, passwordFile, output string
 		sslMode, sslCA, target                   string
+		maskRules, saltFile                      string
 		logLevel, logFormat                      string
 		noLock, showVersion, caseSafeNames       bool
 		fileMode, dirMode                        string
@@ -336,6 +347,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 	fs.DurationVar(&progressInterval, "progress-interval", dump.DefaultProgressInterval, "")
 	fs.IntVar(&jobs, "j", 1, "")
 	fs.IntVar(&jobs, "jobs", 1, "")
+	fs.StringVar(&maskRules, "mask-rules", "", "")
+	fs.StringVar(&saltFile, "salt-file", "", "")
 	fs.StringVar(&logLevel, "log-level", "info", "")
 	fs.StringVar(&logFormat, "log-format", "text", "")
 	fs.BoolVar(&showVersion, "version", false, "")
@@ -366,6 +379,10 @@ The password is read from --password-file, else from MYSQL_PWD.
 		return usage("--target must be %s, %s or %s, not %q", targetMySQL, targetSQLite, targetPostgres, target)
 	case fs.NArg() == 0:
 		return usage("at least one database name is required")
+	case saltFile != "" && maskRules == "":
+		// A salt with no rules would be read and dropped, and the run would
+		// look masked when nothing was.
+		return usage("--salt-file needs --mask-rules")
 	case len(pgSchemas) > 0 && target != targetPostgres:
 		return usage("--pg-schema applies to --target %s only", targetPostgres)
 	case rowsPerInsert == 0 || rowsPerInsert > math.MaxUint32:
@@ -456,6 +473,23 @@ The password is read from --password-file, else from MYSQL_PWD.
 		opt.Writer = writer.NewPostgres(data).WithSchemaNames(schemaNames)
 	default:
 		opt.Data = data
+	}
+	if maskRules != "" {
+		rules, err := mask.Load(maskRules, mask.DefaultRegistry())
+		if err != nil {
+			return dump.Options{}, fmt.Errorf("--mask-rules: %w", err)
+		}
+		opt.Mask = rules
+		// A salt that is given is checked whether or not a transform uses it, so
+		// a wrong one is found before it is needed. MYSQLDANCE_SALT alone, without
+		// rules, is ignored: it may be set for every run of a machine.
+		if saltFile != "" || getenv(mask.SaltEnv) != "" {
+			salt, err := mask.LoadSalt(saltFile, getenv)
+			if err != nil {
+				return dump.Options{}, fmt.Errorf("salt: %w", err)
+			}
+			opt.MaskSalt = &salt
+		}
 	}
 	opt.Source.Host, opt.Source.Port, opt.Source.Socket, opt.Source.User = host, port, socket, user
 	opt.Source.SSLMode, opt.Source.SSLCA = sslMode, sslCA

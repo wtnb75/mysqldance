@@ -20,6 +20,9 @@ const (
 	ArgInt
 	ArgBool
 	ArgAny
+	// ArgScalar takes a string, an integer, a decimal number or a boolean, and
+	// keeps its text (see Scalar), so that no digit is lost on the way.
+	ArgScalar
 )
 
 func (k ArgKind) String() string {
@@ -30,6 +33,8 @@ func (k ArgKind) String() string {
 		return "integer"
 	case ArgBool:
 		return "boolean"
+	case ArgScalar:
+		return "string, number or boolean"
 	default:
 		return "any"
 	}
@@ -50,6 +55,21 @@ type Transform struct {
 	Name  string
 	Args  []ArgDef
 	Types []string
+	// Version is the version of what the transform outputs, from 1. It is part of
+	// the HMAC key (DeriveKey): a change that gives other values for the same
+	// input is a new version, so that updating the tool does not change a dump.
+	Version int
+	// NeedsSalt is true for a transform that uses the salt. A run that uses one
+	// without a salt is refused.
+	NeedsSalt bool
+	// BreaksKeys is true for a transform that can give two rows one value or a
+	// value that no parent row has, so that it cannot be used on a column of a
+	// key (the ordering key, a unique index, the child side of a foreign key).
+	BreaksKeys bool
+	// Build prepares the transform for one rule: it checks the arguments against
+	// the definition of the column and returns the Func that is applied to each
+	// row. A nil Build is for a transform that is only registered (tests).
+	Build func(BuildContext) (Func, error)
 }
 
 // appliesTo reports whether the transform can be used on a column of the type.
@@ -84,6 +104,9 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(t Transform) error {
 	if t.Name == "" {
 		return fmt.Errorf("transform with no name")
+	}
+	if t.Version < 0 || (t.NeedsSalt && t.Version < 1) {
+		return fmt.Errorf("transform %q: the version of a transform that uses the salt starts at 1", t.Name)
 	}
 	if _, dup := r.byName[t.Name]; dup {
 		return fmt.Errorf("transform %q is registered twice", t.Name)
