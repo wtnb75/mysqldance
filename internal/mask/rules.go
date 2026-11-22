@@ -311,10 +311,22 @@ func (p *parser) argValue(v *yaml.Node, def ArgDef, what string) (any, bool) {
 		ok = v.Kind == yaml.ScalarNode && v.Tag == "!!int"
 	case ArgBool:
 		ok = v.Kind == yaml.ScalarNode && v.Tag == "!!bool"
+	case ArgScalar:
+		// An unquoted 2020-01-02 is a !!timestamp; the date columns take it as the
+		// string it was written as.
+		ok = v.Kind == yaml.ScalarNode && (v.Tag == "!!str" || v.Tag == "!!int" || v.Tag == "!!float" || v.Tag == "!!bool" || v.Tag == "!!timestamp")
 	}
 	if !ok {
 		p.errorf(v, "%s: argument %q must be a %s", what, def.Name, def.Kind)
 		return nil, false
+	}
+	if def.Kind == ArgScalar {
+		s, err := newScalar(v)
+		if err != nil {
+			p.errorf(v, "%s: argument %q: %v", what, def.Name, err)
+			return nil, false
+		}
+		return s, true
 	}
 	if def.Kind == ArgInt {
 		// One Go type for every integer, and a value out of range is an error here.

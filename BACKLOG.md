@@ -424,32 +424,6 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
-## B-166 [ready|P2] マスク: 読んだ行を書き出す前に変換する仕組みと、固定値・NULL 化の変換
-- 依存: B-165, B-201
-- 概要: `rowSource` を包み、行ごとにルールの変換を適用してから writer に渡す（`--target` を問わず 1 か所で効く。生データはディスクに載らない）。最初の変換は固定値と NULL 化だけ。NOT NULL の列への NULL 化はエラーにする。決定性（同じデータと設定ならバイト一致）を保つ。B-165 では配線しなかった `--mask-rules` と `--salt-file` を CLI に配線し、README を更新する（適用する変換が無い状態で配線すると、マスクされないままの生データが出るため、この項目で初めて配線する）。変換の入力は値だけでなく、同じ行のほかの列と、列の定義（型、長さ、文字集合、NULL 可、UNIQUE か）を含める（`shift_date` の `by` や派生列が行の外を読むため）。変換名とバージョンを HMAC の入力に含め、ツールの更新だけで出力が変わらないようにする（値が変わる改修は新しいバージョンとして足す）。
-- 仕様:
-  - **変換を入れる場所**（調査で分かった）: `rowSource` の外側を包むだけでは足りない。キーの無い表は、`source.Snapshot.EachRow`（`internal/source/rows.go`）が、**変換の前の生の行**を `extsort` に積んで並べ替える。メモリの上限を超えると、生の行が出力ディレクトリの一時ファイル（`stage.newScratch`）に載る（SIGKILL で残りうる）。さらに、並びが生の値の文字列順になり、マスク後の出力の並びから元の値の順序が漏れる。したがって、変換は `EachRow` の中の、行を読んだ直後（`emit` の前）に掛ける（`EachRow` に変換の引数を足す、など。形は実装時に決める）。キーのある表はサーバーが `ORDER BY` した順のまま、キーの無い表は変換後の行の文字列順で並べる。`dump.rowSource` のインターフェースはそれに合わせて変える。`--target` を問わず、writer に渡る行は変換後だけ。
-  - **フラグ**: `--mask-rules FILE`（B-165 の YAML）と `--salt-file FILE`（環境変数 `MYSQLDANCE_SALT` も。B-165 の `internal/mask/salt.go` を使う）。`--salt-file` だけ（`--mask-rules` なし）は使い方のエラー。
-  - **salt**（ユーザーが選択）: 使う変換があるときだけ必須。この項目の `fixed` / `nullify` は使わないので、salt なしで動く。`--salt-file` や `MYSQLDANCE_SALT` が渡されたときは、使う変換が無くても検証する（16 バイト未満、権限が緩いファイルはエラー）。変換の登録（`mask.Transform`）に `NeedsSalt` を足す。
-  - **変換**（`internal/mask` に登録）:
-    - `fixed`: 引数 `value`（必須。YAML の文字列・整数・小数・真偽値）。元の値が NULL のときは NULL のまま。適用する型は、文字列型（`CHAR` / `VARCHAR` / `TEXT` 系）、整数、`DECIMAL`、`FLOAT` / `DOUBLE`、`DATE` / `DATETIME` / `TIMESTAMP` / `TIME` / `YEAR`。`BIT` / `BLOB` / `BINARY` / `JSON` / `ENUM` / `SET` / 空間型は対象外（B-165 の型の検査でエラー）。
-    - `nullify`: 引数なし。全ての型に使える。NULL 可でない列はエラー。名前を `null` にしないのは、YAML が `use: null` を文字列でなく null と読むため。
-  - **`fixed` の値の検査**（ダンプの前。列の定義は `source.TableDef.Columns` の `Type` / `Nullable` と、`CharacterSet`（B-113 と共有。無ければ足す）で見る）: 文字列は、`CHAR(n)` / `VARCHAR(n)` の n 文字以内で、列の文字集合で表せる（ASCII 以外は `utf8mb4` / `utf8mb3` / `utf8` の列だけ）。整数は型の範囲（`UNSIGNED` を考慮）、`DECIMAL(M,D)` は桁数と小数部に収まる、`FLOAT` / `DOUBLE` は有限の数、日付・時刻はその型の書式（小数秒は列の精度以内）。YAML の型は、文字列型と日付・時刻には文字列、数値型には数値のみ（`"12"` を整数の列に書くとエラー）。
-  - **キーの列の制限**: `fixed` は、`TableInfo.OrderBy` の列（主キー、なければ NOT NULL の一意キー）、いずれかの UNIQUE インデックスの列、外部キーの子側の列に使えない（重複・参照切れになる。UNIQUE の検出は B-168、外部キーの追従は B-170）。外部キーの親側（他の表から参照される）の列には、どの変換も使えない。`nullify` は、NULL 可の UNIQUE の列と、NULL 可の外部キーの子側の列には使える（NULL は重複・参照切れにならない）。エラー文に理由（キーの種類）を入れる。
-  - **共通キーの扱い**: `domain`、`when`、`on_null`、`on_collision` と `paths`（JSON のパスごとのルール）は、この項目では意味を持たせない。書かれていたら、黙って無視せず、「この版では未対応」というエラーにする（B-165 は読むだけで、値の意味は後の項目）。
-  - **変換の入力**: 変換は、値だけでなく、同じ行の全ての列と列の添字、列の定義（型、長さ、文字集合、NULL 可、UNIQUE / 外部キーか）を受け取る形にする（`shift_date` の `by` や派生列が行の外を読むため）。ルールの無い表は変換を掛けない（行ごとのコストを足さない）。ルールのある列の変換は、表ごとに先に解決しておき、行ごとにマップを引かない。
-  - **HMAC の鍵の導出**: 変換の登録に `Version`（1 から）を持たせ、`DeriveKey(salt, 変換名, Version)`（HMAC-SHA256）を `internal/mask` に置く。`fixed` / `nullify` は使わない（B-167 が使う）。名前・バージョンが違えば鍵が違うこと、同じ入力は同じ鍵になることをテストする。
-  - **カタログ**: ダンプの前に、読んだ DB・表・列から `mask.Catalog` を作って `Rules.Validate` を呼ぶ。`FoldTableCase` は `--exclude-table` と同じ判定（`lower_case_table_names`）に揃える。出力ディレクトリに触れる前（検査 → 古いファイル削除 → 書き出しの「検査」）に失敗させる。
-  - **マスクされないもの（README に書く）**: マスクは行のデータだけに掛かる。スキーマの文字列（列の `DEFAULT` と `COMMENT`、`ENUM` / `SET` の値、`CHECK`、パーティションの境界値、ビュー・トリガー・ルーチン・イベントの本体のリテラル、`AUTO_INCREMENT` の現在値）、表名・列名、行数、キーのある表の行の並び（主キーの順）は、変換されない。
-  - 前提: `internal/maskbench` は、B-167 で本物の変換が入るまで今のまま置く（B-201 が B-166 で決めるとした点。`fixed` / `nullify` は計測するほどの費用がない）。
-  - 前提: ログ・エラー・進捗に、行の値を出さない（列の名前と型は出してよい）。
-- 受け入れ条件:
-  - [ ] `--mask-rules` / `--salt-file` / `MYSQLDANCE_SALT` が配線され、salt は使う変換があるときだけ必須、渡されたときは常に検証される。不正なルール（B-165 の検査と、未対応のキー、キーの列への `fixed`、`fixed` の値の不適合、NOT NULL への `nullify`）は、出力ディレクトリに触れる前にまとめてエラーになる
-  - [ ] `fixed` と `nullify` が、`--target mysql` / `sqlite` / `postgres` の全てで、writer に渡る行に効く。NULL は `fixed` で NULL のまま
-  - [ ] キーの無い表で、生の行がソートの一時ファイルに載らず（偽の `SortFile` に書かれたバイトに、生の値が含まれない）、出力の並びは変換後の行の文字列順になる（単体テスト）
-  - [ ] 同じデータとルールで全ファイルがバイト一致する（2 回の実行、`--jobs 1` と `--jobs 2`）。ログとエラーに値が出ない。MySQL に復元して、変換した列だけが変わっていることを確かめる（統合テスト）
-  - [ ] README にフラグ、ルールの書式（`fixed` / `nullify`）、マスクされないもの、`--jobs` と並びの扱いを書く
-
 ## B-167 [todo|P2] マスク: 長さと文字種を保つ決定的な変換（`hash_keep_shape`）
 - 依存: B-166
 - 概要: `HMAC(salt, 値)` から、元の値と同じバイト長・同じ文字種（ASCII、日本語、絵文字の並び）の値を作る。同じ元の値は常に同じ値になるので、重複の形と行サイズが保たれる。NULL は NULL のまま。列の文字集合・照合順序に収まらない値は作らない。
@@ -757,6 +731,17 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
+## B-208 [todo|P3] マスク: `fixed` / `nullify` の値が CHECK 制約とパーティションの境界に合うかを、ダンプの前に検査する
+- 依存: B-166
+- 概要: B-166 の `fixed` は、型・長さ・文字集合・キーの検査はするが、CHECK 制約（`Defs` が名前だけ読む）とパーティション式は見ない。`CHECK (status <> '')` の列に `fixed: ""` を置く、`PARTITION BY RANGE` のどの範囲にも入らない値を置く、などはダンプが通り、復元の `INSERT` で失敗する。CHECK の式は読んでいないので、検査するか、そうした列への変換を拒否するか、警告するかを仕様で決める。それまで README には「検査しない」と書く。
+- 受け入れ条件:
+  - [ ] 仕様を確定する（`refine-backlog`）
+
+## B-209 [todo|P3] 統合テストの、`origin/main` で既に落ちるテストを直す（MariaDB、MySQL 5.7、MySQL 5.6）
+- 概要: B-166 の確認で、次のテストが `origin/main` でも失敗した。`task test:integration:mariadb`: `TestSQLiteFloatDoubleRoundTrip`（`-0` の警告がログに出ない）。`task test:integration:mysql57`: `TestSQLiteRoundTrip`（`ISNULL()` のビューが SQLite に変換できず、期待する警告と一致しない）、`TestPostgresForeignKeysBetweenDatabases`（他の実行が PostgreSQL に残した DB の外部キーが一覧に混ざる）。`task test:integration:mysql56`: `TestPostgresViews`、`TestPostgresLongColumnNames`。原因がテストの前提か実装かを調べ、直すか、サーバーごとに skip する理由を書く。`README.md` の Compatibility の「Tested」の根拠にも関わる。
+- 受け入れ条件:
+  - [ ] 仕様を確定する（`refine-backlog`）
+
 # Done
 
 ## B-003 [done|P2] 複数 DB を 1 つのスナップショットで読む
@@ -866,6 +851,7 @@
 ## B-152 [done|P2] MariaDB で DB 名つきで作ったトリガーの出力から DB 名を取り除く
 ## B-153 [done|P2] MariaDB の統合テストの前提を MariaDB に合わせて直す
 ## B-165 [done|P2] マスク: ルールファイルと salt を読み込んで検証する（`internal/mask`）
+## B-166 [done|P2] マスク: 読んだ行を書き出す前に変換する仕組みと、固定値・NULL 化の変換
 ## B-176 [done|P2] スキャン: gitleaks / betterleaks 互換の設定ファイルを読み込んで、値に当てる（`internal/scan`）
 ## B-201 [done|P2] 調査: 行ごとの変換（HMAC、JSON の解釈）がダンプ時間とメモリに与える影響を測る
 ## B-202 [done|P2] 表の読み出し中に、一定時間ごとの進捗を `INFO` ログで出す

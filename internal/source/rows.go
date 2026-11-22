@@ -64,6 +64,19 @@ func (s *Snapshot) EachRow(ctx context.Context, t TableInfo, fn func(row []sqlva
 	// the abort lasts up to one table scan, but the connection (and its snapshot)
 	// stays usable (review ledger R-084).
 	defer func() { _ = rows.Close() }()
+	return s.eachRowOf(rows, t, fn)
+}
+
+// rowScanner is what eachRowOf reads rows from: a *sql.Rows, or a fake in tests.
+type rowScanner interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}
+
+// eachRowOf is the part of EachRow after the query: it types the rows, applies
+// t.Mask, and orders and passes them on.
+func (s *Snapshot) eachRowOf(rows rowScanner, t TableInfo, fn func(row []sqlvalue.Value) error) (err error) {
 	raw := make([]sql.RawBytes, len(t.Columns))
 	dest := make([]any, len(raw))
 	isFloat := make([]bool, len(raw))
@@ -100,6 +113,13 @@ func (s *Snapshot) EachRow(ctx context.Context, t TableInfo, fn func(row []sqlva
 				}
 			}
 			row[i] = sqlvalue.NewValue(t.Columns[i].TypeName, b, b == nil)
+		}
+		// Before the sort, so that a row the sort holds (in memory or in a scratch
+		// file) is already masked, and so is the order it is played back in.
+		if t.Mask != nil {
+			if err := t.Mask(row); err != nil {
+				return fmt.Errorf("table %s: mask: %w", sqlvalue.QuoteIdent(t.Name), err)
+			}
 		}
 		if err := emit(row); err != nil {
 			return err
