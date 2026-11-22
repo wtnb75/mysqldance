@@ -115,6 +115,8 @@ MYSQL_PWD=secret mysqldance -h 127.0.0.1 -P 3306 -u root -o ./dump mydb otherdb
 
 Put flags **before** the database names (Go's standard `flag` package stops parsing at the first positional argument).
 
+The first argument may name a subcommand. It counts only when it is exactly the name of one (`scan-k`, see "Measuring k-anonymity"); anything else is the dump above. A database that has the name of a subcommand is dumped by writing the flags first: `mysqldance -o out scan-k` dumps the database `scan-k`.
+
 | Flag | Default | Description |
 | --- | --- | --- |
 | `-h`, `--host` | `127.0.0.1` | Host to connect to |
@@ -407,7 +409,37 @@ A key is `DB.TABLE.COLUMN`: the database is the part before the first dot, the c
 - **The salt** is needed only by a transform that uses it; `fixed`, `nullify` and `keep` do not, so they run without one.
 - **What is not masked.** The rules apply to the data of rows only. The schema files hold, as they are: the `DEFAULT` and `COMMENT` of columns, the values of `ENUM` and `SET`, `CHECK` expressions, the boundary values of partitions, the literals in the bodies of views, triggers, stored routines and events, and the current `AUTO_INCREMENT` of a table. A `fixed` value or a NULL is not checked against the `CHECK` constraints and the partitions of the table, so one that breaks them dumps fine and fails when the files are restored. Table and column names, the number of rows, and the order of the rows of a table with a key (the order of its primary key, which the rules cannot change) are not masked either.
 - **Ordering.** A table with a key is written in the order of its key, whatever its transformed columns hold. A table without a key is sorted by the text of its transformed rows, so the order does not reveal the order of the original values. With `--jobs` above 1 the output is the same as with 1: each table is transformed on its own, and the transform of a column sees the row as it was read.
+- **`quasi`** (`quasi: true`, a boolean) marks a column as part of the quasi-identifier that `scan-k` measures (see "Measuring k-anonymity"). It can be written together with `use`, or alone: a rule that has only `quasi: true` (no `use`, no `paths`) is allowed, and a dump does nothing for it. It does not count as a decision for `--strict-columns`. `quasi` cannot be combined with `paths` or written inside a path rule, and `quasi: false` is the same as not writing it (alone it is the error "use is required"). A column that does not exist, is generated, or is in a view or an excluded table is an error, as for any rule, and so is `quasi` on a `DB.TABLE.*` rule.
 - **Logs and errors** never show a value of a row: they name the table, the column and the rule.
+
+### Measuring k-anonymity
+
+`mysqldance scan-k --mask-rules FILE [flags] DB [DB...]` measures how well the rows hide among each other. For each table that has at least one column marked `quasi: true` in the rule file, all its marked columns together are the quasi-identifier, and the command counts how many rows share each combination of their values (k is the size of the group a row is in). It prints counts only, never a value, and writes no file (there is no `-o`). It runs in the same kind of snapshot as a dump, on the values in the server, before any masking; measuring the masked files is not supported yet.
+
+```yaml
+rules:
+  shop.users.zip:
+    quasi: true
+  shop.users.born:
+    use: keep
+    quasi: true
+```
+
+| Flag | Description |
+| --- | --- |
+| `-h`, `-P`, `-u`, `--socket`, `--password-file`, `--ssl-mode`, `--ssl-ca` | As for the dump (the password is also read from `MYSQL_PWD`) |
+| `--mask-rules FILE` | The rule file (required). The rules are checked against the databases as for a dump, and every column marked quasi is measured. It is an error when none is marked, so a run that measured nothing cannot pass as one that found no fault. No salt is needed |
+| `--k N` | `N` is at least 1. Exit with status 1 when a row is in a group of fewer than `N` rows. Without it the command only reports |
+| `--format table\|json` | `table` (default) is a text table; `json` is one JSON object per table, one per line |
+| `--exclude-table DB.TABLE`, `--no-lock`, `--log-level`, `--log-format` | As for the dump |
+
+The report has one line per table, in the order of the database names, then of the table names. It holds the database, the table, the marked columns, the number of rows and of groups, the smallest k, the number of rows whose k is 1, 2, 3, 4, 5, 6 to 9, 10 to 99 and 100 or more, and, with `--k`, the number of rows whose k is under `N`. A table without rows has no smallest k (`-` in the table, `null` in JSON) and is never a violation. Logs go to standard error, the report to standard output.
+
+**Exit status**: 0 when the measurement ran and there is no `--k` or no row under it; 1 when `--k N` is given and a row is in a group of fewer than `N` rows; 2 when it could not run (a wrong flag, a connection that fails, a rule file that is wrong, a query that fails). These differ from the dump's 0 and 1.
+
+**How it measures.** For each table the server runs `SELECT cnt, COUNT(*) FROM (SELECT COUNT(*) AS cnt FROM t GROUP BY col, ...) g GROUP BY cnt`, so only sizes and counts leave it. A NULL is a value: rows with NULL in the same columns fall in one group. A string column (`CHAR`, `VARCHAR`, the `TEXT` types, `ENUM`, `SET`) is compared byte by byte (`CAST(col AS BINARY)`), so `A` and `a` are two groups; comparing with the collation of the column would put them in one and report a larger k than the data has. The cost is that of reading the whole table plus a temporary table of the groups, once per table, one table at a time (there is no `--jobs`).
+
+**Limits.** The quasi-identifier is one set of columns per table. A combination across tables (a `JOIN`) is not measured, nor are columns of a table that are not marked. A table is measured whole, so a column with a different value in every row (such as a key) makes every k equal to 1.
 
 ### Parallel reads
 

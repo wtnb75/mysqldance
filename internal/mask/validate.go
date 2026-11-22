@@ -207,6 +207,10 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 		if e.Key.Column == Wildcard {
 			// DB.TABLE.*: every column of the table that has no rule of its own is
 			// kept. It changes nothing, so it plans nothing.
+			if e.Rule.Quasi {
+				bad("a wildcard rule (DB.TABLE.%s) cannot be marked quasi: name the columns", Wildcard)
+				continue
+			}
 			if e.Rule.Use != keepTransform.Name {
 				bad("only %q can be used on a wildcard (DB.TABLE.%s), not %q", keepTransform.Name, Wildcard, e.Rule.Use)
 				continue
@@ -247,6 +251,11 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 		seen[norm] = e.Spec
 		if err := checkUnsupported(e.Rule); err != nil {
 			bad("%v", err)
+		}
+		if e.Rule.Use == "" && len(e.Rule.Paths) == 0 {
+			// Only quasi (the parser refuses a rule with nothing at all): the column
+			// is marked for scan-k, and a dump does nothing for it.
+			continue
 		}
 		if err := checkApplies(e, *col, reg); err != nil {
 			bad("%v", err)
