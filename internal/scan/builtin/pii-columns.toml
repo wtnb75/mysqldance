@@ -1,0 +1,82 @@
+# Built-in rules that guess personal information from the NAME of a column
+# (B-181). Use them with:
+#
+#   [extend]
+#   useBuiltin = ["pii-columns"]
+#   disabledRules = ["pii-column-name-generic"]   # to turn one off
+#
+# Every rule here has only a path and no regex, so a rule flags the whole value
+# of every non-empty cell of a column whose name it matches. The path that a rule
+# is matched against is DB.TABLE.COLUMN; each pattern looks at the part after the
+# last "." only, so a database or a table named "email" flags nothing by itself.
+#
+# These are guesses from a name, not a finding in the data: a column called
+# "address" may hold an IP address, and a column of personal data may have a name
+# that no rule knows (camelCase short words such as userTel, abbreviations, other
+# languages). A scan that flags nothing does not prove that the data holds no
+# personal information. A column name that itself contains a "." is not seen
+# whole. A rule of the same id in your own file replaces a rule here entirely.
+#
+# How a word is matched (all case-insensitive):
+#   - a long word that is hard to mistake (address, birth, postal, firstname)
+#     matches anywhere in the column name;
+#   - a short word (tel, zip, dob, fax, name) matches only as one whole word,
+#     bounded by "_" or "-" or by an end of the name: tel, user_tel and tel_no
+#     match; hotel and total do not;
+#   - a Japanese word matches anywhere (メモ not as part of メモリ);
+#   - a short word may be followed by digits (tel1, addr2).
+#
+# Because a long word matches anywhere, a column that only refers to such data
+# is flagged too (address_id, email_verified, comment_count). Turn the rule off
+# or write your own if that is too noisy.
+#
+# Secret-like columns (password, token) are out of scope here: this is a guess at
+# personal information.
+
+[[rules]]
+id = "pii-column-person-name"
+description = "Column that holds a person's name"
+path = '''(?i)\.[^.]*(?:first[_-]?name|last[_-]?name|full[_-]?name|family[_-]?name|given[_-]?name|surname|furigana|氏名|姓名|名前|フリガナ|ふりがな)[^.]*$|(?i)\.(?:[^.]*[_-])?kana[0-9]*(?:[_-][^.]*)?$'''
+
+[[rules]]
+id = "pii-column-email"
+description = "Column that holds an email address"
+path = '''(?i)\.[^.]*(?:e[_-]?mail|メール)[^.]*$|(?i)\.(?:[^.]*[_-])?mail[0-9]*(?:[_-][^.]*)?$'''
+
+[[rules]]
+id = "pii-column-phone"
+description = "Column that holds a phone or fax number"
+path = '''(?i)\.[^.]*(?:telephone|cellphone|電話|携帯)[^.]*$|(?i)\.(?:[^.]*[_-])?(?:tel|phone|mobile|fax)[0-9]*(?:[_-][^.]*)?$'''
+
+[[rules]]
+id = "pii-column-address"
+description = "Column that holds a street address"
+path = '''(?i)\.[^.]*(?:address|住所|番地)[^.]*$|(?i)\.(?:[^.]*[_-])?(?:addr|street)[0-9]*(?:[_-][^.]*)?$'''
+
+[[rules]]
+id = "pii-column-postal"
+description = "Column that holds a postal code"
+path = '''(?i)\.[^.]*(?:postal|post[_-]?code|zipcode|郵便)[^.]*$|(?i)\.(?:[^.]*[_-])?zip[0-9]*(?:[_-][^.]*)?$'''
+
+[[rules]]
+id = "pii-column-birth"
+description = "Column that holds a date of birth"
+path = '''(?i)\.[^.]*(?:birth|生年月日|誕生日)[^.]*$|(?i)\.(?:[^.]*[_-])?dob[0-9]*(?:[_-][^.]*)?$'''
+
+[[rules]]
+id = "pii-column-gov-id"
+description = "Column that holds a government or card number"
+path = '''(?i)\.[^.]*(?:my[_-]?number|passport|マイナンバー|旅券|パスポート)[^.]*$|(?i)\.(?:[^.]*[_-])?(?:ssn|card[_-]?(?:number|no))[0-9]*(?:[_-][^.]*)?$'''
+
+[[rules]]
+id = "pii-column-freetext"
+description = "Free-text column, which can hold personal information"
+# description and body are not here: they hold product text and the like, and
+# would flag too many columns.
+path = '''(?i)\.[^.]*(?:備考|メモ(?:$|[^.リ])|コメント)[^.]*$|(?i)\.(?:[^.]*[_-])?(?:comments?|notes?|memo|remarks?)[0-9]*(?:[_-][^.]*)?$'''
+
+[[rules]]
+id = "pii-column-name-generic"
+description = "Column called exactly name (often not a person: products.name)"
+# Apart from pii-column-person-name so that it is easy to turn off.
+path = '''(?i)\.name$'''
