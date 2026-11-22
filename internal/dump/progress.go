@@ -48,6 +48,7 @@ type progress struct {
 	running map[string]bool // "db.table" of the tables being read
 
 	log   *slog.Logger
+	bar   *ProgressBar // drawn instead of logging; nil when records are logged
 	start time.Time
 
 	stopOnce sync.Once
@@ -62,39 +63,67 @@ func startProgress(ctx context.Context, log *slog.Logger, interval time.Duration
 	if interval <= 0 {
 		return nil
 	}
+	p := &progress{log: log, running: map[string]bool{}}
+	// The speed of a record is the one of the last interval.
+	var last time.Time // zero until the first tick, which then counts from the start
+	var lastRows int64
+	p.launch(ctx, interval, c, func(now time.Time) {
+		if last.IsZero() {
+			last = p.start
+		}
+		lastRows = p.report(now, last, lastRows)
+		last = now
+	})
+	return p
+}
+
+// barInterval is how often the bar is drawn. It is fixed, not --progress-interval,
+// which only paces the records.
+const barInterval = 250 * time.Millisecond
+
+// startProgressBar starts the goroutine that draws the bar every barInterval and
+// logs nothing. It returns nil without a bar. The caller must call stop on every
+// way out of the run, which erases the bar.
+func startProgressBar(ctx context.Context, bar *ProgressBar, c clock) *progress {
+	if bar == nil {
+		return nil
+	}
+	p := &progress{bar: bar, running: map[string]bool{}}
+	p.launch(ctx, barInterval, c, func(now time.Time) {
+		// The speed of the bar is the average of the run: a speed over 250ms
+		// would jump with every batch.
+		bar.draw(p.stats(now, p.start, 0).barLine())
+	})
+	return p
+}
+
+// launch starts the goroutine that calls tick with the time of each tick of
+// interval until stop.
+func (p *progress) launch(ctx context.Context, interval time.Duration, c clock, tick func(now time.Time)) {
 	if c.now == nil {
 		c.now = realClock.now
 	}
 	if c.newTicker == nil {
 		c.newTicker = realClock.newTicker
 	}
-	p := &progress{log: log, start: c.now(), running: map[string]bool{}}
+	p.start = c.now()
 	ticks, stopTicker := c.newTicker(interval)
 	ctx, p.cancel = context.WithCancel(ctx)
 	p.wg.Go(func() {
 		defer stopTicker()
-		p.loop(ctx, ticks)
-	})
-	return p
-}
-
-// loop logs one record per tick until ctx is done.
-func (p *progress) loop(ctx context.Context, ticks <-chan time.Time) {
-	last := p.start
-	lastRows := int64(0)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case now := <-ticks:
-			lastRows = p.report(now, last, lastRows)
-			last = now
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticks:
+				tick(now)
+			}
 		}
-	}
+	})
 }
 
-// stop ends the goroutine and waits for it, so no record follows the call. It is
-// safe to call twice and on nil.
+// stop ends the goroutine and waits for it, so no record follows the call, and
+// erases the bar. It is safe to call twice and on nil.
 func (p *progress) stop() {
 	if p == nil {
 		return
@@ -102,6 +131,9 @@ func (p *progress) stop() {
 	p.stopOnce.Do(func() {
 		p.cancel()
 		p.wg.Wait()
+		if p.bar != nil {
+			p.bar.clear()
+		}
 	})
 }
 
@@ -155,42 +187,69 @@ func (p *progress) bytesCounter() *atomic.Int64 {
 	return &p.bytes
 }
 
-// report logs one record at time now and returns the row count it saw. since is
-// the time of the previous record (or of the start), and sinceRows its rows, for
-// the speed of the last interval.
-func (p *progress) report(now, since time.Time, sinceRows int64) int64 {
-	rows, bytes := p.rows.Load(), p.bytes.Load()
+// progressStats is what a "dump progress" record and the bar both show. It holds
+// only counts and table names, never a row value.
+type progressStats struct {
+	rows, bytes        int64
+	tablesDone, tables int
+	approx             int64
+	percent            float64
+	hasPercent         bool
+	rate               int64 // rows per second
+	eta                time.Duration
+	hasEta             bool
+	running            []string // "db.table", sorted
+}
+
+// stats reads the totals at time now. since is the time of the previous record
+// (or of the start), and sinceRows its rows, for the speed since then.
+func (p *progress) stats(now, since time.Time, sinceRows int64) progressStats {
+	s := progressStats{rows: p.rows.Load(), bytes: p.bytes.Load()}
 	p.mu.Lock()
-	tables, done, approx := p.tables, p.done, p.approx
-	running := make([]string, 0, len(p.running))
+	s.tables, s.tablesDone, s.approx = p.tables, p.done, p.approx
+	s.running = make([]string, 0, len(p.running))
 	for name := range p.running {
-		running = append(running, name)
+		s.running = append(s.running, name)
 	}
 	p.mu.Unlock()
-	slices.Sort(running)
+	slices.Sort(s.running)
 
-	attrs := []any{"rows", rows, "bytes", bytes, "tables_done", done, "tables", tables, "approx_rows", approx}
-	// approx_rows is the TABLE_ROWS estimate: without one there is nothing to
+	// approx is the TABLE_ROWS estimate: without one there is nothing to
 	// compare with, and once the rows pass it the estimate was too low, so the
 	// percentage stops at 99 and no time is promised.
-	if approx > 0 {
-		pct := math.Floor(float64(rows)*1000/float64(approx)) / 10
-		if rows >= approx {
-			pct = 99
+	if s.approx > 0 {
+		s.hasPercent = true
+		s.percent = math.Floor(float64(s.rows)*1000/float64(s.approx)) / 10
+		if s.rows >= s.approx {
+			s.percent = 99
 		}
-		attrs = append(attrs, "percent", pct)
 	}
-	attrs = append(attrs, "rows_per_sec", ratePerSec(rows-sinceRows, now.Sub(since)))
-	if elapsed := now.Sub(p.start); approx > 0 && rows > 0 && rows < approx && elapsed > 0 {
-		remaining := float64(approx-rows) / (float64(rows) / elapsed.Seconds())
+	s.rate = ratePerSec(s.rows-sinceRows, now.Sub(since))
+	if elapsed := now.Sub(p.start); s.approx > 0 && s.rows > 0 && s.rows < s.approx && elapsed > 0 {
+		remaining := float64(s.approx-s.rows) / (float64(s.rows) / elapsed.Seconds())
 		// A huge estimate with a slow start would overflow time.Duration: no time is promised then.
 		if remaining < float64(math.MaxInt64)/float64(time.Second) {
-			attrs = append(attrs, "eta", time.Duration(remaining*float64(time.Second)).Round(time.Second))
+			s.hasEta = true
+			s.eta = time.Duration(remaining * float64(time.Second)).Round(time.Second)
 		}
 	}
-	attrs = append(attrs, "running", strings.Join(running, ","))
+	return s
+}
+
+// report logs one record at time now and returns the row count it saw.
+func (p *progress) report(now, since time.Time, sinceRows int64) int64 {
+	s := p.stats(now, since, sinceRows)
+	attrs := []any{"rows", s.rows, "bytes", s.bytes, "tables_done", s.tablesDone, "tables", s.tables, "approx_rows", s.approx}
+	if s.hasPercent {
+		attrs = append(attrs, "percent", s.percent)
+	}
+	attrs = append(attrs, "rows_per_sec", s.rate)
+	if s.hasEta {
+		attrs = append(attrs, "eta", s.eta)
+	}
+	attrs = append(attrs, "running", strings.Join(s.running, ","))
 	p.log.Info("dump progress", attrs...)
-	return rows
+	return s.rows
 }
 
 // ratePerSec is n per d, rounded to a whole number; 0 for an empty interval.

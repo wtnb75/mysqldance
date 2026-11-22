@@ -69,6 +69,11 @@ type Options struct {
 	// ProgressInterval is how often a "dump progress" record is logged while the
 	// tables are read; 0 logs none. It never changes the output files.
 	ProgressInterval time.Duration
+	// ProgressBar (B-203), when set, is drawn while the tables are read instead of
+	// logging "dump progress" records, and ProgressInterval is not used. The
+	// caller makes Log write through the bar, so a record never cuts it. It never
+	// changes the output files.
+	ProgressBar *ProgressBar
 
 	// Mask holds the masking rules (B-166), or nil for none. Every value the
 	// rules name is transformed as it is read, so the writers, and the scratch
@@ -175,7 +180,11 @@ func Run(ctx context.Context, opt Options) (err error) {
 	defer func() { err = errors.Join(err, st.discard()) }()
 	// A failed or canceled run stops the ticker too; the normal end stops it
 	// before "dump finished" (stop is idempotent).
-	opt.prog = startProgress(ctx, opt.Log, opt.ProgressInterval, opt.clock)
+	if opt.ProgressBar != nil {
+		opt.prog = startProgressBar(ctx, opt.ProgressBar, opt.clock)
+	} else {
+		opt.prog = startProgress(ctx, opt.Log, opt.ProgressInterval, opt.clock)
+	}
 	defer opt.prog.stop()
 	// Lower-cased output file name -> what it was generated for, across the
 	// whole run, so names that differ only in case are rejected.
@@ -237,6 +246,8 @@ func Run(ctx context.Context, opt Options) (err error) {
 			return fmt.Errorf("database %q: %w", db, err)
 		}
 	}
+	// The bar stops here, not after the last table: B-203 fixes it to the end of
+	// the run, where the progress records end too (review ledger R-211).
 	opt.prog.stop()
 	// The last record of a successful run: the files are in place and the stale
 	// ones are gone. Run fails on an empty opt.DBs, so there is always a database.

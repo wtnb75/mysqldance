@@ -1518,3 +1518,17 @@
 - 却下の理由: B-196 の確定した仕様（`os.Args[1]` がサブコマンド名と完全に一致するときだけサブコマンド。DB 名が同じならフラグを先に書く）。README の Usage に回避策を書いた。ダンプには `-o` が必須で、`-o` を先に書く通常の呼び出しは変わらない（テスト `TestScanKIsASubcommandOnlyAsTheFirstArgument`）。
 - 初出: B-196
 - 再出: 0
+
+## R-211 バーの最後の 1 コマが、commit と古いファイルの削除の間、固まって見える
+- 対象: internal/dump/dump.go の Run（`opt.prog.stop()` の位置）、internal/dump/progress.go の stop
+- 指摘: バーを止めて消すのが `st.commit()` と `removeStale` の後なので、その間は最後の割合が止まったまま残り、停止したように見える。最後の表を読み終えた直後に止めるべき。
+- 却下の理由: B-203 の確定した仕様は、バーを止めて消すのを「ダンプの終了時（`dump finished`、エラーの記録の前）」と決めていて、記録の `dump progress` と同じ位置（`dump finished` の直前）で止める。ファイルを置き換える段階の時間はバーの範囲外で、割合は 99 で止まる（`percent` の規則）。早く止める変更は、`dump progress` の記録の終わり方（README の Progress 節）も変えるため、別項目で扱う。
+- 初出: B-203
+- 再出: 0
+
+## R-212 `auto` は端末だとバーを選び、`--progress-interval` を明示しても記録が出なくなる
+- 対象: cmd/mysqldance/main.go の parseArgsTo（`--progress` の解決）
+- 指摘: 端末（pty を使う CI など）で `--progress-interval 30s` を指定しても、バーが選ばれて記録が出ず、ログが `\r` だらけになる。明示した間隔があれば記録を続けるか、組み合わせを拒否すべき。
+- 却下の理由: B-203 の確定した仕様が、「`--progress-interval` は `log` の間隔だけを決める」「端末で `auto` にすると、バーが出て記録は出なくなる（今までと変わる点。README に書く）」と決めている。記録が要る場合は `--progress log` を指定する。README の `--progress` の説明と Progress 節に書いた。
+- 初出: B-203
+- 再出: 0

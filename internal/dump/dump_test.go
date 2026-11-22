@@ -1022,6 +1022,59 @@ func TestProgressRecordsDoNotChangeOutput(t *testing.T) {
 	}
 }
 
+// The bar changes nothing in the files, logs no "dump progress" record, and
+// leaves nothing on the screen when the run ends: the log goes through the bar,
+// and what a terminal shows at the end is the records only (B-203).
+func TestProgressBarDoesNotChangeOutput(t *testing.T) {
+	e := newEnv(t)
+	db := e.threeTables(t)
+	plain := t.TempDir()
+	e.dump(t, plain, db)
+
+	ticks := make(chan time.Time)
+	stopped := make(chan struct{})
+	var stopOnce sync.Once
+	fc := clock{
+		now: time.Now,
+		newTicker: func(time.Duration) (<-chan time.Time, func()) {
+			go func() {
+				for {
+					select {
+					case ticks <- time.Now():
+					case <-stopped:
+						return
+					}
+				}
+			}()
+			return ticks, func() { stopOnce.Do(func() { close(stopped) }) }
+		},
+	}
+	withBar := t.TempDir()
+	var screen bytes.Buffer
+	bar := NewProgressBar(&screen, func() int { return 100 })
+	if err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: withBar, Log: testLogger(bar), ProgressBar: bar, clock: fc}); err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(readFiles(t, plain), readFiles(t, withBar)) {
+		t.Error("the files differ when the bar is drawn")
+	}
+	if strings.Contains(screen.String(), "dump progress") {
+		t.Error("a dump progress record was logged with the bar")
+	}
+	lines := strings.Split(screen.String(), "\n")
+	for _, l := range lines {
+		if got := screenLine(l); got != "" && !strings.Contains(got, "level=") {
+			t.Errorf("the screen shows %q, want records only", got)
+		}
+	}
+	if last := lines[len(lines)-2]; !strings.Contains(screenLine(last), "dump finished") {
+		t.Errorf("last record = %q, want dump finished", screenLine(last))
+	}
+	if tail := screenLine(lines[len(lines)-1]); tail != "" {
+		t.Errorf("the bar is left on the screen: %q", tail)
+	}
+}
+
 func TestSymlinkAppearingDuringRunRefused(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)

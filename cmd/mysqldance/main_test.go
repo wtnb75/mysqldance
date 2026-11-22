@@ -57,6 +57,8 @@ func TestRunUsageErrors(t *testing.T) {
 		{"negative progress interval", []string{"--progress-interval", "-1s", "-o", t.TempDir(), "db1"}},
 		{"progress interval without unit", []string{"--progress-interval", "5", "-o", t.TempDir(), "db1"}},
 		{"unreadable progress interval", []string{"--progress-interval", "soon", "-o", t.TempDir(), "db1"}},
+		{"unknown progress mode", []string{"--progress", "fancy", "-o", t.TempDir(), "db1"}},
+		{"empty progress mode", []string{"--progress", "", "-o", t.TempDir(), "db1"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var stderr bytes.Buffer

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -64,6 +65,14 @@ const (
 	targetMySQL    = "mysql"
 	targetSQLite   = "sqlite"
 	targetPostgres = "postgres"
+)
+
+// The values of --progress.
+const (
+	progressAuto = "auto"
+	progressBar  = "bar"
+	progressLog  = "log"
+	progressNone = "none"
 )
 
 // errUsage marks errors already reported by the flag package.
@@ -287,11 +296,17 @@ quasi in the rule file). It counts only as the first argument.
                              64MiB, at least 1MiB); past that the sort goes
                              through temporary files in the output directory.
                              With --jobs N, N tables are sorted at once
+      --progress MODE        how to show the progress while the tables are read:
+                             bar (one line redrawn with \r, 4 times a second),
+                             log ("dump progress" records), none, or auto
+                             (default: bar when standard error is a terminal,
+                             else log). bar also works when it is not a
+                             terminal; the line then holds \r characters
       --progress-interval DUR
                              log a "dump progress" record (rows, bytes, speed,
                              estimated remaining time) every DUR while the
                              tables are read, e.g. 30s or 1m (default 10s;
-                             0 = none)
+                             0 = none). It applies to --progress log only
       --mask-rules FILE      YAML file of rules that transform column values as
                              they are read, so the output holds only the
                              transformed rows (transforms: fixed, nullify,
@@ -328,6 +343,7 @@ quasi in the rule file). It counts only as the first argument.
 		lockTimeout                              time.Duration
 		connectTimeout, readTimeout              time.Duration
 		progressInterval                         time.Duration
+		progressMode                             string
 	)
 	fs.StringVar(&host, "h", "127.0.0.1", "")
 	fs.StringVar(&host, "host", "127.0.0.1", "")
@@ -356,6 +372,7 @@ quasi in the rule file). It counts only as the first argument.
 	// deliberately not checked against --lock-timeout: the README says to keep it higher.
 	fs.DurationVar(&readTimeout, "read-timeout", 0, "")
 	fs.DurationVar(&progressInterval, "progress-interval", dump.DefaultProgressInterval, "")
+	fs.StringVar(&progressMode, "progress", progressAuto, "")
 	fs.IntVar(&jobs, "j", 1, "")
 	fs.IntVar(&jobs, "jobs", 1, "")
 	fs.StringVar(&maskRules, "mask-rules", "", "")
@@ -419,6 +436,9 @@ quasi in the rule file). It counts only as the first argument.
 		return usage("--read-timeout must not be negative")
 	case progressInterval < 0:
 		return usage("--progress-interval must not be negative")
+	case !slices.Contains([]string{progressAuto, progressBar, progressLog, progressNone}, progressMode):
+		return usage("--progress must be %s, %s, %s or %s, not %q",
+			progressAuto, progressBar, progressLog, progressNone, progressMode)
 	case jobs > 1 && noLock:
 		// Without the lock the snapshots of the connections cannot be aligned.
 		return usage("--jobs above 1 cannot be combined with --no-lock: the lock is what makes " +
@@ -428,7 +448,24 @@ quasi in the rule file). It counts only as the first argument.
 		return usage("%v", err)
 	}
 
-	logger, err := newLogger(stderr, logLevel, logFormat)
+	// The bar and the log share standard error: the logger writes through the bar,
+	// which takes the bar off the screen for each record (B-203).
+	var bar *dump.ProgressBar
+	logOut := stderr
+	isTTY, _ := terminalOf(stderr)
+	if progressMode == progressBar || (progressMode == progressAuto && isTTY) {
+		bar = dump.NewProgressBar(stderr, func() int {
+			_, cols := terminalOf(stderr)
+			return columnsOf(cols, getenv)
+		})
+		logOut = bar
+		// The bar shows what the records would, so there are none even when
+		// --progress-interval is given; --progress log asks for them (R-212).
+		progressInterval = 0
+	} else if progressMode == progressNone {
+		progressInterval = 0
+	}
+	logger, err := newLogger(logOut, logLevel, logFormat)
 	if err != nil {
 		return usage("%v", err)
 	}
@@ -479,6 +516,7 @@ quasi in the rule file). It counts only as the first argument.
 		CaseSafeNames: caseSafeNames,
 
 		ProgressInterval: progressInterval,
+		ProgressBar:      bar,
 	}
 	// dump builds the MySQL writer from Data; another writer takes the options
 	// itself, and dump refuses both.
