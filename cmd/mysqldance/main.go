@@ -74,6 +74,10 @@ var errVersion = errors.New("version requested")
 
 // run executes the command and returns the process exit code.
 func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	// Only an exact first argument is a subcommand; anything else is the dump.
+	if len(args) > 0 && args[0] == subcommandScanK {
+		return runScanK(args[1:], getenv, stdout, stderr)
+	}
 	opt, err := parseArgsTo(args, getenv, stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
@@ -219,6 +223,8 @@ func parseArgsTo(args []string, getenv func(string) string, stderr io.Writer) (d
 
 Flags must come before the database names.
 The password is read from --password-file, else from MYSQL_PWD.
+Subcommand: mysqldance scan-k --help (measure k-anonymity of the columns marked
+quasi in the rule file). It counts only as the first argument.
 
   -h, --host HOST            server host (default 127.0.0.1)
   -P, --port PORT            server port (default 3306)
@@ -508,14 +514,8 @@ The password is read from --password-file, else from MYSQL_PWD.
 	opt.Source.Jobs = jobs
 	opt.Source.LockTimeout = lockTimeout
 	opt.Source.ConnectTimeout, opt.Source.ReadTimeout = connectTimeout, readTimeout
-	opt.Source.Password = getenv("MYSQL_PWD")
-	if passwordFile != "" {
-		b, err := readPasswordFile(passwordFile, logger)
-		if err != nil {
-			return dump.Options{}, fmt.Errorf("read password file: %w", err)
-		}
-		pw := strings.TrimSuffix(string(b), "\n")
-		opt.Source.Password = strings.TrimSuffix(pw, "\r")
+	if opt.Source.Password, err = loadPassword(passwordFile, getenv, logger); err != nil {
+		return dump.Options{}, err
 	}
 	return opt, nil
 }

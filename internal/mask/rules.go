@@ -18,13 +18,16 @@ const FileVersion = 1
 // reservedKeys are the keys of a rule that are not arguments of its transform.
 var reservedKeys = map[string]bool{
 	"use": true, "domain": true, "when": true, "on_null": true, "on_collision": true, "paths": true,
+	"quasi": true,
 }
 
 // Rule says how one value is transformed. A rule names a transform (Use) with
 // its named Args, or, for a JSON column, gives a rule per JSON path (Paths, in
 // file order). Domain, When, OnNull and OnCollision are the keys every
 // transform shares; this package only checks that they are strings, and later
-// items give them meaning.
+// items give them meaning. Quasi (B-196) marks the column as part of the
+// quasi-identifier that scan-k measures; a rule may hold nothing but that, and
+// then it has no Use and a dump does nothing for it.
 type Rule struct {
 	Use         string
 	Args        map[string]any
@@ -33,6 +36,7 @@ type Rule struct {
 	OnNull      string
 	OnCollision string
 	Paths       []PathRule
+	Quasi       bool
 }
 
 // PathRule is the rule for one path inside a JSON value.
@@ -234,6 +238,16 @@ func (p *parser) parseRule(n *yaml.Node, what string, nested bool) Rule {
 		v := vals[i]
 		switch k.Value {
 		case "use":
+		case "quasi":
+			if nested {
+				p.errorf(k, "%s: quasi cannot be used inside a path rule", what)
+				continue
+			}
+			if v.Kind != yaml.ScalarNode || v.Tag != "!!bool" {
+				p.errorf(v, "%s: quasi must be a boolean (true or false)", what)
+				continue
+			}
+			r.Quasi = v.Value == "true"
 		case "domain", "when", "on_null", "on_collision":
 			if v.Kind != yaml.ScalarNode || v.Tag != "!!str" {
 				p.errorf(v, "%s: %s must be a string", what, k.Value)
@@ -293,8 +307,10 @@ func (p *parser) parseRule(n *yaml.Node, what string, nested bool) Rule {
 	}
 	hasPaths := len(r.Paths) > 0
 	switch {
-	case useNode == nil && !hasPaths && n.Kind == yaml.MappingNode:
-		p.errorf(n, "%s: use is required (or paths, for a JSON column)", what)
+	case r.Quasi && hasPaths:
+		p.errorf(n, "%s: quasi cannot be combined with paths", what)
+	case useNode == nil && !hasPaths && !r.Quasi && n.Kind == yaml.MappingNode:
+		p.errorf(n, "%s: use is required (or paths, for a JSON column, or quasi: true)", what)
 	case useNode != nil && hasPaths:
 		p.errorf(n, "%s: use and paths cannot be combined", what)
 	}
