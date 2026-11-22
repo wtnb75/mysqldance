@@ -45,6 +45,7 @@ type rule struct {
 	keywords    []string       // lower case
 	entropy     float64
 	secretGroup int
+	validate    func(secret string) bool // nil: no check
 	allow       []*allowlist
 }
 
@@ -65,10 +66,20 @@ type fileDoc struct {
 	Title      string `toml:"title"`
 	MinVersion string `toml:"minVersion"`
 
-	Extend     any            `toml:"extend"`
+	Extend     *extendDoc     `toml:"extend"`
 	Allowlist  *allowlistDoc  `toml:"allowlist"`
 	Allowlists []allowlistDoc `toml:"allowlists"`
 	Rules      []ruleDoc      `toml:"rules"`
+}
+
+// extendDoc is the [extend] table. UseBuiltin and DisabledRules are read (see
+// builtin.go). UseDefault and Path are gitleaks keys that this build does not
+// support yet (B-204); they are decoded only so that they can be named in the error.
+type extendDoc struct {
+	UseBuiltin    []string `toml:"useBuiltin"`
+	DisabledRules []string `toml:"disabledRules"`
+	UseDefault    any      `toml:"useDefault"`
+	Path          any      `toml:"path"`
 }
 
 type ruleDoc struct {
@@ -78,6 +89,11 @@ type ruleDoc struct {
 	Keywords    []string `toml:"keywords"`
 	Entropy     float64  `toml:"entropy"`
 	SecretGroup int      `toml:"secretGroup"`
+	// Validate is not a gitleaks key: it names a check (see validate.go) that a
+	// match must pass to count. gitleaks ignores it, so a file that uses it can
+	// only give more detections there.
+	// A pointer, so that validate = "" is seen as written and refused, not read as absent.
+	Validate *string `toml:"validate"`
 
 	Allowlist  *allowlistDoc  `toml:"allowlist"`
 	Allowlists []allowlistDoc `toml:"allowlists"`
@@ -124,9 +140,15 @@ func Load(path string) (*Config, error) {
 // Any other key is an error that names the key: the file may be written for a
 // feature that this build does not have (commits, targetRules, composite
 // rules, CEL expressions), and ignoring it would weaken a detection without a
-// word. [extend] is not supported yet (B-204). Every problem is reported
-// together, one per line, each with the id of its rule.
-func Parse(data []byte) (*Config, error) {
+// word. Of [extend], useBuiltin and disabledRules are read (see builtin.go);
+// useDefault and path are not supported yet (B-204). A rule may also have the
+// key validate, which is not gitleaks'. Every problem is reported together,
+// one per line, each with the id of its rule.
+func Parse(data []byte) (*Config, error) { return parse(data, false) }
+
+// parse is Parse; builtin is set for a rule set of this package, which cannot
+// extend anything.
+func parse(data []byte, builtin bool) (*Config, error) {
 	var doc fileDoc
 	md, err := toml.Decode(string(data), &doc)
 	if err != nil {
@@ -136,8 +158,17 @@ func Parse(data []byte) (*Config, error) {
 	for _, k := range md.Undecoded() {
 		p.errorf("unsupported key %q", k.String())
 	}
-	if md.IsDefined("extend") {
-		p.errorf("[extend] is not supported yet (planned in B-204); put the rules in this file")
+	var ext extendDoc
+	if doc.Extend != nil {
+		ext = *doc.Extend
+		if builtin {
+			p.errorf("[extend] cannot be used in a built-in rule set")
+		}
+		for _, k := range []string{"useDefault", "path"} {
+			if md.IsDefined("extend", k) {
+				p.errorf("[extend] %s is not supported yet (planned in B-204); put the rules in this file", k)
+			}
+		}
 	}
 	c := &Config{}
 	if doc.Allowlist != nil {
@@ -160,6 +191,7 @@ func Parse(data []byte) (*Config, error) {
 		}
 		c.rules = append(c.rules, p.rule(rd, label))
 	}
+	p.applyExtend(c, ext)
 	if len(c.rules) == 0 {
 		p.errorf("the config has no rules")
 	}
@@ -209,6 +241,16 @@ func (p *parser) rule(rd ruleDoc, label string) *rule {
 	}
 	if rd.SecretGroup < 0 || rd.SecretGroup > groups {
 		p.errorf("%s: secretGroup %d is out of range (the regex has %d capture groups)", label, rd.SecretGroup, groups)
+	}
+	if rd.Validate != nil {
+		if rd.Regex == "" {
+			p.errorf("%s: validate needs a regex (it checks the secret that the regex found)", label)
+		}
+		if fn, ok := validators[*rd.Validate]; ok {
+			r.validate = fn
+		} else {
+			p.errorf("%s: unknown validate %q (known: %s)", label, *rd.Validate, strings.Join(validatorNames(), ", "))
+		}
 	}
 	if rd.Allowlist != nil {
 		r.allow = append(r.allow, p.allowlist(*rd.Allowlist, label+": allowlist"))
@@ -338,6 +380,9 @@ func (c *Config) Scan(path, value string) []Match {
 			}
 			secret := value[start:end]
 			if r.entropy != 0 && shannonEntropy(secret) <= r.entropy {
+				continue
+			}
+			if r.validate != nil && !r.validate(secret) {
 				continue
 			}
 			if c.allowed(r, path, secret, value[loc[0]:loc[1]], value) {
