@@ -17,7 +17,8 @@ var builtinFS embed.FS
 
 // builtinSets maps the name a rule file uses in useBuiltin to the embedded file.
 var builtinSets = map[string]string{
-	"pii": "builtin/pii.toml",
+	"pii":         "builtin/pii.toml",
+	"pii-columns": "builtin/pii-columns.toml",
 }
 
 // BuiltinNames returns the names useBuiltin accepts, sorted.

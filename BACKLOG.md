@@ -496,32 +496,6 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
-## B-181 [ready|P2] スキャン: 氏名・住所などを列名から推定する組み込みルール集
-- 依存: B-176, B-180
-- 概要: 値からは検出できない氏名・住所・自由記述を、`path` だけのルール（regex なし）で列名から推定する（`name`、`氏名`、`address`、`tel` など）。利用者の設定で足したり外したりできる。
-- 仕様:
-  - **組み込みの形**: B-180 の `[extend] useBuiltin` に乗せる。名前は `pii-columns`（`internal/scan/builtin/pii-columns.toml`）。外すのは `disabledRules`、足すのは利用者の `[[rules]]`（同じ `id` で上書き）。
-  - **ルール**は `path` だけ（`regex` なし）。`path` に当てる文字列は `DB.TABLE.COLUMN` なので、列名の部分だけを見る（最後の `.` の後。`(?i)` で大文字小文字を区別しない）。値が NULL・空のセルは `Config.Scan` が検出にしないので、空の列は報告されない。
-  - **語の当て方**: 長くて紛れにくい語（`email`、`address`、`birthday`、`postal`、`firstname` など）は、列名の中の部分一致。短い語（`tel`、`zip`、`dob`、`fax`、`name` など）は、`_` / `-` か列名の端で区切られた 1 つの語として一致したときだけ（`tel`、`user_tel`、`tel_no` は一致し、`hotel`、`total` は一致しない）。日本語の語（`氏名`、`住所`、`電話` など）は部分一致。
-  - **ルール**（`id` と、当てる語の例。語の一覧は実装時に決め、README でなく設計書 20 節に書く）:
-    - `pii-column-person-name`: `first_name`、`last_name`、`full_name`、`family_name`、`given_name`、`surname`、`氏名`、`姓名`、`名前`、`フリガナ`、`ふりがな` など。
-    - `pii-column-email`: `email`、`e_mail`、`mail_address`、`メール` など（`mail` だけは `mail_address` のように語として）。
-    - `pii-column-phone`: `tel`、`phone`、`mobile`、`fax`、`電話`、`携帯` など。
-    - `pii-column-address`: `address`、`addr`、`street`、`住所`、`番地` など。
-    - `pii-column-postal`: `zip`、`postal`、`郵便` など。
-    - `pii-column-birth`: `birth`、`dob`、`生年月日`、`誕生日` など。
-    - `pii-column-gov-id`: `my_number`、`ssn`、`passport`、`マイナンバー`、`旅券`、`card_number`、`card_no` など。
-    - `pii-column-freetext`: `comment`、`note`、`notes`、`memo`、`remark`、`備考`、`メモ`、`コメント` など（自由記述。個人情報が混ざりうる）。`description` と `body` は、商品説明などの誤検出が多いので入れない。
-    - `pii-column-name-generic`: 列名がちょうど `name` のもの。`products.name` のような誤検出が多いので、上の `pii-column-person-name` とは別のルールにして、外しやすくする。`product_name`、`table_name` は、どのルールにも一致させない。
-  - 前提: パスワード・トークンなどの秘密の列名は、この項目の範囲外（個人情報の推定。必要なら別項目）。
-  - 前提: 設定ファイルで B-180 の `[extend]` が読めること。B-180 が先に入る。
-- 受け入れ条件:
-  - [ ] `pii-columns.toml` の全ルールが `Parse` で読め、`regex` を持たず `path` だけである
-  - [ ] ルールごとに、一致する列名と一致しない列名の表のテストがある（例: `users.first_name`、`customers.氏名`、`a.b.user_tel`、`t.birthday` は一致。`t.hotel`、`t.total`、`products.product_name`、`t.description` は一致しない。`products.name` は `pii-column-name-generic` だけ）
-  - [ ] `useBuiltin = ["pii-columns"]` で有効になり、`disabledRules` で個別に外せ、同じ `id` の利用者のルールが優先する
-  - [ ] 値が空のセルは検出にならない。出力は決定的
-  - [ ] 設計書 20 節に、各ルールの語と、「列名からの推定は目安である」旨を書く
-
 ## B-182 [todo|P3] スキャン: 決定的なサンプリング（件数または割合の指定）
 - 依存: B-177
 - 概要: 本番と同じ量の表を全件読むと時間がかかるので、各表から決定的に一部の行だけを読めるようにする。サンプリングでは珍しい値を見逃す旨を README に書き、全件スキャンも選べる。
@@ -835,5 +809,6 @@
 ## B-166 [done|P2] マスク: 読んだ行を書き出す前に変換する仕組みと、固定値・NULL 化の変換
 ## B-176 [done|P2] スキャン: gitleaks / betterleaks 互換の設定ファイルを読み込んで、値に当てる（`internal/scan`）
 ## B-180 [done|P2] スキャン: 個人情報を値から検出する組み込みルール集（メール・電話・郵便番号・カード・マイナンバー・IP）
+## B-181 [done|P2] スキャン: 氏名・住所などを列名から推定する組み込みルール集
 ## B-201 [done|P2] 調査: 行ごとの変換（HMAC、JSON の解釈）がダンプ時間とメモリに与える影響を測る
 ## B-202 [done|P2] 表の読み出し中に、一定時間ごとの進捗を `INFO` ログで出す

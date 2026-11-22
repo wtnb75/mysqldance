@@ -1514,3 +1514,35 @@ README の「Failure handling」の 2 つの段階（一時ファイルに書く
 - **続く数字に引きずられる。** 長く取る正規表現は、一致した全体に `validate` を当てる。カード番号の後に空白と数字が続く（`4111111111111111 123`）と、19 桁の全体が Luhn に通らず、有効な 16 桁は見つからない。`pii-phone-intl` も、後ろに数字が続くと本体が長くなる。
 - **`pii-ipv6` は、16 進数だけの短い `::` の語に当たる**（`a::b`、`Cache::add`）。`::` を含む省略形は文法上、それが正しい IPv6 だからで、`pii-ipv4` と同じく、外すなら `disabledRules`。
 - **利用者のルールが組み込みの同じ `id` を置き換えるとき、組み込みのルールは丸ごと捨てる。** `validate`、`keywords`、許可リストは引き継がれない（正規表現だけの `pii-credit-card` は Luhn の検査を持たない）。置き換えたルールは、組み込みの並びでなく、利用者のルールの位置に並ぶので、検出が報告される順序も変わる。どのルールにも許可リストの `paths` は無く、B-206 の取りこぼしの影響を受けない。検出は一致した文字列を返さない（20.3）。
+
+### 20.6 列名から推定する組み込みのルール集（B-181）
+
+**列名からの推定は目安である。** 値からは見つからない氏名・住所・自由記述を、列名の語から当てる。名前が当たらない個人情報の列は見逃し、個人情報でない列に当たることもある（`address` は IP アドレスの列にも当たる）。何も検出されないことは、個人情報が無いことを意味しない。この注意は `pii-columns.toml` の冒頭にも書いてある。
+
+- **形**: `internal/scan/builtin/pii-columns.toml`。名前は `pii-columns`で、`[extend] useBuiltin = ["pii-columns"]` で使い、`disabledRules` で個別に外し、利用者の `[[rules]]` が同じ `id` なら置き換える（20.5 と同じ仕組み）。`pii` と一緒に `useBuiltin = ["pii", "pii-columns"]` と書ける。
+- **ルールは `path` だけ**で、`regex`・`keywords`・許可リスト・`validate` を持たない。`Scan` は、`path` が一致して値が空でないセルの全体を、1 件の検出にする（20.2）。NULL と空のセルは検出にならないので、空の列は報告されない。
+- **当てる文字列**: `DB.TABLE.COLUMN` のうち、最後の `.` の後（列名）だけを見る。どのパターンも `(?i)` で大文字小文字を区別しない。データベース名や表名が `email` でも、その表の全列には当たらない。`.` を含む列名は、最後の `.` の後しか見ない。
+- **語の当て方**:
+  - 長くて紛れにくい語は、列名の中の部分一致（`address`、`birth`、`postal`、`firstname` など）。
+  - 短い語は、`_` か `-` か列名の端で区切られた 1 つの語としてだけ一致する（`tel`、`user_tel`、`tel_no` は一致し、`hotel`、`total` は一致しない）。キャメルケースの短い語（`userTel`）は区切りが無いので当たらない。
+  - 短い語の後ろに数字が続いてもよい（`tel1`、`addr2`）。
+  - 日本語の語は部分一致。ただし `メモ` は `メモリ` の一部には当たらない。
+  - 長い語は列名のどこにでも当たるので、その語に触れるだけの列（`address_id`、`email_verified`、`comment_count`）も検出になる（却下した指摘 R-207）。
+- **ルール**（1 つの列が複数のルールに当たることがある。例: `mail_address` は `pii-column-email` と `pii-column-address`）:
+
+| `id` | 部分一致の語 | 1 つの語として一致する語 |
+| --- | --- | --- |
+| `pii-column-person-name` | `first_name`、`last_name`、`full_name`、`family_name`、`given_name`（`_` `-` は省略可。`firstname`）、`surname`、`furigana`、`氏名`、`姓名`、`名前`、`フリガナ`、`ふりがな` | `kana` |
+| `pii-column-email` | `email`（`e_mail`、`e-mail`）、`メール` | `mail` |
+| `pii-column-phone` | `telephone`、`cellphone`、`電話`、`携帯` | `tel`、`phone`、`mobile`、`fax` |
+| `pii-column-address` | `address`、`住所`、`番地` | `addr`、`street`（`addr1` のように数字が続く `addr` も） |
+| `pii-column-postal` | `postal`、`postcode`（`post_code`）、`zipcode`、`郵便` | `zip` |
+| `pii-column-birth` | `birth`、`生年月日`、`誕生日` | `dob` |
+| `pii-column-gov-id` | `my_number`（`mynumber`）、`passport`、`マイナンバー`、`旅券`、`パスポート` | `ssn`、`card_number`、`card_no`（`cardnumber`） |
+| `pii-column-freetext` | `備考`、`メモ`、`コメント` | `comment`、`comments`、`note`、`notes`、`memo`、`remark`、`remarks` |
+| `pii-column-name-generic` | （なし） | 列名がちょうど `name` |
+
+- **`description` と `body` は入れない**。商品説明や本文で誤検出が多いため。必要なら利用者のルールで足す。
+- **`pii-column-name-generic` は `pii-column-person-name` と別のルール**にした。`products.name` のような誤検出が多く、`disabledRules` で外しやすくするため。`product_name`、`table_name` はどのルールにも当たらない。
+- **範囲外**: パスワード・トークンなどの秘密の列名は、個人情報の推定でないので含めない。
+- **確認したこと**: ルールごとに、一致する列名と一致しない列名の表のテスト（`internal/scan/builtin_columns_test.go`）。全ルールが `Parse` で読め、`regex` を持たないこと。
