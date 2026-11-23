@@ -1,7 +1,8 @@
-// Package maskbench measures the cost of the per-cell transformations that
-// data masking will need (B-201). It holds only benchmarks: they run with
-// `go test -bench`; `task test` compiles them but does not run them. It does
-// not touch product code.
+// Package maskbench measures the cost of the per-cell transformations of data
+// masking (B-201). The string transform is the real hash_keep_shape (B-167);
+// the JSON rewrite is still a stand-in (B-169). It holds only benchmarks: they
+// run with `go test -bench`; `task test` compiles them but does not run them.
+// They call the product's mask and sqlvalue packages and change nothing in them.
 //
 //	go test ./internal/maskbench -run '^$' -bench . -benchmem
 package maskbench
@@ -10,7 +11,6 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"hash"
@@ -18,70 +18,46 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"mysqldance/internal/mask"
+	"mysqldance/internal/sqlvalue"
 )
 
 var key = []byte("maskbench-fixed-key-0123456789ab")
 
-// shaper derives a value of the same byte length and character class from
-// HMAC-SHA256 output. One shaper is owned by one goroutine (the hash state is
-// reused, as a real implementation would do).
+// shaper runs the real hash_keep_shape transform (internal/mask). One shaper
+// is owned by one goroutine of a benchmark; the transform itself is safe to
+// share, as in a dump. mac and sum are for BenchmarkHMACOnly, the floor.
 type shaper struct {
-	mac  hash.Hash
-	sum  []byte
-	ctr  [4]byte
-	out  []byte
-	pool []byte
+	fn  mask.Func
+	mac hash.Hash
+	sum []byte
 }
 
 func newShaper() *shaper {
-	return &shaper{mac: hmac.New(sha256.New, key), sum: make([]byte, 0, sha256.Size)}
-}
-
-// stream fills s.pool with at least n pseudo-random bytes derived from v.
-func (s *shaper) stream(v []byte, n int) []byte {
-	s.pool = s.pool[:0]
-	for c := uint32(0); len(s.pool) < n; c++ {
-		s.mac.Reset()
-		s.mac.Write(v)
-		binary.BigEndian.PutUint32(s.ctr[:], c)
-		s.mac.Write(s.ctr[:])
-		s.sum = s.mac.Sum(s.sum[:0])
-		s.pool = append(s.pool, s.sum...)
+	tr, ok := mask.DefaultRegistry().Lookup("hash_keep_shape")
+	if !ok {
+		panic("hash_keep_shape is not registered")
 	}
-	return s.pool
+	fn, err := tr.Build(mask.BuildContext{
+		Column: mask.Column{Name: "c", TypeName: "VARCHAR", CharacterSet: "utf8mb4"},
+		Key:    key,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return &shaper{fn: fn, mac: hmac.New(sha256.New, key), sum: make([]byte, 0, sha256.Size)}
 }
 
-// shape returns a value with the same length in bytes and the same class for
-// every rune (digit, upper, lower, hiragana, emoji; anything else is kept).
+// shape returns the masked value: the same length in bytes and characters, and
+// the same class for every character. It returns nil when the transform refuses
+// the value (invalid UTF-8).
 func (s *shaper) shape(v []byte) []byte {
-	ks := s.stream(v, utf8.RuneCount(v)) // one byte of key stream per rune
-	s.out = s.out[:0]
-	i := 0
-	for p := 0; p < len(v); {
-		r, w := utf8.DecodeRune(v[p:])
-		p += w
-		k := int(ks[i])
-		i++
-		if r == utf8.RuneError && w == 1 {
-			// Invalid UTF-8: keep the byte as it is, so the length never changes.
-			s.out = append(s.out, v[p-1])
-			continue
-		}
-		switch {
-		case r >= '0' && r <= '9':
-			r = '0' + rune(k%10)
-		case r >= 'a' && r <= 'z':
-			r = 'a' + rune(k%26)
-		case r >= 'A' && r <= 'Z':
-			r = 'A' + rune(k%26)
-		case r >= 0x3041 && r <= 0x3093: // hiragana, 3 bytes
-			r = 0x3041 + rune(k%83)
-		case r >= 0x1F600 && r <= 0x1F64F: // emoticons, 4 bytes
-			r = 0x1F600 + rune(k%80)
-		}
-		s.out = utf8.AppendRune(s.out, r)
+	out, err := s.fn(mask.Input{Value: sqlvalue.NewValue("VARCHAR", v, false)})
+	if err != nil {
+		return nil
 	}
-	return s.out
+	return out.Bytes()
 }
 
 // cell builds a deterministic cell of about n bytes of the given class.
@@ -136,8 +112,8 @@ func BenchmarkShape(b *testing.B) {
 				if len(got) != len(v) || bytes.Equal(got, v) {
 					b.Fatalf("shape: len %d -> %d, same=%v", len(v), len(got), bytes.Equal(got, v))
 				}
-				if bad := s.shape([]byte("ab\xffcd")); len(bad) != 5 || bad[2] != 0xff {
-					b.Fatalf("shape must keep invalid bytes and the length, got %q", bad)
+				if bad := s.shape([]byte("ab\xffcd")); bad != nil {
+					b.Fatalf("invalid UTF-8 must be refused, got %q", bad)
 				}
 				b.SetBytes(int64(len(v)))
 				b.ReportAllocs()

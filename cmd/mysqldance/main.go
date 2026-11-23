@@ -336,14 +336,15 @@ quasi in the rule file). It counts only as the first argument.
       --mask-rules FILE      YAML file of rules that transform column values as
                              they are read, so the output holds only the
                              transformed rows (transforms: fixed, nullify,
-                             keep). Checked against the databases before the
+                             keep, hash_keep_shape). Checked against the
+                             databases before the
                              output directory is touched; see the README
       --strict-columns       make a column with no rule an error: every output
                              column needs a rule (use: keep if it needs no
                              masking) or a DB.TABLE.* rule of keep for its
                              table. Needs --mask-rules
       --salt-file FILE       file holding the salt for the transforms that need
-                             one (at least 16 bytes; group and others must not
+                             one (hash_keep_shape; at least 16 bytes; group and others must not
                              be able to read or write it), else MYSQLDANCE_SALT.
                              Needs --mask-rules. Checked whenever it is given
       --log-level LEVEL      debug, info, warn or error (default info). Logs go

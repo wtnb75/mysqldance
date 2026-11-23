@@ -245,6 +245,96 @@ func TestMaskDump(t *testing.T) {
 	}
 }
 
+// hash_keep_shape in a dump: the same bytes come out of every run and every
+// target, no raw value is in the files or the log, and a restore keeps the
+// length in characters and in bytes of every value (a CHAR(n) column still holds
+// it), NULL, and the empty string.
+func TestMaskDumpHashKeepShape(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE people (id INT PRIMARY KEY, name VARCHAR(30) CHARACTER SET utf8mb4 NULL, code CHAR(8) CHARACTER SET utf8mb4 NULL)",
+		"INSERT INTO people VALUES (1,'Alice-RAW@x.test','AB-12'),(2,'山田太郎のRAW😀','カナ'),(3,NULL,''),(4,'','12345678'),(5,'Alice-RAW@x.test','AB-12')",
+	)
+	const lengths = "SELECT id, CHAR_LENGTH(name), LENGTH(name), CHAR_LENGTH(code), LENGTH(code), name IS NULL, code IS NULL FROM people ORDER BY id"
+	want := queryRows(t, e, lengths)
+	before := queryRows(t, e, "SELECT id, name, code FROM people ORDER BY id")
+	salt, err := mask.LoadSalt("", func(string) string { return "0123456789abcdef-test-salt" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := mask.Parse(fmt.Appendf(nil, "version: 1\nrules:\n  %[1]s.people.name:\n    use: hash_keep_shape\n  %[1]s.people.code:\n    use: hash_keep_shape\n", db), mask.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(jobs int, tgt writer.Writer) (map[string]string, string) {
+		t.Helper()
+		dir := t.TempDir()
+		cfg := e.cfg
+		cfg.Jobs = jobs
+		var log bytes.Buffer
+		opt := Options{Source: cfg, DBs: []string{db}, OutDir: dir, Log: testLogger(&log), Mask: rules, MaskSalt: &salt, Writer: tgt}
+		if err := Run(context.Background(), opt); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return readFiles(t, dir), log.String()
+	}
+	for name, mk := range map[string]func() writer.Writer{
+		"mysql":    func() writer.Writer { return writer.NewMySQL(datafile.Options{}) },
+		"sqlite":   func() writer.Writer { return writer.NewSQLite(datafile.Options{}) },
+		"postgres": func() writer.Writer { return writer.NewPostgres(datafile.Options{}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			first, log := run(1, mk())
+			if got, _ := run(1, mk()); !reflect.DeepEqual(got, first) {
+				t.Error("two runs differ")
+			}
+			if got, _ := run(2, mk()); !reflect.DeepEqual(got, first) {
+				t.Error("--jobs 2 differs from --jobs 1")
+			}
+			for file, text := range first {
+				for _, raw := range []string{"RAW", "Alice", "山田", "AB-12", "12345678"} {
+					if strings.Contains(text, raw) {
+						t.Errorf("%s holds the raw value %q", file, raw)
+					}
+				}
+			}
+			if strings.Contains(log, "RAW") || strings.Contains(log, "Alice") {
+				t.Errorf("the log holds a value:\n%s", log)
+			}
+		})
+	}
+
+	files, _ := run(1, writer.NewMySQL(datafile.Options{}))
+	dir := t.TempDir()
+	for name, text := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.restore(t, dir)
+	if got := queryRows(t, e, lengths); !reflect.DeepEqual(got, want) {
+		t.Errorf("lengths = %v, want %v", got, want)
+	}
+	after := queryRows(t, e, "SELECT id, name, code FROM people ORDER BY id")
+	if reflect.DeepEqual(after, before) {
+		t.Error("the values did not change")
+	}
+	// The same value gives the same value, in a column and across columns.
+	var sameFirst, sameFifth string
+	for _, r := range queryRows(t, e, "SELECT id, name FROM people WHERE id IN (1,5) ORDER BY id") {
+		if strings.HasPrefix(r, "1|") {
+			sameFirst = r[2:]
+		} else {
+			sameFifth = r[2:]
+		}
+	}
+	if sameFirst == "" || sameFirst != sameFifth {
+		t.Errorf("rows 1 and 5 hold one value, but got %q and %q", sameFirst, sameFifth)
+	}
+}
+
 // A wrong rule fails the run before the output directory is touched, and every
 // wrong rule is reported at once.
 func TestMaskRulesAreCheckedBeforeTheOutputDirectory(t *testing.T) {
