@@ -1,16 +1,5 @@
 # Backlog
 
-## B-105 [ready|P3] `latin1` の列に入った Shift_JIS / EUC-JP など UTF-8 以外の文字コードの扱いを調べる
-- 依存: B-081
-- 概要: B-081 の案（設計書 14 節）は、`latin1` の列に入った UTF-8 だけを扱う。日本語の古いシステムでは、`cp932` / `EUC-JP` のバイト列を `latin1` の列に入れたものもある（検出の集計では「不正」に分類される）。`--latin1-as-utf8` を文字コードの指定（例: `SPEC=cp932`）に広げる案を、実機で確かめて設計書に書く。コードは変えない。
-- 仕様:
-  - 前提: 結果は設計書（`docs/superpowers/specs/2026-11-09-mysqldance-design.md`）の 14 節に新しい小節として書く。コードは変えない。
-  - 前提: Go の変換は、リポジトリの外の使い捨てのモジュール（スクラッチ）で `golang.org/x/text/encoding/japanese` を使って確かめる。このリポジトリの `go.mod` には足さない。
-  - 前提: 試すバイト列は `cp932` の機種依存文字（丸数字など）と `EUC-JP`、`latin1` の列に入った状態を `CAST(col AS BINARY)` で読み、MySQL 8.4 の `latin1` の列で行う。
-- 受け入れ条件:
-  - [ ] `cp932` と `EUC-JP` のバイト列を `latin1` の列に入れた表を、`CAST(col AS BINARY)` で読み、Go の変換で正しい文字になることを 8.4 で確かめる
-  - [ ] 指定の形（B-081 の `SPEC` の拡張）と、検出の限界（UTF-8 との見分け）を書く
-
 ## B-107 [ready|P3] MySQL 5.7 で、DB 名で修飾して書かれたトリガーの出力を修飾なしにする
 - 概要: 5.7 の `SHOW CREATE TRIGGER` は、書いたとおりの文を返す（B-106 で確認）。`CREATE TRIGGER db.t ... ON db.b ...` と書かれたトリガーは、5.7 では修飾付きのまま出力に入り、別の DB 名へ復元できない（8.x の出力は修飾なしで、`TestTriggers` が「出力に DB 名を含まない」ことを確かめている）。5.7 で再現させてから、修飾なしにして出力する。
 - 仕様:
@@ -729,6 +718,7 @@
 ## B-102 [done|P3] 大文字小文字だけが違う名前を、オプトインで衝突しないファイル名にする
 ## B-103 [done|P3] `DELIMITER` で始まる行を含むトリガーの出力方法を調べる
 ## B-104 [done|P3] FLUSH TABLES WITH READ LOCK の権限の説明に `FLUSH_TABLES` を加える
+## B-105 [done|P3] `latin1` の列に入った Shift_JIS / EUC-JP など UTF-8 以外の文字コードの扱いを調べる
 ## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 ## B-119 [done|P2] `--exclude-table` でテーブルを出力から外せるようにする
