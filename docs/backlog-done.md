@@ -1060,6 +1060,24 @@
   - [x] README の使い方と、`DEFINER` の記述（「Stored routines」「Triggers」「Limitations」）をフラグに合わせる
 - 結果: `--definer=strip|keep` を足した。`keep` は `dump.Options.KeepDefiner` から `writer.MySQL.WithKeepDefiner` に渡り、ビュー・ルーチン・イベント・トリガーの `DEFINER` を `SHOW CREATE` のまま残す。トリガーの見出しの解析（`StripTriggerDB`）は `DEFINER` 付きでも読めるようにした。統合テスト `TestKeepDefinerRoundTrip` が、`DEFINER` のユーザーがいる復元先で復元して `information_schema` の `DEFINER` を確かめる。
 
+## B-112 [done|P3] `--sql-security=keep|invoker` でビュー・ルーチンの `SQL SECURITY` を書き換えられるようにする
+- 概要: `DEFINER` を除くと、`SQL SECURITY DEFINER`（既定）のビューとルーチンは、復元したユーザーの権限で動く。復元するのが管理者だと、元の定義者より高い権限で動く。オプトインで `SQL SECURITY INVOKER` に書き換えられるようにする（`--sql-security=keep`（既定）と `--sql-security=invoker`）。書き換えるとビューの見え方など定義の意味が変わるので、既定は書き換えない。トリガーには `SQL SECURITY` がないので対象外。
+- 仕様:
+  - 実機で確かめた（MySQL 8.4 / 5.7.44、MariaDB 10.11。`SHOW CREATE`）:
+    - ビューは、どの版でも `SQL SECURITY DEFINER` か `SQL SECURITY INVOKER` を必ず書く（`CREATE ALGORITHM=UNDEFINED DEFINER=... SQL SECURITY DEFINER VIEW ...`）。書き換えは、ヘッダーのこの語の置き換え。
+    - ルーチンは、`DEFINER`（既定）のときは `SQL SECURITY` を**書かない**。`INVOKER` のときだけ、シグネチャ行の次に 4 つの空白で字下げした `SQL SECURITY INVOKER` の行が出る（8.4 / 5.7.44 / MariaDB 10.11 で同じ）。本体は、字下げの無い行から始まる。したがって、ルーチンの `invoker` は「行を足す」処理になる。
+  - ルーチン: 特性の行に `SQL SECURITY INVOKER` が既にあれば何もしない。無ければ、シグネチャ行（`CREATE ... PROCEDURE|FUNCTION name(...) [RETURNS ...]`）の末尾の改行の直前に、`\n    SQL SECURITY INVOKER` を足す。シグネチャ行の終わりは、引用符・バッククォート・括弧の外の最初の改行とする（`ENUM('a\nb')` のような型の中の改行で誤らない）。`DETERMINISTIC` などの特性の順序は問われない。
+  - 前提: ビューは、ヘッダー（`VIEW` より前）にある `SQL SECURITY DEFINER` だけを置き換える。`DEFINER=...` の有無（B-111 の `keep` / `strip`）に依らず動く。`schemafile.StripDefiner` の隣に、同じ流儀（本体に触れない）で関数を足し、`internal/writer/mysql.go` の `WriteViews` と `WriteRoutines` から、`StripDefiner` の後に呼ぶ。
+  - 前提: フラグは `cmd/mysqldance/main.go` で受け、`dump.Options` から `writer.MySQL` に渡す。`--target sqlite` / `postgres` では、ビューを別の変換で出し（`SQL SECURITY` は落とす）、ルーチンは出さないので、何もしない（エラーにしない）。
+  - 前提: B-111 とは独立で、どちらが先でも動く。
+- 受け入れ条件:
+  - [x] `--sql-security=keep`（既定）は今と同じ出力。`invoker` は、ビューの `SQL SECURITY DEFINER` を `SQL SECURITY INVOKER` にし、ルーチンは上記のとおり `SQL SECURITY INVOKER` の行を足す（既に `INVOKER` のものは変えない）
+  - [x] 本体や文字列の中の `SQL SECURITY DEFINER` という文字列、`ENUM` の型の中の改行を含むシグネチャは、書き換えを誤らない（単体テスト）
+  - [x] 不正な値は使い方のエラー。`--target sqlite` / `postgres` では何もしない（README に書く）
+  - [x] `invoker` の出力が決定的で、復元して `information_schema` の `VIEWS.SECURITY_TYPE` と `ROUTINES.SECURITY_TYPE` が `INVOKER` になる（統合テスト。`SQL SECURITY DEFINER` を明示したビューと、何も書かないルーチンの両方）
+  - [x] README に、意味が変わること（ビューの見え方、権限）を書く
+- 結果: `--sql-security=keep|invoker` を足した。`invoker` は `dump.Options.SQLSecurityInvoker` から `writer.MySQL.WithSQLSecurityInvoker` に渡り、ビューは `schemafile.ViewSecurityInvoker` でヘッダーの `SQL SECURITY DEFINER` を置き換え、ルーチンは `schemafile.RoutineSecurityInvoker` でシグネチャ行の次に `SQL SECURITY INVOKER` の行を足す（既に `INVOKER` なら変えず、明示された `DEFINER` の行は置き換える）。読めない見出し・シグネチャはエラーにする。統合テスト `TestSQLSecurityInvokerRoundTrip` が、復元して `VIEWS.SECURITY_TYPE` と `ROUTINES.SECURITY_TYPE` を確かめる（MySQL 8.0 / 8.4）。
+
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 - 概要: ビューは `<db>.00-schema.sql`、ルーチンは `<db>.15-routines.sql` に出るので、復元ではビューが先に作られる。MySQL は `CREATE VIEW` の時点で、本文が呼ぶストアド関数があるかを確かめる。ストアド関数を呼ぶビューがあると、`docker-entrypoint-initdb.d` の復元がそこで止まる。ビューをルーチンの後に作る形にする。
 - 仕様:

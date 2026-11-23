@@ -39,6 +39,10 @@ type Options struct {
 	// triggers in the default MySQL writer (--definer=keep). Like Data, it
 	// cannot be combined with Writer.
 	KeepDefiner bool
+	// SQLSecurityInvoker writes views and routines with SQL SECURITY INVOKER
+	// in the default MySQL writer (--sql-security=invoker). Like Data, it
+	// cannot be combined with Writer.
+	SQLSecurityInvoker bool
 	// Writer renders the dump files; nil means the MySQL writer built from Data.
 	Writer writer.Writer
 	// FileMode is the exact permission of the output files; 0 means 0666
@@ -129,9 +133,9 @@ func Run(ctx context.Context, opt Options) (err error) {
 		opt.Log = slog.New(slog.DiscardHandler)
 	}
 	if opt.Writer == nil {
-		opt.Writer = writer.NewMySQL(opt.Data).WithKeepDefiner(opt.KeepDefiner)
-	} else if opt.Data != (datafile.Options{}) || opt.KeepDefiner {
-		return errors.New("Options.Data and Options.KeepDefiner configure the default writer and cannot be combined with Options.Writer")
+		opt.Writer = writer.NewMySQL(opt.Data).WithKeepDefiner(opt.KeepDefiner).WithSQLSecurityInvoker(opt.SQLSecurityInvoker)
+	} else if opt.Data != (datafile.Options{}) || opt.KeepDefiner || opt.SQLSecurityInvoker {
+		return errors.New("Options.Data, Options.KeepDefiner and Options.SQLSecurityInvoker configure the default writer and cannot be combined with Options.Writer")
 	}
 	// One connection and one transaction for all databases, so they all
 	// come from the same point in time. Open comes before anything touches the

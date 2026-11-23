@@ -66,6 +66,13 @@ const (
 	definerKeep  = "keep"
 )
 
+// The values of --sql-security: what to do with SQL SECURITY of views and
+// routines.
+const (
+	sqlSecurityKeep    = "keep"
+	sqlSecurityInvoker = "invoker"
+)
+
 // The values of --target: the DBMS the output is written for.
 const (
 	targetMySQL    = "mysql"
@@ -261,6 +268,13 @@ quasi in the rule file). It counts only as the first argument.
                              it as the server returned it, and the restore
                              fails (error 1449) unless that user exists. No
                              effect with --target sqlite or postgres
+      --sql-security MODE    keep (default) or invoker. keep writes SQL SECURITY
+                             of views and routines as the server returned it;
+                             invoker makes them SQL SECURITY INVOKER, so they
+                             run with the privileges of the caller, not of the
+                             definer. It changes what a view shows and what a
+                             routine may do. No effect with --target sqlite or
+                             postgres
       --pg-schema DB=SCHEMA  with --target postgres, name the schema a database
                              becomes (default: the database's own name). For a
                              database whose name starts with pg_, which
@@ -343,6 +357,7 @@ quasi in the rule file). It counts only as the first argument.
 	var (
 		host, user, socket, passwordFile, output string
 		sslMode, sslCA, target, definer          string
+		sqlSecurity                              string
 		maskRules, saltFile                      string
 		logLevel, logFormat                      string
 		noLock, showVersion, caseSafeNames       bool
@@ -371,6 +386,7 @@ quasi in the rule file). It counts only as the first argument.
 	fs.StringVar(&output, "output", "", "")
 	fs.StringVar(&target, "target", targetMySQL, "")
 	fs.StringVar(&definer, "definer", definerStrip, "")
+	fs.StringVar(&sqlSecurity, "sql-security", sqlSecurityKeep, "")
 	fs.BoolVar(&caseSafeNames, "case-safe-names", false, "")
 	fs.Uint64Var(&rowsPerInsert, "rows-per-insert", 1000, "")
 	fs.IntVar(&maxInsertBytes, "max-insert-bytes", 1048576, "")
@@ -421,6 +437,8 @@ quasi in the rule file). It counts only as the first argument.
 		return usage("--target must be %s, %s or %s, not %q", targetMySQL, targetSQLite, targetPostgres, target)
 	case definer != definerStrip && definer != definerKeep:
 		return usage("--definer must be %s or %s, not %q", definerStrip, definerKeep, definer)
+	case sqlSecurity != sqlSecurityKeep && sqlSecurity != sqlSecurityInvoker:
+		return usage("--sql-security must be %s or %s, not %q", sqlSecurityKeep, sqlSecurityInvoker, sqlSecurity)
 	case fs.NArg() == 0:
 		return usage("at least one database name is required")
 	case saltFile != "" && maskRules == "":
@@ -546,6 +564,9 @@ quasi in the rule file). It counts only as the first argument.
 		// no routines, triggers or events, and convert views without the clause,
 		// so the flag does nothing there (B-111).
 		opt.KeepDefiner = definer == definerKeep
+		// The same for SQL SECURITY (B-112): no routines are written for these
+		// targets and their views lose SQL SECURITY, so nothing is rewritten.
+		opt.SQLSecurityInvoker = sqlSecurity == sqlSecurityInvoker
 	}
 	if maskRules != "" {
 		rules, err := mask.Load(maskRules, mask.DefaultRegistry())

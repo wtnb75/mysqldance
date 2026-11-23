@@ -12,8 +12,9 @@ import (
 
 // MySQL writes MySQL 8.0-style SQL files.
 type MySQL struct {
-	data        datafile.Options
-	keepDefiner bool
+	data               datafile.Options
+	keepDefiner        bool
+	sqlSecurityInvoker bool
 }
 
 // NewMySQL returns a MySQL writer. opt controls the INSERT statements and the
@@ -25,6 +26,14 @@ func NewMySQL(opt datafile.Options) *MySQL { return &MySQL{data: opt} }
 // removes it. It returns m.
 func (m *MySQL) WithKeepDefiner(keep bool) *MySQL {
 	m.keepDefiner = keep
+	return m
+}
+
+// WithSQLSecurityInvoker sets whether views and routines are written with SQL
+// SECURITY INVOKER whatever the server returned (--sql-security=invoker, B-112).
+// The default leaves SQL SECURITY as SHOW CREATE returned it. It returns m.
+func (m *MySQL) WithSQLSecurityInvoker(invoker bool) *MySQL {
+	m.sqlSecurityInvoker = invoker
 	return m
 }
 
@@ -70,7 +79,14 @@ func (m *MySQL) WriteViews(w io.Writer, s Schema) error {
 	ordered := make([]schemafile.View, 0, len(s.Views))
 	for _, n := range schemafile.OrderViews(names, s.ViewDeps) {
 		v := byName[n]
-		ordered = append(ordered, schemafile.View{Name: v.Name, Create: m.definer(v.Create)})
+		create := m.definer(v.Create)
+		if m.sqlSecurityInvoker {
+			var err error
+			if create, err = schemafile.ViewSecurityInvoker(create); err != nil {
+				return fmt.Errorf("view %s: %w", sqlvalue.QuoteIdent(v.Name), err)
+			}
+		}
+		ordered = append(ordered, schemafile.View{Name: v.Name, Create: create})
 	}
 	return schemafile.WriteViews(w, s.DB, ordered)
 }
@@ -82,6 +98,13 @@ func (m *MySQL) WriteRoutines(w io.Writer, s Schema) error {
 	routines := make([]schemafile.Routine, len(s.Routines))
 	for i, r := range s.Routines {
 		r.Create = m.definer(r.Create)
+		if m.sqlSecurityInvoker {
+			create, err := schemafile.RoutineSecurityInvoker(r.Create)
+			if err != nil {
+				return fmt.Errorf("routine %s: %w", sqlvalue.QuoteIdent(r.Name), err)
+			}
+			r.Create = create
+		}
 		routines[i] = r
 	}
 	return schemafile.WriteRoutines(w, s.DB, routines)
