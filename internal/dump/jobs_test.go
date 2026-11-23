@@ -153,12 +153,14 @@ func TestJobsDumpIsOneInstant(t *testing.T) {
 
 // reloadUser creates an account with SELECT on db and RELOAD, so that its
 // sessions can be told from the administrative ones. It is dropped at cleanup.
+// TRIGGER, EVENT and EXECUTE let it list the triggers, events and routines of
+// db, which a dump refuses to go without (B-110).
 func (e *env) reloadUser(t *testing.T, db string) string {
 	t.Helper()
 	user := "mdj_" + strings.TrimPrefix(db, "mysqldance_dump_")
 	e.exec(t,
 		"CREATE USER '"+user+"'@'%' IDENTIFIED BY 'pw'",
-		"GRANT SELECT ON "+sqlvalue.QuoteIdent(db)+".* TO '"+user+"'@'%'",
+		"GRANT SELECT, TRIGGER, EVENT, EXECUTE ON "+sqlvalue.QuoteIdent(db)+".* TO '"+user+"'@'%'",
 		"GRANT RELOAD ON *.* TO '"+user+"'@'%'",
 	)
 	t.Cleanup(func() { e.exec(t, "DROP USER '"+user+"'@'%'") })

@@ -224,7 +224,7 @@ A database with stored procedures or functions also gets `<db>.15-routines.sql` 
 - Bodies contain `;`, so the statements end with a delimiter set by `DELIMITER`, chosen and restored exactly as for triggers (see "Triggers"): the file restores with the `mysql` client, which is what `docker-entrypoint-initdb.d` runs. A routine with a line that starts with `DELIMITER` fails the run.
 - Procedures come first, then functions, each by name in byte order. A routine does not depend on another at creation time (the server does not look up what a body calls), so the order only keeps the output the same every run.
 - The character set, collation and database collation recorded with a routine are not kept: the file runs with `SET NAMES utf8mb4`, and a string parameter without its own character set takes the default of the restored database.
-- A routine whose statement the server lists but returns as `NULL` (the account lacks `SHOW_ROUTINE`, or `EXECUTE` / `ALTER ROUTINE` on it) is an error, not a silent omission. A routine the server does not list at all for lack of privileges is not seen, so it is left out without a message; this is not checked yet (backlog B-110, the same for triggers).
+- A routine whose statement the server lists but returns as `NULL` (the account lacks `SHOW_ROUTINE`, or `EXECUTE` / `ALTER ROUTINE` on it) is an error, not a silent omission. A routine the server does not list at all for lack of privileges is not seen, and nothing else tells that it exists, so the run reads the account's `SHOW GRANTS` first and fails, before the output directory is touched, when none of `SHOW_ROUTINE`, `CREATE ROUTINE`, `ALTER ROUTINE` or `EXECUTE` is held on `*.*` or on the database (see "Privileges for listing objects" below). `EXECUTE` and `ALTER ROUTINE` list a routine but do not let the account read another account's routine body on MySQL 8.x; that is the `NULL` error above, and `SHOW_ROUTINE` is what fixes it.
 - Restoring needs the right to create them. With binary logging on (the MySQL 8 default), a function that is not declared `DETERMINISTIC`, `NO SQL` or `READS SQL DATA` fails with error 1418 unless the restoring user has `SUPER` or `log_bin_trust_function_creators` is `1` (MySQL's documented rule for stored functions; not tried here).
 - `--target sqlite` and `--target postgres` do not write routines (their bodies are MySQL syntax); a warning names each one.
 - Verified by restoring and comparing the definitions on MySQL 8.0 and 8.4 only; MySQL 5.7, 5.6 and MariaDB are not tried for routines.
@@ -239,7 +239,7 @@ A database with triggers also gets `<db>.20-triggers.sql` (a database without an
 - Bodies may contain `;`, so the statements end with a delimiter set by `DELIMITER` (`$$`; if a statement contains it, or ends with a character that would join it, the next of `//`, `##`, `%%`, `!!`, `$$$` and so on). A trigger with a line that starts with `DELIMITER` fails the run, because the client would run that line as a command. `DELIMITER` is a command of the `mysql` client: the file restores with the client (which is what `docker-entrypoint-initdb.d` runs), not through a driver that sends the whole file as one multi-statement query.
 - Triggers are ordered by table, timing (`AFTER` before `BEFORE`) and event, then in the order the server runs them (their creation order), then by name. Triggers of the same table, timing and event are therefore created in the order they run in, so the restored ones run in that order too.
 - The character set and collation of the connection the trigger was created with are not kept: the file runs with `SET NAMES utf8mb4`.
-- A trigger whose statement cannot be read (the account lacks the `TRIGGER` privilege) is an error, not a silent omission.
+- A trigger whose statement cannot be read (the account lacks the `TRIGGER` privilege) is an error, not a silent omission. Without `TRIGGER` the server does not even list the triggers, so the run also fails, before the output directory is touched, when `SHOW GRANTS` shows no `TRIGGER` on `*.*` or on the database (see "Privileges for listing objects" below).
 - `--target sqlite` and `--target postgres` do not write triggers (their bodies are MySQL syntax); a warning names each one.
 
 ### Events
@@ -253,9 +253,21 @@ A database with events also gets `<db>.25-events.sql` (a database without any ge
 - Bodies may contain `;`, so the statements end with a delimiter set by `DELIMITER`, chosen and restored exactly as for triggers (see "Triggers"): the file restores with the `mysql` client. An event with a line that starts with `DELIMITER` fails the run.
 - Events are ordered by name in byte order. They do not depend on each other, so the order only keeps the output the same every run.
 - The character set and collation of the connection the event was created with are not kept: the file runs with `SET NAMES utf8mb4`.
-- An event whose statement the server lists but returns as `NULL` is an error, not a silent omission. An event the server does not list at all for lack of the `EVENT` privilege is not seen, so it is left out without a message (the same gap as for triggers and routines, backlog B-110).
+- An event whose statement the server lists but returns as `NULL` is an error, not a silent omission. An event the server does not list at all for lack of the `EVENT` privilege is not seen, so the run fails, before the output directory is touched, when `SHOW GRANTS` shows no `EVENT` on `*.*` or on the database (see "Privileges for listing objects" below).
 - `--target sqlite` and `--target postgres` do not write events (their bodies are MySQL syntax); a warning names each one.
 - Verified by restoring and comparing the definitions on MySQL 8.0 and 8.4 only; MySQL 5.7, 5.6 and MariaDB are not tried for events.
+
+### Privileges for listing objects
+
+With only `SELECT`, the server lists no trigger, routine or event of the database and reports no error (`information_schema.TRIGGERS`, `ROUTINES` and `EVENTS` show only what the account may see), so a dump would drop them silently, and delete their files from the last run as stale. Nothing else tells whether a hidden object exists, so the dump checks the account's privileges instead, before the output directory is touched, and **fails when a privilege is missing, even if the database has no such object**:
+
+| Objects | Needs, on `*.*` or on the database (any one of) |
+| --- | --- |
+| Triggers | `TRIGGER` |
+| Routines | `SHOW_ROUTINE` (8.0.20 and later), `CREATE ROUTINE`, `ALTER ROUTINE`, `EXECUTE`; on MySQL 5.7 and MariaDB also `SELECT` on `mysql.proc` |
+| Events | `EVENT` |
+
+`ALL PRIVILEGES` covers all of them. Only `SHOW_ROUTINE` (8.x) or `SELECT` on `mysql.proc` (5.7, MariaDB) also lets the account read the body of a routine it did not create; with the others the routine is listed but its statement is `NULL`, which is the error described under "Stored routines". The rows of `SHOW GRANTS FOR CURRENT_USER()` are read for the privilege names only. The check is skipped, and the dump goes on with a warning, when the privileges cannot be told: `SHOW GRANTS` is refused by the server or has a row this does not understand, or the account has a role (its `SHOW GRANTS` has a `GRANT role TO account` row). A broken connection or a timeout in `SHOW GRANTS` is an error of the run, not a skip. On MySQL 5.7 and MariaDB, `SELECT` on `*.*` (or on `mysql.*`) includes `SELECT` on `mysql.proc`, so a read-only account with a global `SELECT` passes for routines. Privileges on a single table or routine do not count, since they do not show every object, so an account that holds only those is refused. The check applies to every `--target`, also to `sqlite` and `postgres`, which write none of these objects: the server hides them from the listing that warns about each skipped one. It was run against MySQL 8.0, 8.4, 5.7.44 and 5.6.51, and MariaDB 10.11 and 11.4.
 
 ### SQLite output
 

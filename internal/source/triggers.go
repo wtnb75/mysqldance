@@ -17,6 +17,9 @@ import (
 // them in this order runs them as the source does; the rest is name order.
 func (s *Snapshot) Triggers(ctx context.Context) (_ []schemafile.Trigger, err error) {
 	defer func() { err = s.hint(err) }()
+	if err := s.requirePrivilege(ctx, "triggers", "TRIGGER"); err != nil {
+		return nil, err
+	}
 	rows, err := s.conn.QueryContext(ctx,
 		"SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE, ACTION_TIMING, EVENT_MANIPULATION, ACTION_ORDER"+
 			" FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ?", s.name)
