@@ -1096,6 +1096,19 @@
   - [x] 4 つの方言のカタログから `Collation` を読む（統合テスト。8.0 / 8.4 と、`task test:integration:mysql57` / `mysql56` / `mariadb`）
   - [x] README の SQLite の節の、ビューの注意を、上記の範囲と限界に合わせて更新する
 
+## B-114 [done|P3] SQLite 向けの出力で、親テーブルが出力されない外部キーを警告して落とす
+- 依存: B-036
+- 概要: B-063 のレビューで指摘された（B-063 以前からの挙動）。`writeSQLiteTable` は、親が `sc.Defs` に無い（出力されない）外部キーをそのまま出力する。親が存在しない SQLite ファイルになり、外部キーを有効にすると子への書き込みが `no such table` で失敗する。PostgreSQL のライタは、親が出力に無い外部キーを理由つきの警告にして落とす（`byName`）。SQLite もこれに揃え、警告して落とす。
+- 仕様:
+  - 親が出力されない = `fk.RefTable` が `sc.Defs` に無い。`Snapshot.Defs`（`internal/source/def.go`）は、`--exclude-table` で外した表とビューを含めないので、外した表を親にする外部キーが、今はそのまま出力される。
+  - 前提: 判定の順序は `writeSQLiteTable` の今の順（別 DB の参照 → 生成列 → 親の有無 → 親のキー（`isSQLiteParentKey`）の順）に、「親が `defs` に無い」を、`isSQLiteParentKey` の前に足す。`defs[fk.RefTable]` の引き方（完全一致）は今のまま変えない。「親を読んでいなければ判定しない」という `writeSQLiteTable` のコメントは、この項目で直す。
+  - 警告の文言は PostgreSQL のライタに揃える（`foreign key X references table Y, which is not output`）。自己参照（親が自分）は `defs` にあるので変わらない。
+- 受け入れ条件:
+  - [x] 親テーブルが出力されない（`--exclude-table` で外した）外部キーは、出力せず、理由つきの警告になる（単体テスト）
+  - [x] 親テーブルが出力される外部キー（自己参照を含む）の出力は変わらない
+  - [x] 外した親を持つ子の表を含む出力を SQLite に復元し、外部キーを有効にして子へ書き込める（統合テスト。SQLite の統合テストがある場合。無ければ単体テストで足りる）
+  - [x] README の SQLite の節を、外部キーの扱いに合わせて更新する
+
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 - 概要: ビューは `<db>.00-schema.sql`、ルーチンは `<db>.15-routines.sql` に出るので、復元ではビューが先に作られる。MySQL は `CREATE VIEW` の時点で、本文が呼ぶストアド関数があるかを確かめる。ストアド関数を呼ぶビューがあると、`docker-entrypoint-initdb.d` の復元がそこで止まる。ビューをルーチンの後に作る形にする。
 - 仕様:

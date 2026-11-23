@@ -1639,3 +1639,17 @@
 - 却下の理由: 結果は関数名の一覧（`viewNumericFuncs`、`min`、`max`）に当たったときだけ使われ、その語は予約語ではない。別名や列名は backtick の識別子で、`argOf` が見る語（`tokWord`）にならない。引数の位置は B-113 の仕様が「引数」とだけ書いており、どの位置も数える。`round(5, t.price)` のように、桁数の位置の列を警告するのは偽陽性になるが、警告が 1 件増えるだけで、出力は変わらない。
 - 初出: B-113
 - 再出: 1
+
+## R-228 SQLite の外部キーの親が `defs` に無いとき、大文字小文字の違いで外部キーを落とす
+- 対象: internal/writer/sqlite.go の writeSQLiteTable（`defs[fk.RefTable]`）
+- 指摘: `lower_case_table_names` が 1 / 2 のサーバーで `REFERENCED_TABLE_NAME` の綴りが表名と違うと、親が見つからず、有効な外部キーを「親が出力されない」と警告して落とす。
+- 却下の理由: B-114 の確定した仕様が「`defs[fk.RefTable]` の引き方（完全一致）は今のまま変えない」と決めている。綴りが食い違う実例は示されておらず、PostgreSQL のライタ（`byName[fk.RefTable]`）も同じ完全一致で引く。ライタに届く表名は `dump` が大文字小文字の衝突を先に検査している。R-188 と同じ理由。
+- 初出: B-114
+- 再出: 0
+
+## R-229 SQLite の「親が出力されない」警告の文言が、外部キー自体を落とすことを言っていない
+- 対象: internal/writer/sqlite.go の writeSQLiteTable（警告の文言）
+- 指摘: `foreign key X references table Y, which is not output` の「is not output」は表のことで、外部キーが出力されないのかが読み取れない。
+- 却下の理由: B-114 の確定した仕様が、PostgreSQL のライタに揃えた文言（`foreign key X references table Y, which is not output`）と決めている。警告の前に `table child:` が付き、他の警告と同じく、警告が出た外部キーは出力に無い。
+- 初出: B-114
+- 再出: 0

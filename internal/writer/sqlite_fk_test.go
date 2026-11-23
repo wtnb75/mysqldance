@@ -117,6 +117,41 @@ func TestSQLiteForeignKeyParentKey(t *testing.T) {
 		"INSERT INTO `child` VALUES (1,1,1,5,5,5);")
 }
 
+func TestSQLiteForeignKeyParentNotOutput(t *testing.T) {
+	// The parent is not in Defs (for example --exclude-table removed it), so a
+	// foreign key to it would restore a child that cannot be written to.
+	intCol := []sqlvalue.Column{{Name: "id", TypeName: "INT"}, {Name: "p", TypeName: "INT"}}
+	intDef := []source.ColumnDef{{Name: "id", Type: "int", DataType: "int"}, {Name: "p", Type: "int", DataType: "int", Nullable: true}}
+	pk := []source.IndexDef{{Name: "PRIMARY", Unique: true, Kind: "BTREE", Parts: []source.IndexPart{{Column: "id"}}}}
+	schema := Schema{
+		DB:     "d",
+		Tables: []source.TableInfo{{Name: "child", Columns: intCol}},
+		Defs: map[string]source.TableDef{"child": {
+			Columns: intDef,
+			Indexes: pk,
+			ForeignKeys: []source.ForeignKey{{Name: "fk_gone", Columns: []string{"p"}, RefSchema: "d", RefTable: "gone",
+				RefColumns: []string{"id"}, OnUpdate: "NO ACTION", OnDelete: "NO ACTION"}},
+		}},
+	}
+	var warnings []string
+	schema.Warn = func(w Warning) { warnings = append(warnings, w.Message) }
+	var got bytes.Buffer
+	if err := NewSQLite(datafile.Options{}).WriteSchema(&got, schema); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got.String(), "FOREIGN KEY") {
+		t.Errorf("a foreign key to a table that is not output was written:\n%s", got.String())
+	}
+	want := "table `child`: foreign key `fk_gone` references table `gone`, which is not output"
+	if log := strings.Join(warnings, "\n"); !strings.Contains(log, want) {
+		t.Errorf("warnings lack %q:\n%s", want, log)
+	}
+	// With foreign keys on, a child row is accepted: no parent is needed.
+	db := memDB(t)
+	sqliteExec(t, db, got.String())
+	sqliteExec(t, db, "PRAGMA foreign_keys=ON; INSERT INTO `child` VALUES (1,99);")
+}
+
 func TestSQLiteForeignKeySelfReference(t *testing.T) {
 	// A foreign key to the table's own primary key is kept.
 	schema := Schema{
