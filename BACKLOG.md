@@ -1,14 +1,5 @@
 # Backlog
 
-## B-107 [ready|P3] MySQL 5.7 で、DB 名で修飾して書かれたトリガーの出力を修飾なしにする
-- 概要: 5.7 の `SHOW CREATE TRIGGER` は、書いたとおりの文を返す（B-106 で確認）。`CREATE TRIGGER db.t ... ON db.b ...` と書かれたトリガーは、5.7 では修飾付きのまま出力に入り、別の DB 名へ復元できない（8.x の出力は修飾なしで、`TestTriggers` が「出力に DB 名を含まない」ことを確かめている）。5.7 で再現させてから、修飾なしにして出力する。
-- 仕様:
-  - 前提: 5.7 のトリガー本体の修飾の除去は、MariaDB 向けに入れた `schemafile.StripTriggerDB`（`internal/schemafile/triggers.go`）を 5.7 にも効かせる形を第一案にする（B-152）。5.7 の方言で呼ばれているかを着手時に確かめる。
-  - 前提: テストは `task test:integration:mysql57`（5.7.44）で先に失敗させる。既存の `TestTriggers`（8.x で修飾が出ないことの確認）は変えない。
-- 受け入れ条件:
-  - [ ] 5.7 で、DB 名で修飾して作ったトリガーの出力に DB 名が含まれず、別名の DB へ復元できることを、失敗するテストを先に書いて確かめる
-  - [ ] 8.0 / 8.4 の出力は変わらない
-
 ## B-108 [ready|P3] 読み取りタイムアウトで切れたときの原因を、Open の後の失敗にも示す
 - 依存: B-015
 - 概要: `--read-timeout`（B-015）で接続が切れると、ドライバは原因を区別できない "invalid connection" だけを返す（標準エラーに `i/o timeout` を 1 行ログするだけ）。B-015 は `Open` の失敗にだけ「read timeout 内に応答しなかったかも」というヒントを付けた。`Open` の後の失敗（行の読み出し、スキーマやメタデータの取得）には付かず、使い手は原因を辿りにくい。同じヒントを、これらの失敗にも付ける。ヒントは `--read-timeout` を指定したときだけ、「may」と留保して付ける（B-015 の台帳 R-134 と同じ方針）。
@@ -720,6 +711,7 @@
 ## B-104 [done|P3] FLUSH TABLES WITH READ LOCK の権限の説明に `FLUSH_TABLES` を加える
 ## B-105 [done|P3] `latin1` の列に入った Shift_JIS / EUC-JP など UTF-8 以外の文字コードの扱いを調べる
 ## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
+## B-107 [done|P3] MySQL 5.7 で、DB 名で修飾して書かれたトリガーの出力を修飾なしにする
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 ## B-119 [done|P2] `--exclude-table` でテーブルを出力から外せるようにする
 ## B-138 [done|P2] 同じ出力先への並行実行を、出力ディレクトリのロックで拒否する
