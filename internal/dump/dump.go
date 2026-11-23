@@ -617,6 +617,9 @@ func writeTable(ctx context.Context, opt Options, r rowSource, plan *naming.Plan
 	if t.Mask, err = opt.maskPlan.Table(db, t.Name, t.Columns); err != nil {
 		return tableResult{}, fmt.Errorf("table %q: %w", t.Name, err)
 	}
+	if t.Unique, err = opt.maskPlan.Uniques(db, t.Name, t.Columns); err != nil {
+		return tableResult{}, fmt.Errorf("table %q: %w", t.Name, err)
+	}
 	// Hooks and error messages see this path for every file of the table.
 	provisional := filepath.Join(opt.OutDir, plan.DataFile(t.Name))
 	var staged []int

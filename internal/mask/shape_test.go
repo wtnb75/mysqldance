@@ -90,14 +90,15 @@ func TestHashKeepShapeIsRegistered(t *testing.T) {
 	if !ok {
 		t.Fatal("hash_keep_shape is not registered")
 	}
-	if tr.Version != 1 || !tr.NeedsSalt || !tr.BreaksKeys || len(tr.Args) != 0 {
+	if tr.Version != 1 || !tr.NeedsSalt || !tr.BreaksKeys || !tr.UniqueChecked || len(tr.Args) != 0 {
 		t.Errorf("transform = %+v", tr)
 	}
 }
 
 func TestHashKeepShapeColumns(t *testing.T) {
 	salt := shapeSaltOf(t, shapeSalt)
-	for _, c := range []string{"v", "u3", "l1", "t"} {
+	// code is a column of a unique index: the dump checks for collisions (B-168).
+	for _, c := range []string{"v", "u3", "l1", "t", "code"} {
 		if _, err := resolveRules(t, shapeCatalog(), shapeRules(c), salt); err != nil {
 			t.Errorf("%s: %v", c, err)
 		}
@@ -106,7 +107,6 @@ func TestHashKeepShapeColumns(t *testing.T) {
 		{"n", "does not apply"},
 		{"b", "does not apply"},
 		{"id", "key"},
-		{"code", "unique"},
 	}
 	for _, c := range cases {
 		_, err := resolveRules(t, shapeCatalog(), shapeRules(c.column), salt)

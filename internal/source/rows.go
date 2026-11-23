@@ -89,6 +89,14 @@ func (s *Snapshot) eachRowOf(rows rowScanner, t TableInfo, fn func(row []sqlvalu
 		isFloat[i] = sqlvalue.IsFloat(t.Columns[i].TypeName)
 	}
 
+	// The sorter of each unique index and the one that orders a table without a key
+	// share the memory budget (without a check the one sorter has all of it).
+	memory := s.sortMemory / int64(len(t.Unique)+1)
+	var uniq *uniqueChecker
+	if len(t.Unique) > 0 {
+		uniq = newUniqueChecker(t.Unique, memory, s.sortFile)
+		defer func() { err = errors.Join(err, uniq.close()) }()
+	}
 	emit := fn
 	var srt *extsort.Sorter
 	if len(t.OrderBy) == 0 {
@@ -96,7 +104,7 @@ func (s *Snapshot) eachRowOf(rows rowScanner, t TableInfo, fn func(row []sqlvalu
 		// added to a sorter (which spills to scratch files with Config.SortFile)
 		// and played back in order after the read. Rendering the literals here and
 		// again in the writer is accepted (review ledger R-045).
-		srt = extsort.New(s.sortMemory, s.sortFile)
+		srt = extsort.New(memory, s.sortFile)
 		defer func() { err = errors.Join(err, srt.Close()) }()
 		var key, val []byte
 		emit = func(row []sqlvalue.Value) error {
@@ -125,12 +133,25 @@ func (s *Snapshot) eachRowOf(rows rowScanner, t TableInfo, fn func(row []sqlvalu
 				return fmt.Errorf("table %s: mask: %w", sqlvalue.QuoteIdent(t.Name), err)
 			}
 		}
+		// After the mask: it is the masked rows that must stay unique.
+		if uniq != nil {
+			if err := uniq.add(row); err != nil {
+				return fmt.Errorf("table %s: unique check: %w", sqlvalue.QuoteIdent(t.Name), err)
+			}
+		}
 		if err := emit(row); err != nil {
 			return err
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
+	}
+	if uniq != nil {
+		// A collision is known only after the last row; the rows already written are
+		// staged files that a failed run discards (review ledger R-233).
+		if err := uniq.verify(s.name, t.Name); err != nil {
+			return err
+		}
 	}
 	if srt == nil {
 		return nil

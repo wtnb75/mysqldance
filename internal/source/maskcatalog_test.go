@@ -17,10 +17,10 @@ func TestCatalogTables(t *testing.T) {
 			Def: TableDef{
 				Columns: []ColumnDef{
 					{Name: "id", Type: "int unsigned", DataType: "int"},
-					{Name: "s", Type: "varchar(5)", DataType: "varchar", CharacterSet: "utf8mb4", Nullable: true},
+					{Name: "s", Type: "varchar(5)", DataType: "varchar", CharacterSet: "utf8mb4", Collation: "utf8mb4_0900_ai_ci", Nullable: true},
 					{Name: "g", Type: "int", DataType: "int", Generated: true},
 				},
-				Indexes: []IndexDef{{Name: "uq", Unique: true, Parts: []IndexPart{{Column: "s"}, {Column: ""}}}},
+				Indexes: []IndexDef{{Name: "uq", Unique: true, Parts: []IndexPart{{Column: "s", Prefix: true}, {Column: ""}}}},
 				ForeignKeys: []ForeignKey{{
 					Name: "fk", Columns: []string{"id"}, RefSchema: "o", RefTable: "p", RefColumns: []string{"pid"},
 				}},
@@ -36,11 +36,12 @@ func TestCatalogTables(t *testing.T) {
 		OrderBy: []string{"id"},
 		Columns: []mask.CatalogColumn{
 			{Name: "id", TypeName: "UNSIGNED INT", ColumnType: "int unsigned", DataType: "int"},
-			{Name: "s", TypeName: "VARCHAR", ColumnType: "varchar(5)", DataType: "varchar", CharacterSet: "utf8mb4", Nullable: true},
+			{Name: "s", TypeName: "VARCHAR", ColumnType: "varchar(5)", DataType: "varchar", CharacterSet: "utf8mb4", Collation: "utf8mb4_0900_ai_ci", Nullable: true},
 			{Name: "g", TypeName: "INT", ColumnType: "int", DataType: "int", Generated: true},
 		},
-		// The functional key part has no column and is left out.
-		Indexes:     []mask.CatalogIndex{{Name: "uq", Unique: true, Columns: []string{"s"}}},
+		// The functional key part has no column and is left out, but the index is
+		// marked; so is the column of which only a prefix is indexed.
+		Indexes:     []mask.CatalogIndex{{Name: "uq", Unique: true, Columns: []string{"s"}, PrefixColumns: []string{"s"}, Functional: true}},
 		ForeignKeys: []mask.CatalogFK{{Name: "fk", Columns: []string{"id"}, RefDB: "o", RefTable: "p", RefColumns: []string{"pid"}}},
 	}
 	if !reflect.DeepEqual(got[2], want) {
