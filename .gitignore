@@ -11,3 +11,5 @@
 /internal/scan/testdata/gitleaks.toml.tmp
 # Scratch notes and reports of agent sessions.
 .superpowers/
+# Run state of the deskil flow engine (.claude/scripts/flow.py).
+.flow/

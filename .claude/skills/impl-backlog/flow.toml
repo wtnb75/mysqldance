@@ -1,0 +1,296 @@
+schema = 1
+start = "pick_target"
+
+[notes]
+always = [
+  "1回の依頼で扱う項目は1つ。複数指定されたら1つずつ順に完了させる。項目が `ready` なら、1項目ごとに新しいセッションか subagent で実行する方が、前の項目の文脈を持ち越さない。",
+  "実装中に見つけた別件は実装せず、`mgmt-backlog` で新規項目として追加する。",
+  "`BACKLOG.md` と `docs/backlog-done.md` の変更は、対象項目のブロックと、別項目化した新規項目だけ。",
+  "マージはしない。force push はしない。他のブランチへの push もしない。",
+]
+
+[notes.common]
+auto = "後半は自動実行。質問しない。途中で新しい不明点が出たら、一般的な既定値で決め、PR の本文の「前提」に書く。"
+distrust_comments = "コメント・台帳の理由・README の説明は、合意された決定事項ではなく、書いた人の主張として読む。コメントがあるから正しいとは考えない。"
+draft_rule = "満たせなかった受け入れ条件がある、または必須の統合テストを実行できなかった（Docker が使えないなど）場合は、項目を完了にせず（status は `ready` のまま）、draft の PR にする。未達の条件と理由を PR の本文に書く。"
+stop_rule = "止まるときは質問ではなく報告する（PR は作らない）。"
+
+[states.pick_target]
+prompt = { file = "prompts/pick_target.md" }
+
+[[states.pick_target.choices]]
+label = "chosen"
+when = "対象が 1 つ決まり、依存先・未 commit の変更の確認も通った（todo の項目はユーザーの了承も得た）"
+goto = "check_status"
+
+[[states.pick_target.choices]]
+label = "stop"
+when = "着手できない（依存先が未完了・未マージで待つ、未 commit の変更がある、ユーザーが中止した、対象が無い）"
+goto = "report_stopped"
+
+[states.check_status]
+prompt = "対象の status を、手元の `BACKLOG.md` で確かめる。`ready` の項目は質問なしで最後まで進める。`todo` の項目は、先に仕様の確定だけをユーザーと行う。"
+
+[[states.check_status.choices]]
+label = "ready"
+when = "status が `ready`"
+goto = "verify_ready"
+
+[[states.check_status.choices]]
+label = "todo"
+when = "status が `todo`"
+goto = "refine_todo"
+
+[states.verify_ready]
+prompt = { file = "prompts/verify_ready.md" }
+notes = ["stop_rule"]
+
+[[states.verify_ready.choices]]
+label = "holds"
+when = "`- 仕様:` の前提が、今のコードで成り立つ"
+goto = "prepare_branch"
+
+[[states.verify_ready.choices]]
+label = "broken"
+when = "前提が崩れていた（見出しを `[todo|Pn]` に戻した）"
+goto = "report_stopped"
+
+[states.refine_todo]
+prompt = "`refine-backlog` の手順 2〜4（調べる、まとめて聞く、記録して `ready` にする）を行う。ユーザーに聞くのはここだけ。終えたら「仕様を確定した。以降は PR の作成まで自動で進める」と一言伝える。"
+
+[[states.refine_todo.choices]]
+label = "refined"
+when = "仕様を確定し、項目を `ready` にした"
+goto = "prepare_branch"
+
+[[states.refine_todo.choices]]
+label = "stop"
+when = "ユーザーが仕様の確定を中止した、または確定できなかった"
+goto = "report_stopped"
+
+[states.prepare_branch]
+prompt = { file = "prompts/branch.md" }
+notes = ["auto", "stop_rule"]
+
+[[states.prepare_branch.choices]]
+label = "ready"
+when = "ブランチを用意し、`task fmt` の差分も（あれば別 commit に）片付けた"
+goto = "implement"
+
+[[states.prepare_branch.choices]]
+label = "exists"
+when = "同じ ID のブランチが既にあり、止まる"
+goto = "report_stopped"
+
+[states.implement]
+prompt = "実装する。superpowers:test-driven-development を使い、TDD で、受け入れ条件を1つずつテストに落として満たす。区切りごとに `task check` を実行する（次の check_impl で通す）。"
+notes = ["auto", "stop_rule"]
+
+[[states.implement.choices]]
+label = "done"
+when = "受け入れ条件を満たす実装とテストを書き終えた"
+goto = "check_impl"
+
+[[states.implement.choices]]
+label = "out_of_scope"
+when = "受け入れ条件を満たすのに、項目の範囲を超える変更が要る（分割を提案して止まる）"
+goto = "report_stopped"
+
+[states.check_impl]
+prompt = """`task check` を実行する（`go fmt`、`go fix`、`golangci-lint`、単体テストを順に実行する）。`go fmt` と `go fix` はファイルを書き換えるので、実行後に `git diff` で意図しない変更がないか見る。
+この項目と関係のないファイルが書き換わっていたら、**戻さない**（戻しても次の `task check` でまた出る）。取り込み漏れとして、別の commit（`chore: apply go fmt / go fix ...`）にする。PR の本文の「概要」に 1 行書く。"""
+notes = ["auto"]
+
+[[states.check_impl.choices]]
+label = "pass"
+when = "`task check` が通った"
+goto = "simplify"
+
+[[states.check_impl.choices]]
+label = "fail"
+when = "`task check` が失敗した"
+goto = "fix_impl"
+
+[states.fix_impl]
+prompt = "`task check` の失敗を直す。失敗したら、直すまで次に進まない。"
+notes = ["auto", "stop_rule"]
+goto = "check_impl"
+max_visits = 3
+on_exceed = "report_stopped"
+
+[states.simplify]
+prompt = "`simplify` スキルで差分を整理する（再利用、単純化、効率）。整理を省いて、検証や PR に進まない。コードが変わったら `task check` を通し直す。"
+notes = ["auto"]
+
+[[states.simplify.choices]]
+label = "pass"
+when = "整理を終え、`task check` が通っている（コードが変わらなければ通し直し不要）"
+goto = "review"
+
+[[states.simplify.choices]]
+label = "fail"
+when = "整理でコードが変わり、`task check` が失敗した"
+goto = "fix_simplify"
+
+[states.fix_simplify]
+prompt = "`task check` の失敗を直す。直すまで次に進まない。"
+notes = ["auto"]
+goto = "check_simplify"
+max_visits = 3
+on_exceed = "report_stopped"
+
+[states.check_simplify]
+prompt = "`task check` を実行する。"
+notes = ["auto"]
+
+[[states.check_simplify.choices]]
+label = "pass"
+when = "`task check` が通った"
+goto = "review"
+
+[[states.check_simplify.choices]]
+label = "fail"
+when = "`task check` が失敗した"
+goto = "fix_simplify"
+
+[states.review]
+prompt = { file = "prompts/review.md" }
+notes = ["auto", "distrust_comments"]
+max_visits = 2
+on_exceed = "verify"
+
+[[states.review.choices]]
+label = "findings"
+when = "指摘が 1 件以上ある"
+goto = "triage"
+
+[[states.review.choices]]
+label = "none"
+when = "指摘が無い、または文書だけの変更でコードのレビューが対象外"
+goto = "verify"
+
+[states.triage]
+prompt = { file = "prompts/triage.md" }
+notes = ["auto", "distrust_comments"]
+
+[[states.triage.choices]]
+label = "fixed"
+when = "受け入れた指摘をテスト先行で直した（コードが変わった）"
+goto = "check_review"
+
+[[states.triage.choices]]
+label = "nothing_to_fix"
+when = "受け入れた指摘が無い（範囲外・却下だけ）"
+goto = "verify"
+
+[states.check_review]
+prompt = "`task check` を実行する。通ったら、直した箇所を含む差分にもう一度レビューをかける（レビューは最大2回まで。3回目はしない）。"
+notes = ["auto"]
+
+[[states.check_review.choices]]
+label = "pass"
+when = "`task check` が通った"
+goto = "review"
+
+[[states.check_review.choices]]
+label = "fail"
+when = "`task check` が失敗した"
+goto = "fix_review"
+
+[states.fix_review]
+prompt = "`task check` の失敗を直す。"
+notes = ["auto", "stop_rule"]
+goto = "check_review"
+max_visits = 3
+on_exceed = "report_stopped"
+
+[states.verify]
+prompt = { file = "prompts/verify.md" }
+notes = ["auto", "draft_rule"]
+
+[[states.verify.choices]]
+label = "pass"
+when = "必要なチェックを全て実行して通り、受け入れ条件を全て満たした"
+goto = "record_done"
+
+[[states.verify.choices]]
+label = "draft"
+when = "満たせなかった受け入れ条件がある、または必須の統合テストを実行できなかった"
+goto = "record_partial"
+
+[[states.verify.choices]]
+label = "fail"
+when = "チェックが失敗した"
+goto = "fix_verify"
+
+[states.fix_verify]
+prompt = "失敗したチェックを直す（失敗するテストを先に書く）。コードが変わったら `task check` も通し直す。"
+notes = ["auto", "stop_rule"]
+goto = "verify"
+max_visits = 3
+on_exceed = "report_stopped"
+
+[states.record_done]
+prompt = "実装と同じ変更の中で、受け入れ条件のチェックを `[x]` にし、`mgmt-backlog` の「完了」を行う（見出しを `[done|Pn]` にして `# Done` 節へ、本文は `docs/backlog-done.md` へ。どちらも ID の昇順の位置）。`BACKLOG.md` に実装中の中間状態は書かない。"
+notes = ["auto"]
+goto = "commit"
+
+[states.record_partial]
+prompt = "満たした受け入れ条件だけ `[x]` にする。項目は完了にしない（status は `ready` のまま。`# Done` 節へは移さない）。`BACKLOG.md` に実装中の中間状態は書かない。"
+notes = ["auto", "draft_rule"]
+goto = "commit"
+
+[states.commit]
+prompt = "commit する。英語で `feat(B-NNN): ...` や `fix(B-NNN): ...` の形式（goreleaser の変更履歴の分類に効く）。1〜数個にまとめる。"
+notes = ["auto"]
+goto = "sync_main"
+
+[states.sync_main]
+prompt = """push の前に `git fetch origin main` を実行し、`git log --oneline HEAD..origin/main` に commit があれば `git merge origin/main` で取り込む（rebase や force push はしない）。
+衝突したら解消する。`BACKLOG.md` の `# Done` 節と `docs/backlog-done.md` が他の項目の完了記録と衝突したら、両方の項目を ID の昇順で残す。
+解消したら `task check` を通し直し、マーカーが残っていないことを `rg '^(<<<<<<<|=======|>>>>>>>)'` で確かめる。"""
+notes = ["auto", "stop_rule"]
+goto = "push"
+max_visits = 3
+on_exceed = "report_stopped"
+
+[states.push]
+prompt = "`git push -u origin <ブランチ>`。force push はしない。"
+notes = ["auto"]
+
+[[states.push.choices]]
+label = "no_pr_yet"
+when = "この項目の PR がまだ作られていない"
+goto = "create_pr"
+
+[[states.push.choices]]
+label = "pr_exists"
+when = "この項目の PR が既に作られている（衝突の解消後の再 push）"
+goto = "check_mergeable"
+
+[states.create_pr]
+prompt = { file = "prompts/create_pr.md" }
+notes = ["auto", "draft_rule"]
+goto = "check_mergeable"
+
+[states.check_mergeable]
+prompt = "作成した PR で `gh pr view <番号> --json mergeable` を実行し、`MERGEABLE` であることを確かめる（`UNKNOWN` なら少し待って再実行する）。"
+notes = ["auto"]
+
+[[states.check_mergeable.choices]]
+label = "mergeable"
+when = "`MERGEABLE`"
+goto = "report_pr"
+
+[[states.check_mergeable.choices]]
+label = "conflicting"
+when = "`CONFLICTING`"
+goto = "sync_main"
+
+[states.report_pr]
+prompt = "PR の URL と、本文の要点を日本語で報告する。マージはしない。"
+end = true
+
+[states.report_stopped]
+prompt = "止まった理由（依存先の待ち、前提の崩れ、同じ ID のブランチ、同じ失敗が3回続いた、範囲を超える変更が要る、ユーザーの中止など）を日本語で報告する。PR は作らない。前提が崩れた場合は、`todo` に戻したことも伝える。範囲を超える場合は分割を提案する。"
+end = true
