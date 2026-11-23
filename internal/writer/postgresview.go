@@ -89,7 +89,7 @@ var pgDialect = &viewDialect{
 
 // convertPostgresView converts a view for PostgreSQL; see convertView.
 func convertPostgresView(name, create string, env pgViewEnv) (stmt string, caution []string, reason string) {
-	return convertView(pgDialect, &env, name, create)
+	return convertView(pgDialect, &env, nil, name, create)
 }
 
 // boolCallRefused are the functions whose arguments cannot be boolean in

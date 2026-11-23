@@ -82,6 +82,14 @@ func TestDefs(t *testing.T) {
 	if c := byName["id"]; !c.AutoIncrement {
 		t.Errorf("id = %+v", c)
 	}
+	// COLLATION_NAME: the default of the server, so only its shape is checked
+	// (it starts with the character set). A number has none.
+	if c := byName["code"]; c.CharacterSet == "" || !strings.HasPrefix(c.Collation, c.CharacterSet+"_") {
+		t.Errorf("code collation = %q, character set = %q", c.Collation, c.CharacterSet)
+	}
+	if c := byName["qty"]; c.Collation != "" || c.CharacterSet != "" {
+		t.Errorf("qty collation = %q, character set = %q; want none", c.Collation, c.CharacterSet)
+	}
 	if c := byName["twice"]; c.Generated != wantGenerated {
 		t.Errorf("twice = %+v", c)
 	}

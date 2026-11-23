@@ -32,7 +32,9 @@ type ColumnDef struct {
 	Type, DataType string
 	// CharacterSet is CHARACTER_SET_NAME, empty for a column that has none.
 	CharacterSet string
-	Nullable     bool
+	// Collation is COLLATION_NAME, empty for a column that has none.
+	Collation string
+	Nullable  bool
 	// Default is COLUMN_DEFAULT, or nil if the column has none. When
 	// DefaultExpr is true it is the text of a default expression (or
 	// CURRENT_TIMESTAMP), otherwise the default value itself, unquoted.
@@ -114,12 +116,13 @@ func (s *Snapshot) defColumns(ctx context.Context, defs map[string]*TableDef) er
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var table, nullable, extra string
-		var def, charset sql.NullString
+		var def, charset, collation sql.NullString
 		var c ColumnDef
-		if err := rows.Scan(&table, &c.Name, &c.DataType, &c.Type, &nullable, &def, &extra, &charset); err != nil {
+		if err := rows.Scan(&table, &c.Name, &c.DataType, &c.Type, &nullable, &def, &extra, &charset, &collation); err != nil {
 			return err
 		}
 		c.CharacterSet = charset.String
+		c.Collation = collation.String
 		d, ok := defs[table]
 		if !ok {
 			continue

@@ -1611,3 +1611,31 @@
 - 却下の理由: 再現しない。MySQL 8.4 の実機で、`mandatory_roles` のロール（`GRANT TRIGGER ON *.*`）を、`activate_all_roles_on_login` が OFF のときも ON のときも、`SHOW GRANTS` は `GRANT mr TO mu` の行を出した（ON のときは `GRANT TRIGGER ON *.*` を畳み込んだ上で、その行も出す）。ロールの行があると `parseGrants` は「不明」にして検査を飛ばす（`TestPrivilegesThroughARole`、設計書 11 節の B-110）。
 - 初出: B-110
 - 再出: 0
+
+## R-224 大文字小文字を区別しない文字列の列の警告が、相手の列の照合順序（`_bin` など）を見ない
+- 対象: internal/writer/sqliteviewtypes.go の typeCautions（`other`）
+- 指摘: `_ci` の列と `_bin` の列の比較は、MySQL でも大文字小文字を区別するので、警告は偽陽性になる。
+- 却下の理由: B-113 の確定した仕様が「別の解決できた文字列の列と比較演算子で比べられている」を条件にしており、相手の照合順序は条件にない。警告が 1 件増えるだけで、出力は変わらない。`_ci` と `_bin` の列を比べる構成は稀で、どちらの照合順序が勝つかはサーバーの規則に依る（照合順序の強制度の規則を実装しない）。`TestSQLiteViewTypeCautions` の「case-insensitive column against a binary one」がこの挙動を固定している。
+- 初出: B-113
+- 再出: 0
+
+## R-225 同じ別名が 2 つの表に使われると、ビュー全体でその別名の列の型の警告が出なくなる
+- 対象: internal/writer/sqliteviewtypes.go の resolveViewColumns（`ambiguous`）
+- 指摘: 別々の副問い合わせが同じ別名を別の表に使うと、どちらの列も解決されず、型の警告が黙って落ちる。スコープ（括弧の深さ、SELECT）を追えば解決できる。
+- 却下の理由: B-113 の確定した仕様が「引けない列は『型が分からない』ものとして扱い、新しい警告の理由にしない。README に限界を書く」としている。誤った表に解決して偽の警告を出すより、解決しないほうを選んでいる。README に「an alias used for two tables are not looked at」と書いた。落ちるのは型に基づく警告だけで、構文だけの警告は変わらない。スコープの解析は、この項目の範囲を超える。
+- 初出: B-113
+- 再出: 0
+
+## R-226 単項の符号と、括弧で包まれたオペランドを、型の警告が区別しない
+- 対象: internal/writer/sqliteviewtypes.go の typeCautions（`viewArithOps`）
+- 指摘: `-t.price` は符号で、算術ではない。`(t.price) > 5` は、オペランドが括弧に包まれているので見落とす。
+- 却下の理由: B-113 の確定した仕様が「比較演算子または算術演算子の隣のオペランド」を条件にしている。`-` の隣は算術演算子の隣として警告する（SQLite は TEXT の `-'12.50'` を実数にするので、MySQL の DECIMAL と結果が変わる）。括弧のオペランドは、仕様の範囲外（README の限界）。見落としは警告が出ないだけで、出力は変わらない。
+- 初出: B-113
+- 再出: 0
+
+## R-227 `argOf` が、括弧の前の語が関数の呼び出しかを確かめず、2 番目以降の引数も数える
+- 対象: internal/writer/sqliteviewtypes.go の argOf
+- 指摘: 関数でない語（キーワード、別名）の後ろの括弧を、その名前の関数の引数と読む。`round(1, t.price)` の 2 番目の引数も数える。
+- 却下の理由: 結果は関数名の一覧（`viewNumericFuncs`、`min`、`max`）に当たったときだけ使われ、その語は予約語ではない。別名や列名は backtick の識別子で、`argOf` が見る語（`tokWord`）にならない。引数の位置は B-113 の仕様が「引数」とだけ書いており、どの位置も数える。`round(5, t.price)` のように、桁数の位置の列を警告するのは偽陽性になるが、警告が 1 件増えるだけで、出力は変わらない。
+- 初出: B-113
+- 再出: 1

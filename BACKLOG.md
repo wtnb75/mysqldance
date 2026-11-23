@@ -1,23 +1,5 @@
 # Backlog
 
-## B-113 [ready|P3] SQLite 向けのビューの注意の警告を、列の型と照合順序を使って正確にする
-- 依存: B-062
-- 概要: B-062 の SQLite 向けビューの注意の警告は、構文だけで決める（文字列リテラル、`LIKE`、`GROUP BY` など）。列の型を知らないため、次の差は警告されない。`DECIMAL` / `BIGINT UNSIGNED` / `BIT(64)` の列は SQLite では `TEXT` なので、整数との比較（`price > 5`）や算術（`price + tax`）の結果が MySQL と変わる。大文字小文字を区別しない照合順序の文字列列どうしの比較（`a.name = b.name`、`IN`、`MIN` / `MAX`、`JOIN ... ON`）が、SQLite では 1 バイトずつの比較になる。ビューが読む列の型と照合順序（`source.TableDef`）を使って、該当するビューに理由つきの警告を出す。B-062 のレビューで指摘された。
-- 仕様:
-  - 実機で確かめた（MySQL 8.4、MariaDB 10.11。`SHOW CREATE VIEW`）: ビューの列は、必ず `` `別名`.`列` `` と修飾して書かれる（`` from (`t` `a` join `u` `b` on(...)) ``）。表の別名は FROM / JOIN の `` `表` `別名` `` で分かる。派生表（`from (select ...) `x```）とビューを読むビュー（`` from `v1` ``）の列は、修飾が派生表・ビューの別名になる。
-  - 列の解決: 修飾された列を、FROM / JOIN の別名から同じ DB の表（`sc.Defs`）の列に引く。派生表・ビューの列、引けない列は「型が分からない」ものとして扱い、新しい警告の理由にしない（今の構文だけの警告は、そのまま出る）。README に、この限界を書く。
-  - 前提: 列の照合順序は `source.ColumnDef` に無い。`defColumns`（`internal/source/dialect.go`）の 4 つの方言（8.x、5.7、5.6、MariaDB）に `COLLATION_NAME`（と `CHARACTER_SET_NAME`）を足して `ColumnDef.Collation` / `CharacterSet` に読む（B-166 の `fixed` の文字集合の検査も使う。先に入った方が足す）。
-  - 「数値を TEXT で持つ列」: `sqliteType` が `TEXT` を返す `decimal` / `numeric`、`bigint unsigned`、幅が 64 以上の `bit`。この列が次の位置にあるとき警告する: 比較演算子（`=` `<` `>` `<=` `>=` `<>` `!=`）または算術演算子（`+` `-` `*` `/` `%`）の隣のオペランド、`BETWEEN` の項、`SUM` / `AVG` / `MIN` / `MAX` / `ROUND` / `ABS` の引数。理由の文言は、列を `TEXT` で持つことと、比較・算術が文字列として行われる（SQLite）ことを言う。
-  - 「大文字小文字を区別しない文字列の列」: 文字列型（`char` / `varchar` / `text` 系 / `enum` / `set`）で、`Collation` が `_ci` で終わるもの。この列が、別の解決できた文字列の列と比較演算子（`=` `<` `>` `<=` `>=` `<>` `!=`、`JOIN ... ON` の中も同じ）で比べられている、または `MIN` / `MAX` の引数にあるとき警告する。リテラルとの比較は、今の「a string literal」の警告に任せる。
-  - 範囲外（README に書く）: `IN (副問い合わせ)`、`CASE`、上記以外の関数の引数、派生表・ビューの列。
-  - 警告は `sqliteDialect` のビューだけ（PostgreSQL 向けの警告は変えない）。理由は `cautionOrder` に足し、報告の順序を決定的に保つ。
-- 受け入れ条件:
-  - [ ] `DECIMAL` / `BIGINT UNSIGNED` / `BIT(64)` の列を、比較・算術・上記の関数の引数に使うビューが、理由つきの警告になる
-  - [ ] 大文字小文字を区別しない照合順序の文字列列どうしの比較（`JOIN ... ON` を含む）と `MIN` / `MAX` を含むビューが、理由つきの警告になる
-  - [ ] 該当しないビュー（整数・`_bin` の列、別名が派生表の列、リテラルだけの比較）の警告は増えない。出力は決定的
-  - [ ] 4 つの方言のカタログから `Collation` を読む（統合テスト。8.0 / 8.4 と、`task test:integration:mysql57` / `mysql56` / `mariadb`）
-  - [ ] README の SQLite の節の、ビューの注意を、上記の範囲と限界に合わせて更新する
-
 ## B-114 [ready|P3] SQLite 向けの出力で、親テーブルが出力されない外部キーを警告して落とす
 - 依存: B-036
 - 概要: B-063 のレビューで指摘された（B-063 以前からの挙動）。`writeSQLiteTable` は、親が `sc.Defs` に無い（出力されない）外部キーをそのまま出力する。親が存在しない SQLite ファイルになり、外部キーを有効にすると子への書き込みが `no such table` で失敗する。PostgreSQL のライタは、親が出力に無い外部キーを理由つきの警告にして落とす（`byName`）。SQLite もこれに揃え、警告して落とす。
@@ -555,6 +537,21 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
+## B-212 [todo|P3] MariaDB で `TestSQLiteFloatDoubleRoundTrip` が失敗する
+- 概要: `task test:integration:mariadb` で、`internal/dump` の `TestSQLiteFloatDoubleRoundTrip` が「column `f` holds 1 value of -0, which SQLite stores as 0」の警告をログに見つけられず失敗する。`origin/main`（B-112 の commit）でも同じ。B-113 の統合テストで見つけた。
+- 受け入れ条件:
+  - [ ] 原因を調べ、テストまたは実装を直して、`task test:integration:mariadb` でこのテストが通る
+
+## B-213 [todo|P3] MySQL 5.7 で `TestPostgresForeignKeysBetweenDatabases` と `TestSQLiteRoundTrip` が失敗する
+- 概要: `task test:integration:mysql57` で `internal/dump` の 2 件が失敗する。`TestPostgresForeignKeysBetweenDatabases` は、期待した外部キー 2 件のほかに、別のテストの DB の外部キー（`child` → `d`）が混ざる。`TestSQLiteRoundTrip` は、5.7 が `isnull()` で書くビューが変換されず、期待した警告と `v` が出ない。`origin/main`（B-112 の commit）でも同じ。B-113 の統合テストで見つけた。
+- 受け入れ条件:
+  - [ ] 原因を調べ、テストまたは実装を直して、`task test:integration:mysql57` でこの 2 件が通る
+
+## B-214 [todo|P3] MySQL 5.6 で生成列を使うテスト 3 件が失敗する
+- 概要: `task test:integration:mysql56` で、`internal/dump` の `TestStrictColumns`・`TestPostgresViews`・`TestPostgresLongColumnNames` が、生成列を含む `CREATE TABLE`（MySQL 5.6 に無い構文）の構文エラーで失敗する。`origin/main`（B-112 の commit）でも同じ。`TestDefs` のように、5.6 では生成列を使わないか、テストを skip する。B-113 の統合テストで見つけた。
+- 受け入れ条件:
+  - [ ] 3 件を 5.6 で通す（生成列を外すか skip する）。`task test:integration:mysql56` で `internal/dump` が通る
+
 # Done
 
 ## B-003 [done|P2] 複数 DB を 1 つのスナップショットで読む
@@ -660,6 +657,7 @@
 ## B-110 [done|P3] 権限がなくてサーバーが列挙しないトリガー・ルーチンを黙って落とさない
 ## B-111 [done|P3] `--definer=strip|keep` でビュー・トリガー・ルーチン・イベントの DEFINER を選べるようにする
 ## B-112 [done|P3] `--sql-security=keep|invoker` でビュー・ルーチンの `SQL SECURITY` を書き換えられるようにする
+## B-113 [done|P3] SQLite 向けのビューの注意の警告を、列の型と照合順序を使って正確にする
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 ## B-119 [done|P2] `--exclude-table` でテーブルを出力から外せるようにする
 ## B-138 [done|P2] 同じ出力先への並行実行を、出力ディレクトリのロックで拒否する

@@ -1078,6 +1078,24 @@
   - [x] README に、意味が変わること（ビューの見え方、権限）を書く
 - 結果: `--sql-security=keep|invoker` を足した。`invoker` は `dump.Options.SQLSecurityInvoker` から `writer.MySQL.WithSQLSecurityInvoker` に渡り、ビューは `schemafile.ViewSecurityInvoker` でヘッダーの `SQL SECURITY DEFINER` を置き換え、ルーチンは `schemafile.RoutineSecurityInvoker` でシグネチャ行の次に `SQL SECURITY INVOKER` の行を足す（既に `INVOKER` なら変えず、明示された `DEFINER` の行は置き換える）。読めない見出し・シグネチャはエラーにする。統合テスト `TestSQLSecurityInvokerRoundTrip` が、復元して `VIEWS.SECURITY_TYPE` と `ROUTINES.SECURITY_TYPE` を確かめる（MySQL 8.0 / 8.4）。
 
+## B-113 [done|P3] SQLite 向けのビューの注意の警告を、列の型と照合順序を使って正確にする
+- 依存: B-062
+- 概要: B-062 の SQLite 向けビューの注意の警告は、構文だけで決める（文字列リテラル、`LIKE`、`GROUP BY` など）。列の型を知らないため、次の差は警告されない。`DECIMAL` / `BIGINT UNSIGNED` / `BIT(64)` の列は SQLite では `TEXT` なので、整数との比較（`price > 5`）や算術（`price + tax`）の結果が MySQL と変わる。大文字小文字を区別しない照合順序の文字列列どうしの比較（`a.name = b.name`、`IN`、`MIN` / `MAX`、`JOIN ... ON`）が、SQLite では 1 バイトずつの比較になる。ビューが読む列の型と照合順序（`source.TableDef`）を使って、該当するビューに理由つきの警告を出す。B-062 のレビューで指摘された。
+- 仕様:
+  - 実機で確かめた（MySQL 8.4、MariaDB 10.11。`SHOW CREATE VIEW`）: ビューの列は、必ず `` `別名`.`列` `` と修飾して書かれる（`` from (`t` `a` join `u` `b` on(...)) ``）。表の別名は FROM / JOIN の `` `表` `別名` `` で分かる。派生表（`from (select ...) `x```）とビューを読むビュー（`` from `v1` ``）の列は、修飾が派生表・ビューの別名になる。
+  - 列の解決: 修飾された列を、FROM / JOIN の別名から同じ DB の表（`sc.Defs`）の列に引く。派生表・ビューの列、引けない列は「型が分からない」ものとして扱い、新しい警告の理由にしない（今の構文だけの警告は、そのまま出る）。README に、この限界を書く。
+  - 前提: 列の照合順序は `source.ColumnDef` に無い。`defColumns`（`internal/source/dialect.go`）の 4 つの方言（8.x、5.7、5.6、MariaDB）に `COLLATION_NAME`（と `CHARACTER_SET_NAME`）を足して `ColumnDef.Collation` / `CharacterSet` に読む（B-166 の `fixed` の文字集合の検査も使う。先に入った方が足す）。
+  - 「数値を TEXT で持つ列」: `sqliteType` が `TEXT` を返す `decimal` / `numeric`、`bigint unsigned`、幅が 64 以上の `bit`。この列が次の位置にあるとき警告する: 比較演算子（`=` `<` `>` `<=` `>=` `<>` `!=`）または算術演算子（`+` `-` `*` `/` `%`）の隣のオペランド、`BETWEEN` の項、`SUM` / `AVG` / `MIN` / `MAX` / `ROUND` / `ABS` の引数。理由の文言は、列を `TEXT` で持つことと、比較・算術が文字列として行われる（SQLite）ことを言う。
+  - 「大文字小文字を区別しない文字列の列」: 文字列型（`char` / `varchar` / `text` 系 / `enum` / `set`）で、`Collation` が `_ci` で終わるもの。この列が、別の解決できた文字列の列と比較演算子（`=` `<` `>` `<=` `>=` `<>` `!=`、`JOIN ... ON` の中も同じ）で比べられている、または `MIN` / `MAX` の引数にあるとき警告する。リテラルとの比較は、今の「a string literal」の警告に任せる。
+  - 範囲外（README に書く）: `IN (副問い合わせ)`、`CASE`、上記以外の関数の引数、派生表・ビューの列。
+  - 警告は `sqliteDialect` のビューだけ（PostgreSQL 向けの警告は変えない）。理由は `cautionOrder` に足し、報告の順序を決定的に保つ。
+- 受け入れ条件:
+  - [x] `DECIMAL` / `BIGINT UNSIGNED` / `BIT(64)` の列を、比較・算術・上記の関数の引数に使うビューが、理由つきの警告になる
+  - [x] 大文字小文字を区別しない照合順序の文字列列どうしの比較（`JOIN ... ON` を含む）と `MIN` / `MAX` を含むビューが、理由つきの警告になる
+  - [x] 該当しないビュー（整数・`_bin` の列、別名が派生表の列、リテラルだけの比較）の警告は増えない。出力は決定的
+  - [x] 4 つの方言のカタログから `Collation` を読む（統合テスト。8.0 / 8.4 と、`task test:integration:mysql57` / `mysql56` / `mariadb`）
+  - [x] README の SQLite の節の、ビューの注意を、上記の範囲と限界に合わせて更新する
+
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 - 概要: ビューは `<db>.00-schema.sql`、ルーチンは `<db>.15-routines.sql` に出るので、復元ではビューが先に作られる。MySQL は `CREATE VIEW` の時点で、本文が呼ぶストアド関数があるかを確かめる。ストアド関数を呼ぶビューがあると、`docker-entrypoint-initdb.d` の復元がそこで止まる。ビューをルーチンの後に作る形にする。
 - 仕様:
