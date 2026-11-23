@@ -45,7 +45,8 @@ func groupSizesQuery(qualifiedTable string, cols []mask.QuasiColumn) string {
 // returns how many groups there are of each size, smallest size first. A table
 // without rows gives none. The server reads every row and builds a temporary
 // table of the groups, so it costs about as much as reading the table.
-func (s *Snapshot) GroupSizes(ctx context.Context, table string, cols []mask.QuasiColumn) ([]GroupSize, error) {
+func (s *Snapshot) GroupSizes(ctx context.Context, table string, cols []mask.QuasiColumn) (_ []GroupSize, err error) {
+	defer func() { err = s.hint(err) }()
 	if len(cols) == 0 {
 		return nil, fmt.Errorf("table %s: no column to group by", sqlvalue.QuoteIdent(table))
 	}

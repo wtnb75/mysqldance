@@ -14,7 +14,8 @@ import (
 // functions, each by name in byte order. Routines do not depend on each other
 // at creation time (the server does not look up what a body calls), so this
 // order is only there to be the same every run.
-func (s *Snapshot) Routines(ctx context.Context) ([]schemafile.Routine, error) {
+func (s *Snapshot) Routines(ctx context.Context) (_ []schemafile.Routine, err error) {
+	defer func() { err = s.hint(err) }()
 	rows, err := s.conn.QueryContext(ctx,
 		"SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ?", s.name)
 	if err != nil {

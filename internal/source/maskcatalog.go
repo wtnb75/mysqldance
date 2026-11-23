@@ -10,7 +10,8 @@ import (
 // MaskCatalog reads the catalog of every database in dbs, which the masking
 // rules are checked against. It reads the catalog only. The connection is left
 // on the first database, where Open leaves it.
-func (s *Snapshot) MaskCatalog(ctx context.Context, dbs []string) (mask.Catalog, error) {
+func (s *Snapshot) MaskCatalog(ctx context.Context, dbs []string) (_ mask.Catalog, err error) {
+	defer func() { err = s.hint(err) }()
 	fold, err := s.FoldsTableCase(ctx)
 	if err != nil {
 		return mask.Catalog{}, err

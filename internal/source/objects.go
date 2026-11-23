@@ -19,7 +19,8 @@ type Object struct {
 // Objects returns every table and view of the current database, sorted by name,
 // the tables left out of the dump (Config.ExcludeTables) among them. It reads
 // the catalog only: no row, no SHOW CREATE.
-func (s *Snapshot) Objects(ctx context.Context) ([]Object, error) {
+func (s *Snapshot) Objects(ctx context.Context) (_ []Object, err error) {
+	defer func() { err = s.hint(err) }()
 	list, err := s.listTables(ctx)
 	if err != nil {
 		return nil, err
@@ -56,7 +57,8 @@ func (s *Snapshot) Objects(ctx context.Context) ([]Object, error) {
 // FoldsTableCase reports whether the server compares the names of databases and
 // tables without regard to case (lower_case_table_names is not 0), which is
 // also how --exclude-table names are compared.
-func (s *Snapshot) FoldsTableCase(ctx context.Context) (bool, error) {
+func (s *Snapshot) FoldsTableCase(ctx context.Context) (_ bool, err error) {
+	defer func() { err = s.hint(err) }()
 	var n int
 	if err := s.conn.QueryRowContext(ctx, "SELECT @@lower_case_table_names").Scan(&n); err != nil {
 		return false, err

@@ -48,6 +48,10 @@ func (s *Snapshot) Rows(ctx context.Context, t TableInfo) ([][]sqlvalue.Value, e
 // connection, a canceled context) is an error too, never a short table.
 // t must come from Tables for the database currently selected by Use.
 func (s *Snapshot) EachRow(ctx context.Context, t TableInfo, fn func(row []sqlvalue.Value) error) (err error) {
+	// A read that breaks midway (the driver's "invalid connection") may be the
+	// read timeout. Only an error that wraps the driver's one gets the hint, so
+	// an error of fn passes through unless it wraps that error.
+	defer func() { err = s.hint(err) }()
 	orderBy, err := orderByClause(t.OrderBy, t.OrderByTypes)
 	if err != nil {
 		return fmt.Errorf("table %s: %w", sqlvalue.QuoteIdent(t.Name), err)
