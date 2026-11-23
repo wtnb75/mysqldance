@@ -64,7 +64,8 @@ type Transform struct {
 	NeedsSalt bool
 	// BreaksKeys is true for a transform that can give two rows one value or a
 	// value that no parent row has, so that it cannot be used on a column of a
-	// key (the ordering key, a unique index, the child side of a foreign key).
+	// key (the ordering key, a unique index, the child side of a foreign key; the
+	// child side is allowed when the parent column has the same rule, see checkKeys).
 	BreaksKeys bool
 	// UniqueChecked is true for a BreaksKeys transform that may be used on a column
 	// of a unique index (not the primary key): the dump compares the transformed

@@ -115,3 +115,22 @@ func DeriveKey(salt Salt, name string, version int) []byte {
 	m.Write([]byte(strconv.Itoa(version)))
 	return m.Sum(nil)
 }
+
+// domainLabel separates the keys of a domain from the key DeriveKey gives.
+const domainLabel = "mysqldance/mask/domain"
+
+// DeriveDomainKey is DeriveKey for a rule that names a domain: the domain is
+// mixed into the key, so columns (of any table) that share a domain share a key,
+// and a value gives the same output in all of them. An empty domain gives the
+// key of DeriveKey, so a rule without a domain keeps the output it had.
+func DeriveDomainKey(salt Salt, name string, version int, domain string) []byte {
+	base := DeriveKey(salt, name, version)
+	if domain == "" {
+		return base
+	}
+	m := hmac.New(sha256.New, base)
+	m.Write([]byte(domainLabel))
+	m.Write([]byte{0})
+	m.Write([]byte(domain))
+	return m.Sum(nil)
+}

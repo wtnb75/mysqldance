@@ -36,6 +36,10 @@ func buildJSONPaths(e Entry, col CatalogColumn, reg *Registry, salt *Salt) (Func
 			bad(err)
 			continue
 		}
+		if pr.Rule.Domain != "" {
+			bad(errors.New("domain is not supported in the rule of a path"))
+			continue
+		}
 		leaf, err := buildPathLeaf(pr, col, reg, salt)
 		if err != nil {
 			bad(err)
@@ -88,7 +92,7 @@ func buildPathLeaf(pr PathRule, col CatalogColumn, reg *Registry, salt *Salt) (*
 	if t.BuildLeaf == nil {
 		return nil, fmt.Errorf("transform %q cannot be used on a JSON path (usable: %s)", t.Name, strings.Join(leafTransformNames(reg), ", "))
 	}
-	key, err := keyOf(t, salt)
+	key, err := keyOf(t, salt, "")
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@ package mask
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 )
@@ -197,6 +198,7 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 	var errs []error
 	plan := &Plan{tables: map[string][]plannedRule{}, checked: map[string]*checkedTable{}}
 	seen := map[string]string{} // normalized key -> spec of the first rule
+	byColumn := r.columnRules(cat)
 	for _, e := range r.Entries {
 		bad := func(format string, args ...any) {
 			errs = append(errs, fmt.Errorf("rule %s (line %d): %s", e.Spec, e.Line, fmt.Sprintf(format, args...)))
@@ -230,6 +232,9 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 			if err := checkUnsupported(e.Rule); err != nil {
 				bad("%v", err)
 			}
+			if e.Rule.Domain != "" {
+				bad("a wildcard rule (DB.TABLE.%s) cannot have a domain: keep uses no key", Wildcard)
+			}
 			continue
 		}
 		var col *CatalogColumn
@@ -258,6 +263,10 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 		if err := checkUnsupported(e.Rule); err != nil {
 			bad("%v", err)
 		}
+		if err := checkDomainUse(e.Rule, reg); err != nil {
+			bad("%v", err)
+			continue
+		}
 		if e.Rule.Use == "" && len(e.Rule.Paths) == 0 {
 			// Only quasi (the parser refuses a rule with nothing at all): the column
 			// is marked for scan-k, and a dump does nothing for it.
@@ -281,7 +290,7 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 			// Nothing is transformed, so no key can break.
 			continue
 		}
-		if err := cat.checkKeys(dbName, *tbl, *col, t); err != nil {
+		if err := cat.checkKeys(dbName, *tbl, *col, t, e.Rule, byColumn); err != nil {
 			bad("%v", err)
 			continue
 		}
@@ -310,7 +319,7 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 func checkUnsupported(r Rule) error {
 	var keys []string
 	for _, k := range []struct{ name, val string }{
-		{"domain", r.Domain}, {"when", r.When}, {"on_null", r.OnNull}, {"on_collision", r.OnCollision},
+		{"when", r.When}, {"on_null", r.OnNull}, {"on_collision", r.OnCollision},
 	} {
 		if k.val != "" {
 			keys = append(keys, k.name)
@@ -344,45 +353,119 @@ func checkApplies(e Entry, col CatalogColumn, reg *Registry) error {
 	return nil
 }
 
+// columnRules maps every column that a rule of this file names (not a wildcard)
+// to the rule, by the catalog's spelling of the column (Catalog.normKey). The
+// foreign key checks look the other side of a key up in it.
+func (r *Rules) columnRules(cat Catalog) map[string]Rule {
+	out := map[string]Rule{}
+	for _, e := range r.Entries {
+		if e.Key.Table == Wildcard || e.Key.Column == Wildcard {
+			continue
+		}
+		dbName, tbl, err := cat.lookupTable(e.Key)
+		if err != nil {
+			continue
+		}
+		for _, c := range tbl.Columns {
+			if strings.EqualFold(c.Name, e.Key.Column) {
+				if _, dup := out[cat.normKey(dbName, tbl.Name, c.Name)]; !dup {
+					out[cat.normKey(dbName, tbl.Name, c.Name)] = e.Rule
+				}
+				break
+			}
+		}
+	}
+	return out
+}
+
 // checkKeys refuses a transform on a column that other rows or tables depend on.
-// A column that another table references (the parent side of a foreign key)
-// takes no transform at all: its children would lose their parent. A transform
-// that BreaksKeys is also refused on the ordering key, on the columns of a
-// unique index, and on the child side of a foreign key. The message names the
-// kind of key, never a value.
-func (c Catalog) checkKeys(db string, tbl CatalogTable, col CatalogColumn, t Transform) error {
-	if ref := c.referencedBy(db, tbl, col.Name); ref != "" {
-		return fmt.Errorf("column %q of table %q is referenced by a foreign key of table %s, so it cannot be transformed (its child rows would no longer find it)",
-			col.Name, tbl.Name, ref)
+//
+// A column that another table references (the parent side of a foreign key) can
+// be transformed only if every child column of those keys has the same rule
+// (same transform, arguments and domain, so the same value gives the same
+// output), and the column is not the child side of a key itself. A transform
+// that BreaksKeys is also refused on the ordering key and on the columns of a
+// unique index, and on the child side of a foreign key unless the parent column
+// has the same rule. byColumn holds the rules of the file. The message names the
+// kind of key, never a value. "The same rule" gives the same output for the same
+// bytes only; the server matches a key under the collation of the column, which
+// this does not look at (B-222).
+func (c Catalog) checkKeys(db string, tbl CatalogTable, col CatalogColumn, t Transform, rule Rule, byColumn map[string]Rule) error {
+	refs := c.referencingKeys(db, tbl, col.Name)
+	for _, ref := range refs {
+		child := ref.fk.Columns[ref.pos]
+		other, has := byColumn[c.normKey(ref.db, ref.table.Name, child)]
+		if !sameRule(rule, other, has) {
+			return fmt.Errorf("column %q of table %q is referenced by a foreign key of table %s.%s (%q), so it can be transformed only if its child column %q has the same transform, arguments and domain (its child rows would no longer find it)",
+				col.Name, tbl.Name, ref.db, ref.table.Name, ref.fk.Name, child)
+		}
+	}
+	if len(refs) > 0 {
+		if name := fkOf(tbl, col.Name); name != "" {
+			return fmt.Errorf("column %q of table %q is referenced by a foreign key and is also part of the foreign key %q, so it cannot be transformed", col.Name, tbl.Name, name)
+		}
 	}
 	if !t.BreaksKeys {
 		return nil
 	}
-	kind := ""
 	if containsFold(tbl.OrderBy, col.Name) {
-		kind = "part of the key the rows are ordered by"
-	} else if k := uniqueKind(tbl, col.Name, t.UniqueChecked); k != "" {
-		kind = k
-	} else if name := fkOf(tbl, col.Name); name != "" {
-		kind = fmt.Sprintf("part of the foreign key %q", name)
+		return keyError(t, col, tbl, "part of the key the rows are ordered by")
 	}
-	if kind != "" {
-		return fmt.Errorf("transform %q cannot be used on column %q of table %q: it is %s, and the transform would give rows the same value or break a reference",
-			t.Name, col.Name, tbl.Name, kind)
+	if k := uniqueKind(tbl, col.Name, t.UniqueChecked); k != "" {
+		return keyError(t, col, tbl, k)
+	}
+	for _, fk := range tbl.ForeignKeys {
+		pos := slices.IndexFunc(fk.Columns, func(x string) bool { return strings.EqualFold(x, col.Name) })
+		if pos < 0 {
+			continue
+		}
+		if pos >= len(fk.RefColumns) {
+			return fmt.Errorf("foreign key %q of table %q has %d columns but %d referenced columns, so it cannot be checked", fk.Name, tbl.Name, len(fk.Columns), len(fk.RefColumns))
+		}
+		parentDB, parentTable, parentCol := "", "", fk.RefColumns[pos]
+		if name, tables, ok := c.database(fk.RefDB); ok {
+			for _, pt := range tables {
+				if c.sameTable(pt.Name, fk.RefTable) && !pt.View && !pt.Excluded {
+					parentDB, parentTable = name, pt.Name
+					break
+				}
+			}
+		}
+		if parentTable == "" {
+			return keyError(t, col, tbl, fmt.Sprintf("part of the foreign key %q, whose parent table %s.%s is not in the dump", fk.Name, fk.RefDB, fk.RefTable))
+		}
+		other, has := byColumn[c.normKey(parentDB, parentTable, parentCol)]
+		if !sameRule(rule, other, has) {
+			return keyError(t, col, tbl, fmt.Sprintf("part of the foreign key %q, and the column it references (%s.%s.%s) has not the same transform, arguments and domain", fk.Name, fk.RefDB, fk.RefTable, parentCol))
+		}
 	}
 	return nil
 }
 
-// referencedBy returns the table (DB.TABLE) of a foreign key that references the
-// column, or "" if none does. Tables left out of the dump are not looked at.
-// Databases are visited in name order, so the message does not depend on the
-// order of a map.
-func (c Catalog) referencedBy(db string, tbl CatalogTable, col string) string {
+func keyError(t Transform, col CatalogColumn, tbl CatalogTable, kind string) error {
+	return fmt.Errorf("transform %q cannot be used on column %q of table %q: it is %s, and the transform would give rows the same value or break a reference",
+		t.Name, col.Name, tbl.Name, kind)
+}
+
+// fkRef is a foreign key that references a column: the table it belongs to (in
+// database db) and the position of the column among the key's referenced columns.
+type fkRef struct {
+	db    string
+	table CatalogTable
+	fk    CatalogFK
+	pos   int
+}
+
+// referencingKeys returns the foreign keys that reference the column. Tables left
+// out of the dump are not looked at. Databases are visited in name order, so the
+// result does not depend on the order of a map.
+func (c Catalog) referencingKeys(db string, tbl CatalogTable, col string) []fkRef {
 	dbs := make([]string, 0, len(c.Databases))
 	for name := range c.Databases {
 		dbs = append(dbs, name)
 	}
 	slices.Sort(dbs)
+	var out []fkRef
 	for _, name := range dbs {
 		for _, other := range c.Databases[name] {
 			if other.View || other.Excluded {
@@ -392,13 +475,15 @@ func (c Catalog) referencedBy(db string, tbl CatalogTable, col string) string {
 				if !c.sameTable(fk.RefDB, db) || !c.sameTable(fk.RefTable, tbl.Name) {
 					continue
 				}
-				if containsFold(fk.RefColumns, col) {
-					return name + "." + other.Name
+				// The catalog builds Columns and RefColumns together, so their lengths are
+				// equal; the bound only guards a hand-made catalog (R-236).
+				if pos := slices.IndexFunc(fk.RefColumns, func(x string) bool { return strings.EqualFold(x, col) }); pos >= 0 && pos < len(fk.Columns) {
+					out = append(out, fkRef{db: name, table: other, fk: fk, pos: pos})
 				}
 			}
 		}
 	}
-	return ""
+	return out
 }
 
 // uniqueKind says why the unique indexes of the table forbid a transform that
@@ -456,21 +541,70 @@ func containsFold(list []string, s string) bool {
 }
 
 // keyOf derives the HMAC key of a transform that needs a salt, and returns nil
-// for one that does not.
-func keyOf(t Transform, salt *Salt) ([]byte, error) {
+// for one that does not. A rule with a domain gets the key of that domain.
+func keyOf(t Transform, salt *Salt, domain string) ([]byte, error) {
 	if !t.NeedsSalt {
 		return nil, nil
 	}
 	if salt == nil {
 		return nil, fmt.Errorf("transform %q needs a salt: pass --salt-file or set %s (there is no default salt)", t.Name, SaltEnv)
 	}
-	return DeriveKey(*salt, t.Name, t.Version), nil
+	return DeriveDomainKey(*salt, t.Name, t.Version, domain), nil
+}
+
+// checkDomainName checks the format of a domain: 1 to 64 characters out of the
+// ASCII letters, digits, "_" and "-". The case counts.
+func checkDomainName(s string) error {
+	if s == "" || len(s) > 64 {
+		return fmt.Errorf("domain must be 1 to 64 characters long (got %d)", len(s))
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-' {
+			continue
+		}
+		return errors.New("domain may hold only ASCII letters, digits, \"_\" and \"-\"")
+	}
+	return nil
+}
+
+// checkDomainUse refuses a domain where it would be ignored: on a rule that has
+// no transform, on a transform that uses no key (fixed, nullify, keep), and on a
+// rule with paths (the paths' rules carry their own keys, and take no domain).
+func checkDomainUse(r Rule, reg *Registry) error {
+	if r.Domain == "" {
+		return nil
+	}
+	switch {
+	case len(r.Paths) > 0:
+		return errors.New("domain cannot be given to a rule with paths")
+	case r.Use == "":
+		return errors.New("domain needs a transform (use)")
+	}
+	if t, ok := reg.Lookup(r.Use); ok && !t.NeedsSalt {
+		return fmt.Errorf("domain has no effect on transform %q, which uses no key", t.Name)
+	}
+	return nil
+}
+
+// sameRule says whether two columns are transformed in the same way: the same
+// transform with the same arguments and the same domain (none counts as a
+// domain). A missing rule, a rule with paths and one that only marks quasi are
+// never the same as anything.
+func sameRule(a, b Rule, bHas bool) bool {
+	if !bHas || a.Use == "" || b.Use == "" || len(a.Paths) > 0 || len(b.Paths) > 0 {
+		return false
+	}
+	if a.Use != b.Use || a.Domain != b.Domain {
+		return false
+	}
+	return len(a.Args) == len(b.Args) && (len(a.Args) == 0 || reflect.DeepEqual(a.Args, b.Args))
 }
 
 // buildRule prepares the transform of a rule for its column. A transform that
 // is registered without a Build (tests) is checked no further.
 func buildRule(e Entry, t Transform, col Column, cols []Column, salt *Salt) (Func, error) {
-	key, err := keyOf(t, salt)
+	key, err := keyOf(t, salt, e.Rule.Domain)
 	if err != nil {
 		return nil, err
 	}

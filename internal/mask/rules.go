@@ -24,8 +24,9 @@ var reservedKeys = map[string]bool{
 // Rule says how one value is transformed. A rule names a transform (Use) with
 // its named Args, or, for a JSON column, gives a rule per JSON path (Paths, in
 // file order). Domain, When, OnNull and OnCollision are the keys every
-// transform shares; this package only checks that they are strings, and later
-// items give them meaning. Quasi (B-196) marks the column as part of the
+// transform shares. Domain (B-170) names the key the transform uses. The parser
+// checks the other three to be strings, and Resolve refuses a rule that has one
+// (checkUnsupported) until a later item gives them meaning. Quasi (B-196) marks the column as part of the
 // quasi-identifier that scan-k measures; a rule may hold nothing but that, and
 // then it has no Use and a dump does nothing for it.
 type Rule struct {
@@ -255,6 +256,10 @@ func (p *parser) parseRule(n *yaml.Node, what string, nested bool) Rule {
 			}
 			switch k.Value {
 			case "domain":
+				if err := checkDomainName(v.Value); err != nil {
+					p.errorf(v, "%s: %v", what, err)
+					continue
+				}
 				r.Domain = v.Value
 			case "when":
 				r.When = v.Value

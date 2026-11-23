@@ -25,7 +25,9 @@ var shapeTypes = []string{"CHAR", "VARCHAR", "TEXT"}
 // Punctuation, spaces and control characters of ASCII are kept. NULL stays NULL.
 //
 // BreaksKeys: two values can give one output, so it is refused on the ordering
-// key, the primary key and the child side of a foreign key. It may be used on the
+// key and the primary key, and on the child side of a foreign key unless the
+// parent column has the same transform, arguments and domain (B-170). It may be
+// used on the
 // columns of another unique index (UniqueChecked): the dump compares the rows
 // after the transform and stops with an error at a collision, never extending
 // the output to avoid one, because the length is kept.
