@@ -41,8 +41,8 @@ type dialect struct {
 	// (mysql, sys and so on) are not reported: every server has them.
 	viewDeps func(ctx context.Context, conn *sql.Conn, schema string, views []string) (same, foreign []viewDep, err error)
 	// defColumns: TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_TYPE,
-	// IS_NULLABLE, COLUMN_DEFAULT, EXTRA, CHARACTER_SET_NAME (NULL for a column
-	// that has none) in ordinal order. Param: schema.
+	// IS_NULLABLE, COLUMN_DEFAULT, EXTRA, CHARACTER_SET_NAME, COLLATION_NAME
+	// (both NULL for a column that has none) in ordinal order. Param: schema.
 	defColumns string
 	// columnDefault reads COLUMN_DEFAULT (with the DATA_TYPE and EXTRA of the
 	// same column) as the default value, unquoted, or nil when the column has
@@ -99,7 +99,7 @@ var mysql8 = dialect{
 		" FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND NON_UNIQUE = 0" +
 		" ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX",
 	viewDeps: viewTableUsage,
-	defColumns: "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA, CHARACTER_SET_NAME" +
+	defColumns: "SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA, CHARACTER_SET_NAME, COLLATION_NAME" +
 		" FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ?" +
 		" ORDER BY TABLE_NAME, ORDINAL_POSITION",
 	columnDefault: mysqlColumnDefault,

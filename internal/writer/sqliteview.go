@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"mysqldance/internal/schemafile"
+	"mysqldance/internal/source"
 	"mysqldance/internal/sqlvalue"
 )
 
@@ -53,7 +54,8 @@ var sqliteDialect = &viewDialect{
 // cautionOrder is the order the reasons are reported in, so that the warning is
 // the same on every run.
 var cautionOrder = []string{"a string literal", "a division", "a remainder (%)", "LIKE", "GROUP BY",
-	"ORDER BY", "DISTINCT", "UNION", "AVG()", "SUM()", "ROUND()", "UPPER()", "LOWER()", "SUBSTR()"}
+	"ORDER BY", "DISTINCT", "UNION", "AVG()", "SUM()", "ROUND()", "UPPER()", "LOWER()", "SUBSTR()",
+	cautionNumericText, cautionCaseText}
 
 func setOf(ss ...string) map[string]bool {
 	m := make(map[string]bool, len(ss))
@@ -122,7 +124,7 @@ func writeViews(out *strings.Builder, sc Schema, d *viewDialect, env *pgViewEnv,
 			notOutput("its name is already used by " + what)
 			continue
 		}
-		stmt, caution, reason := convertView(d, env, v.Name, v.Create)
+		stmt, caution, reason := convertView(d, env, sc.Defs, v.Name, v.Create)
 		if reason != "" {
 			notOutput(reason)
 			continue
@@ -145,14 +147,16 @@ var viewCheckOption = regexp.MustCompile(`(?i)\s+WITH\s+(?:CASCADED\s+|LOCAL\s+)
 // convertPostgresView exist so that the tests name the dialect once (review
 // ledger R-194).
 func convertSQLiteView(name, create string) (stmt string, caution []string, reason string) {
-	return convertView(sqliteDialect, nil, name, create)
+	return convertView(sqliteDialect, nil, nil, name, create)
 }
 
 // convertView turns a MySQL SHOW CREATE VIEW statement of the view name into a
 // CREATE VIEW statement of the dialect d ending in ";\n". If it cannot, reason
 // says why and the statement is empty. caution lists what in the converted view
 // may give a result that differs from MySQL. env is set for PostgreSQL only.
-func convertView(d *viewDialect, env *pgViewEnv, name, create string) (stmt string, caution []string, reason string) {
+// defs (Schema.Defs) lets the SQLite conversion tell the cautions that depend
+// on the type and collation of a column; without it only the syntax counts.
+func convertView(d *viewDialect, env *pgViewEnv, defs map[string]source.TableDef, name, create string) (stmt string, caution []string, reason string) {
 	// The DEFINER clause holds quoted user names that may contain spaces.
 	create = schemafile.StripDefiner(create)
 	head := viewHeader.FindString(create)
@@ -181,6 +185,11 @@ func convertView(d *viewDialect, env *pgViewEnv, name, create string) (stmt stri
 	out := c.convert(toks)
 	if c.reason != "" {
 		return "", nil, c.reason
+	}
+	if !d.postgresql {
+		for _, k := range typeCautions(toks, defs) {
+			c.caution[k] = true
+		}
 	}
 	for _, k := range cautionOrder {
 		if c.caution[k] {
