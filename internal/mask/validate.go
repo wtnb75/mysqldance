@@ -18,16 +18,22 @@ type CatalogColumn struct {
 	ColumnType   string
 	DataType     string
 	CharacterSet string
-	Nullable     bool
-	Generated    bool
+	// Collation is COLLATION_NAME, empty for a column that has none.
+	Collation string
+	Nullable  bool
+	Generated bool
 }
 
 // CatalogIndex is an index of a table: its name and its columns in key order
-// (a functional key part is left out).
+// (a functional key part is left out). PrefixColumns are the columns of which
+// only a prefix is indexed, and Functional is true when a key part is an
+// expression: the dump cannot check such a unique index for collisions.
 type CatalogIndex struct {
-	Name    string
-	Unique  bool
-	Columns []string
+	Name          string
+	Unique        bool
+	Columns       []string
+	PrefixColumns []string
+	Functional    bool
 }
 
 // CatalogFK is a foreign key of a table: its columns, and the columns of the
@@ -189,7 +195,7 @@ func (r *Rules) Validate(cat Catalog, reg *Registry) error {
 // with its arguments or its column.
 func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 	var errs []error
-	plan := &Plan{tables: map[string][]plannedRule{}}
+	plan := &Plan{tables: map[string][]plannedRule{}, checked: map[string]*checkedTable{}}
 	seen := map[string]string{} // normalized key -> spec of the first rule
 	for _, e := range r.Entries {
 		bad := func(format string, args ...any) {
@@ -281,10 +287,14 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 			continue
 		}
 		plan.add(dbName, tbl.Name, c, e.Spec, fn)
+		if t.UniqueChecked {
+			plan.noteChecked(dbName, *tbl, col.Name)
+		}
 	}
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
+	plan.buildUniques()
 	return plan, nil
 }
 
@@ -348,10 +358,8 @@ func (c Catalog) checkKeys(db string, tbl CatalogTable, col CatalogColumn, t Tra
 	kind := ""
 	if containsFold(tbl.OrderBy, col.Name) {
 		kind = "part of the key the rows are ordered by"
-	} else if name := uniqueIndexOf(tbl, col.Name); name == "PRIMARY" {
-		kind = "part of the primary key"
-	} else if name != "" {
-		kind = fmt.Sprintf("part of the unique index %q", name)
+	} else if k := uniqueKind(tbl, col.Name, t.UniqueChecked); k != "" {
+		kind = k
 	} else if name := fkOf(tbl, col.Name); name != "" {
 		kind = fmt.Sprintf("part of the foreign key %q", name)
 	}
@@ -390,15 +398,43 @@ func (c Catalog) referencedBy(db string, tbl CatalogTable, col string) string {
 	return ""
 }
 
-// uniqueIndexOf returns the name of the first unique index that has the column
-// (a prefix of it counts), or "".
-func uniqueIndexOf(tbl CatalogTable, col string) string {
+// uniqueKind says why the unique indexes of the table forbid a transform that
+// breaks keys on the column, or returns "" if none does. The primary key always
+// forbids it. Another unique index forbids it unless the transform is
+// UniqueChecked and the dump can compare the rows on the index: it cannot when
+// only a prefix of the column is indexed (the prefix may collide when the whole
+// value does not), or when a part of the index is an expression or a generated
+// column (the rows do not hold its value).
+func uniqueKind(tbl CatalogTable, col string, checked bool) string {
 	for _, ix := range tbl.Indexes {
-		if ix.Unique && containsFold(ix.Columns, col) {
-			return ix.Name
+		if !ix.Unique || !containsFold(ix.Columns, col) {
+			continue
+		}
+		switch {
+		case ix.Name == "PRIMARY":
+			return "part of the primary key"
+		case !checked:
+			return fmt.Sprintf("part of the unique index %q", ix.Name)
+		case len(ix.PrefixColumns) > 0:
+			// Of this column or of another one of the index: the server compares only
+			// the prefix, the dump the whole value.
+			return fmt.Sprintf("part of the unique index %q, which indexes a prefix of a column, so a collision cannot be detected", ix.Name)
+		case ix.Functional:
+			return fmt.Sprintf("part of the unique index %q, which has an expression, so a collision cannot be detected", ix.Name)
+		case hasGeneratedColumn(tbl, ix):
+			return fmt.Sprintf("part of the unique index %q, which has a generated column, so a collision cannot be detected", ix.Name)
 		}
 	}
 	return ""
+}
+
+func hasGeneratedColumn(tbl CatalogTable, ix CatalogIndex) bool {
+	for _, c := range tbl.Columns {
+		if c.Generated && containsFold(ix.Columns, c.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 // fkOf returns the name of the first foreign key of the table that has the

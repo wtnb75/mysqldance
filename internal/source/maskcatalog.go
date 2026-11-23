@@ -48,14 +48,19 @@ func CatalogTables(objects []Object) []mask.CatalogTable {
 			t.Columns = append(t.Columns, mask.CatalogColumn{
 				Name: c.Name, TypeName: CatalogTypeName(c.DataType, c.Type),
 				ColumnType: c.Type, DataType: c.DataType, CharacterSet: c.CharacterSet,
-				Nullable: c.Nullable, Generated: c.Generated,
+				Collation: c.Collation, Nullable: c.Nullable, Generated: c.Generated,
 			})
 		}
 		for _, ix := range o.Def.Indexes {
 			ci := mask.CatalogIndex{Name: ix.Name, Unique: ix.Unique}
 			for _, p := range ix.Parts {
-				if p.Column != "" { // a functional key part has no column
-					ci.Columns = append(ci.Columns, p.Column)
+				if p.Column == "" { // a functional key part has no column
+					ci.Functional = true
+					continue
+				}
+				ci.Columns = append(ci.Columns, p.Column)
+				if p.Prefix {
+					ci.PrefixColumns = append(ci.PrefixColumns, p.Column)
 				}
 			}
 			t.Indexes = append(t.Indexes, ci)

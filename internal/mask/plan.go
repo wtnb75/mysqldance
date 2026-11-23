@@ -20,6 +20,10 @@ type plannedRule struct {
 // use it from several goroutines.
 type Plan struct {
 	tables map[string][]plannedRule
+	// checked is, for each table, the columns a UniqueChecked transform was
+	// planned for; Resolve turns it into the unique checks (see Uniques).
+	checked map[string]*checkedTable
+	uniques uniqueChecks
 }
 
 func planKey(db, table string) string { return db + "\x00" + table }

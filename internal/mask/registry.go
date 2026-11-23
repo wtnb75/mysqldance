@@ -66,6 +66,10 @@ type Transform struct {
 	// value that no parent row has, so that it cannot be used on a column of a
 	// key (the ordering key, a unique index, the child side of a foreign key).
 	BreaksKeys bool
+	// UniqueChecked is true for a BreaksKeys transform that may be used on a column
+	// of a unique index (not the primary key): the dump compares the transformed
+	// rows and stops with an error if two of them collide.
+	UniqueChecked bool
 	// NoChange is true for a transform that leaves every value as it is (keep). It
 	// only records that the column was looked at, so it costs nothing per row and
 	// may be used on any column, a column of a key included.

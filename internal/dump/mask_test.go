@@ -92,6 +92,52 @@ func TestWriteTableAppliesTheMaskPlan(t *testing.T) {
 	}
 }
 
+// capturingRows is fakeRows that keeps the TableInfo it was asked to read.
+type capturingRows struct {
+	fakeRows
+	got *source.TableInfo
+}
+
+func (c capturingRows) EachRow(ctx context.Context, t source.TableInfo, fn func([]sqlvalue.Value) error) error {
+	*c.got = t
+	return c.fakeRows.EachRow(ctx, t, fn)
+}
+
+// writeTable hands the unique checks of the plan to the reader: it compares the
+// masked rows on the unique indexes that have a transformed column.
+func TestWriteTableHandsTheUniqueChecksToTheReader(t *testing.T) {
+	cat := streamCatalog()
+	cat.Databases["d"][0].Indexes = append(cat.Databases["d"][0].Indexes, mask.CatalogIndex{Name: "uq_s", Unique: true, Columns: []string{"s"}})
+	cat.Databases["d"][0].Columns[1].Collation = "utf8mb4_general_ci"
+	reg := mask.DefaultRegistry()
+	rules, err := mask.Parse([]byte("version: 1\nrules:\n  d.t.s:\n    use: hash_keep_shape\n"), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	salt, err := mask.LoadSalt("", func(string) string { return "0123456789abcdef-test-salt" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := rules.Resolve(cat, reg, &salt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	opt := Options{OutDir: dir, Log: testLogger(io.Discard), Writer: writer.NewMySQL(datafile.Options{}), maskPlan: plan}
+	st := &stage{dir: dir}
+	var seen source.TableInfo
+	if _, err := writeTable(context.Background(), opt, capturingRows{fakeRows{n: 2}, &seen}, naming.NewPlan("d", []string{"t"}), "d", streamTable, st); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.discard(); err != nil {
+		t.Fatal(err)
+	}
+	want := []mask.UniqueCheck{{Index: "uq_s", Columns: []string{"s"}, Positions: []int{1}, Fold: []bool{true}}}
+	if !reflect.DeepEqual(seen.Unique, want) {
+		t.Errorf("Unique = %+v, want %+v", seen.Unique, want)
+	}
+}
+
 // A mask that fails fails the table with an error that holds no value.
 func TestWriteTableMaskFailure(t *testing.T) {
 	reg := mask.NewRegistry()
@@ -332,6 +378,76 @@ func TestMaskDumpHashKeepShape(t *testing.T) {
 	}
 	if sameFirst == "" || sameFirst != sameFifth {
 		t.Errorf("rows 1 and 5 hold one value, but got %q and %q", sameFirst, sameFifth)
+	}
+}
+
+// hash_keep_shape on a column of a unique index: a column whose values are far
+// apart in a big space restores, and a short column that gives two values one
+// output stops the dump with an error that names the index and holds no value.
+func TestMaskDumpHashKeepShapeUnique(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE wide (id INT PRIMARY KEY, email VARCHAR(40) NOT NULL, UNIQUE KEY uq_email (email))",
+		"INSERT INTO wide VALUES (1,'alice-RAW@x.test'),(2,'Bob-RAW@x.test'),(3,'carol-RAW@x.test')",
+	)
+	// 100 two-digit values go to a space of 100: two of them meet, surely.
+	e.exec(t, "CREATE TABLE narrow (id INT PRIMARY KEY, code VARCHAR(2) NOT NULL, UNIQUE KEY uq_code (code))")
+	var values []string
+	for i := range 100 {
+		values = append(values, fmt.Sprintf("(%d,'%02d')", i+1, i))
+	}
+	e.exec(t, "INSERT INTO narrow VALUES "+strings.Join(values, ","))
+
+	salt, err := mask.LoadSalt("", func(string) string { return "0123456789abcdef-test-salt" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	parse := func(tables ...string) *mask.Rules {
+		t.Helper()
+		var src strings.Builder
+		src.WriteString("version: 1\nrules:\n")
+		for _, tc := range tables {
+			fmt.Fprintf(&src, "  %s.%s:\n    use: hash_keep_shape\n", db, tc)
+		}
+		rules, err := mask.Parse([]byte(src.String()), mask.DefaultRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rules
+	}
+	// run dumps the database without the table named skip.
+	run := func(jobs int, rules *mask.Rules, skip string) (string, error) {
+		dir := t.TempDir()
+		cfg := e.cfg
+		cfg.Jobs = jobs
+		opt := Options{Source: cfg, DBs: []string{db}, OutDir: dir, Log: testLogger(io.Discard), Mask: rules, MaskSalt: &salt, ExcludeTables: []string{db + "." + skip}}
+		return dir, Run(context.Background(), opt)
+	}
+
+	dir, err := run(1, parse("wide.email"), "narrow")
+	if err != nil {
+		t.Fatalf("a column that does not collide: %v", err)
+	}
+	e.restore(t, dir)
+	if got := queryRows(t, e, "SELECT COUNT(DISTINCT email) FROM wide"); !reflect.DeepEqual(got, []string{"3"}) {
+		t.Errorf("distinct emails after the restore = %v", got)
+	}
+
+	for _, jobs := range []int{1, 2} {
+		_, err = run(jobs, parse("narrow.code"), "wide")
+		if err == nil {
+			t.Fatalf("jobs %d: a collision did not stop the dump", jobs)
+		}
+		for _, want := range []string{db, "narrow", `unique index "uq_code"`, "`code`", "rows"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("jobs %d: the error lacks %q:\n%v", jobs, want, err)
+			}
+		}
+		if strings.Contains(err.Error(), "'07'") || strings.Contains(err.Error(), "RAW") {
+			t.Errorf("jobs %d: the error holds a value:\n%v", jobs, err)
+		}
 	}
 }
 
