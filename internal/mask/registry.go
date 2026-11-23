@@ -78,6 +78,12 @@ type Transform struct {
 	// the definition of the column and returns the Func that is applied to each
 	// row. A nil Build is for a transform that is only registered (tests).
 	Build func(BuildContext) (Func, error)
+	// BuildLeaf prepares the transform for a rule given per JSON path (B-169): the
+	// LeafFunc is applied to the value each path reaches, whose type is known only
+	// when a row is read. Column is the JSON column, but with the character set
+	// utf8mb4 that JSON text has. A transform without it (and that is not NoChange)
+	// cannot be used under a path.
+	BuildLeaf func(BuildContext) (LeafFunc, error)
 }
 
 // appliesTo reports whether the transform can be used on a column of the type.
@@ -116,8 +122,8 @@ func (r *Registry) Register(t Transform) error {
 	if t.Version < 0 || (t.NeedsSalt && t.Version < 1) {
 		return fmt.Errorf("transform %q: the version of a transform that uses the salt starts at 1", t.Name)
 	}
-	if t.NoChange && (len(t.Args) > 0 || t.NeedsSalt || t.Build != nil) {
-		return fmt.Errorf("transform %q: a transform that changes nothing takes no argument, salt or Build", t.Name)
+	if t.NoChange && (len(t.Args) > 0 || t.NeedsSalt || t.Build != nil || t.BuildLeaf != nil) {
+		return fmt.Errorf("transform %q: a transform that changes nothing takes no argument, salt, Build or BuildLeaf", t.Name)
 	}
 	if _, dup := r.byName[t.Name]; dup {
 		return fmt.Errorf("transform %q is registered twice", t.Name)

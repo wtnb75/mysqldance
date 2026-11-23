@@ -381,6 +381,109 @@ func TestMaskDumpHashKeepShape(t *testing.T) {
 	}
 }
 
+// A rule per JSON path (B-169) changes only the values the paths reach: in the
+// files of every target, the same bytes come out of every run (twice, with one
+// reader and with two), the files hold no raw value of a path, and a restore
+// leaves the rest of the document as it was (and the documents the paths do not
+// reach).
+func TestMaskDumpJSONPaths(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE profiles (id INT PRIMARY KEY, doc JSON NULL)",
+		`INSERT INTO profiles VALUES
+		 (1,'{"profile":{"email":"alice-RAW@x.test","age":31},"phones":["090-RAW-1","03-RAW-2"],"big":9007199254740993,"tags":["a","b"]}'),
+		 (2,'{"profile":{"email":"bob-RAW@x.test"},"phones":[]}'),
+		 (3,'{"other":1}'),
+		 (4,NULL),
+		 (5,'{"profile":{"email":"alice-RAW@x.test"},"phones":["090-RAW-1"]}')`,
+	)
+	const rest = "SELECT id, JSON_REMOVE(doc, '$.profile.email', '$.phones') FROM profiles ORDER BY id"
+	wantRest := queryRows(t, e, rest)
+	before := queryRows(t, e, "SELECT id, doc->>'$.profile.email', doc->>'$.phones[0]' FROM profiles ORDER BY id")
+	salt, err := mask.LoadSalt("", func(string) string { return "0123456789abcdef-test-salt" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := mask.Parse(fmt.Appendf(nil, "version: 1\nrules:\n  %s.profiles.doc:\n    paths:\n      $.profile.email:\n        use: hash_keep_shape\n      $.phones[*]:\n        use: hash_keep_shape\n", db), mask.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(jobs int, tgt writer.Writer) (map[string]string, string) {
+		t.Helper()
+		dir := t.TempDir()
+		cfg := e.cfg
+		cfg.Jobs = jobs
+		var log bytes.Buffer
+		opt := Options{Source: cfg, DBs: []string{db}, OutDir: dir, Log: testLogger(&log), Mask: rules, MaskSalt: &salt, Writer: tgt}
+		if err := Run(context.Background(), opt); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return readFiles(t, dir), log.String()
+	}
+	for name, mk := range map[string]func() writer.Writer{
+		"mysql":    func() writer.Writer { return writer.NewMySQL(datafile.Options{}) },
+		"sqlite":   func() writer.Writer { return writer.NewSQLite(datafile.Options{}) },
+		"postgres": func() writer.Writer { return writer.NewPostgres(datafile.Options{}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			first, log := run(1, mk())
+			if got, _ := run(1, mk()); !reflect.DeepEqual(got, first) {
+				t.Error("two runs differ")
+			}
+			if got, _ := run(2, mk()); !reflect.DeepEqual(got, first) {
+				t.Error("--jobs 2 differs from --jobs 1")
+			}
+			for file, text := range first {
+				for _, raw := range []string{"alice-RAW", "bob-RAW", "090-RAW", "03-RAW"} {
+					if strings.Contains(text, raw) {
+						t.Errorf("%s holds the raw value %q", file, raw)
+					}
+				}
+				// The server keeps an integer above 2^53 as it is, and so must the rewrite.
+				if strings.Contains(file, ".10-data.") && !strings.Contains(text, "9007199254740993") {
+					t.Errorf("%s lost the digits of a number it did not mask", file)
+				}
+			}
+			if strings.Contains(log, "RAW") {
+				t.Errorf("the log holds a value:\n%s", log)
+			}
+		})
+	}
+
+	files, _ := run(1, writer.NewMySQL(datafile.Options{}))
+	dir := t.TempDir()
+	for name, text := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.restore(t, dir)
+	if got := queryRows(t, e, rest); !reflect.DeepEqual(got, wantRest) {
+		t.Errorf("the rest of the documents changed:\n got %v\nwant %v", got, wantRest)
+	}
+	after := queryRows(t, e, "SELECT id, doc->>'$.profile.email', doc->>'$.phones[0]' FROM profiles ORDER BY id")
+	if reflect.DeepEqual(after, before) {
+		t.Fatal("the values did not change")
+	}
+	cell := func(rows []string, id int, field int) string {
+		for _, r := range rows {
+			if p := strings.Split(r, "|"); p[0] == fmt.Sprint(id) {
+				return p[field]
+			}
+		}
+		return ""
+	}
+	// The same value gives the same value, in two documents.
+	if cell(after, 1, 1) == "" || cell(after, 1, 1) != cell(after, 5, 1) || cell(after, 1, 1) == cell(before, 1, 1) {
+		t.Errorf("emails of rows 1 and 5: %q and %q (before %q)", cell(after, 1, 1), cell(after, 5, 1), cell(before, 1, 1))
+	}
+	if cell(after, 3, 1) != "NULL" || cell(after, 4, 1) != "NULL" {
+		t.Errorf("a document without the path or NULL changed: %v", after)
+	}
+}
+
 // hash_keep_shape on a column of a unique index: a column whose values are far
 // apart in a big space restores, and a short column that gives two values one
 // output stops the dump with an error that names the index and holds no value.

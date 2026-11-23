@@ -55,6 +55,49 @@ type Input struct {
 // carry a value of the row.
 type Func func(in Input) (sqlvalue.Value, error)
 
+// LeafKind is the JSON type of the value a path of a JSON column reaches.
+type LeafKind int
+
+// The JSON types of a leaf. LeafContainer is an object or an array, which only a
+// transform that replaces the whole value (nullify) can take.
+const (
+	LeafString LeafKind = iota
+	LeafNumber
+	LeafBool
+	LeafNull
+	LeafContainer
+)
+
+func (k LeafKind) String() string {
+	switch k {
+	case LeafString:
+		return "a string"
+	case LeafNumber:
+		return "a number"
+	case LeafBool:
+		return "a boolean"
+	case LeafNull:
+		return "null"
+	default:
+		return "an object or an array"
+	}
+}
+
+// Leaf is one value of a JSON document as a LeafFunc sees it. For a string, Text
+// is the decoded string (UTF-8); for a number its text as it was written, and
+// for a boolean "true" or "false". A container has no Text. The slice is only
+// read, and valid for the call.
+type Leaf struct {
+	Kind LeafKind
+	Text []byte
+}
+
+// LeafFunc computes the new value of one leaf of a JSON column (a rule per JSON
+// path). A JSON null is never given to it: null stays null. Like a Func, it must
+// be a pure function of its input, safe to call from several goroutines, and
+// neither it nor its errors may carry a value.
+type LeafFunc func(in Leaf) (Leaf, error)
+
 // keyLabel separates the keys of this tool's HMACs from any other use of the salt.
 const keyLabel = "mysqldance/mask/v1"
 

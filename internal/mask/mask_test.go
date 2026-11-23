@@ -288,10 +288,6 @@ func TestValidateRefusesKeysWithoutMeaning(t *testing.T) {
 			}
 		})
 	}
-	err := validate(t, testCatalog(), "version: 1\nrules:\n  shop.users.profile:\n    paths:\n      $.a:\n        use: \"null\"\n")
-	if err == nil || !strings.Contains(err.Error(), "paths is not supported in this version") {
-		t.Fatalf("paths: err = %v", err)
-	}
 }
 
 func TestValidateErrors(t *testing.T) {
