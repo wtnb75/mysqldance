@@ -71,7 +71,7 @@ func StripTriggerDB(create, db string) (string, error) {
 		cuts = append(cuts, [2]int{start, nameStart})
 		return true
 	}
-	ok := h.word("CREATE") && h.word("TRIGGER") && qualified() &&
+	ok := h.word("CREATE") && h.skipDefiner() && h.word("TRIGGER") && qualified() &&
 		(h.word("BEFORE") || h.word("AFTER")) &&
 		(h.word("INSERT") || h.word("UPDATE") || h.word("DELETE")) &&
 		h.word("ON") && qualified() &&
@@ -103,6 +103,17 @@ func (h *headScanner) skipSpace() {
 	for h.i < len(h.s) && strings.IndexByte(" \t\r\n", h.s[h.i]) >= 0 {
 		h.i++
 	}
+}
+
+// skipDefiner passes over a DEFINER=`u`@`h` clause if there is one, and always
+// succeeds: with --definer=keep the clause is still in the heading (B-111).
+// Only the backtick or bare form is read: the session pins sql_mode to ” so
+// SHOW CREATE always quotes with backticks (R-221).
+func (h *headScanner) skipDefiner() bool {
+	if loc := definerAfterCreate.FindStringIndex(h.s[h.i:]); loc != nil {
+		h.i += loc[1]
+	}
+	return true
 }
 
 func (h *headScanner) peek() byte {

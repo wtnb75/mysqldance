@@ -12,12 +12,29 @@ import (
 
 // MySQL writes MySQL 8.0-style SQL files.
 type MySQL struct {
-	data datafile.Options
+	data        datafile.Options
+	keepDefiner bool
 }
 
 // NewMySQL returns a MySQL writer. opt controls the INSERT statements and the
 // splitting of large tables.
 func NewMySQL(opt datafile.Options) *MySQL { return &MySQL{data: opt} }
+
+// WithKeepDefiner sets whether views, routines, events and triggers keep the
+// DEFINER clause as SHOW CREATE returned it (--definer=keep, B-111). The default
+// removes it. It returns m.
+func (m *MySQL) WithKeepDefiner(keep bool) *MySQL {
+	m.keepDefiner = keep
+	return m
+}
+
+// definer applies the DEFINER setting to one CREATE statement.
+func (m *MySQL) definer(create string) string {
+	if m.keepDefiner {
+		return create
+	}
+	return schemafile.StripDefiner(create)
+}
 
 // NeedsDefs implements Writer.
 func (m *MySQL) NeedsDefs() bool { return false }
@@ -33,8 +50,8 @@ func (m *MySQL) WriteSchema(w io.Writer, s Schema) error {
 
 // WriteViews implements ViewWriter. The views are in their own file, after the
 // routines, because CREATE VIEW fails when the view calls a stored function that
-// does not exist yet (B-116). The DEFINER clause is removed, as for the other
-// objects.
+// does not exist yet (B-116). As for the other objects, the DEFINER clause is
+// removed unless --definer=keep.
 func (m *MySQL) WriteViews(w io.Writer, s Schema) error {
 	byName := make(map[string]schemafile.View, len(s.Views))
 	names := make([]string, len(s.Views))
@@ -53,7 +70,7 @@ func (m *MySQL) WriteViews(w io.Writer, s Schema) error {
 	ordered := make([]schemafile.View, 0, len(s.Views))
 	for _, n := range schemafile.OrderViews(names, s.ViewDeps) {
 		v := byName[n]
-		ordered = append(ordered, schemafile.View{Name: v.Name, Create: schemafile.StripDefiner(v.Create)})
+		ordered = append(ordered, schemafile.View{Name: v.Name, Create: m.definer(v.Create)})
 	}
 	return schemafile.WriteViews(w, s.DB, ordered)
 }
@@ -64,7 +81,7 @@ func (m *MySQL) WriteViews(w io.Writer, s Schema) error {
 func (m *MySQL) WriteRoutines(w io.Writer, s Schema) error {
 	routines := make([]schemafile.Routine, len(s.Routines))
 	for i, r := range s.Routines {
-		r.Create = schemafile.StripDefiner(r.Create)
+		r.Create = m.definer(r.Create)
 		routines[i] = r
 	}
 	return schemafile.WriteRoutines(w, s.DB, routines)
@@ -75,7 +92,7 @@ func (m *MySQL) WriteRoutines(w io.Writer, s Schema) error {
 func (m *MySQL) WriteEvents(w io.Writer, s Schema) error {
 	events := make([]schemafile.Event, len(s.Events))
 	for i, e := range s.Events {
-		e.Create = schemafile.StripDefiner(e.Create)
+		e.Create = m.definer(e.Create)
 		events[i] = e
 	}
 	return schemafile.WriteEvents(w, s.DB, events)
@@ -89,7 +106,7 @@ func (m *MySQL) WriteEvents(w io.Writer, s Schema) error {
 func (m *MySQL) WriteTriggers(w io.Writer, s Schema) error {
 	triggers := make([]schemafile.Trigger, len(s.Triggers))
 	for i, t := range s.Triggers {
-		create, err := schemafile.StripTriggerDB(schemafile.StripDefiner(t.Create), s.DB)
+		create, err := schemafile.StripTriggerDB(m.definer(t.Create), s.DB)
 		if err != nil {
 			return fmt.Errorf("trigger %s: %w", sqlvalue.QuoteIdent(t.Name), err)
 		}

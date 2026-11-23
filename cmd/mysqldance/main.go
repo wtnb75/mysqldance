@@ -60,6 +60,12 @@ func readPasswordFile(path string, logger *slog.Logger) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
+// The values of --definer: what to do with the DEFINER clause.
+const (
+	definerStrip = "strip"
+	definerKeep  = "keep"
+)
+
 // The values of --target: the DBMS the output is written for.
 const (
 	targetMySQL    = "mysql"
@@ -249,6 +255,12 @@ quasi in the rule file). It counts only as the first argument.
                              written for (default mysql). sqlite and postgres
                              write tables, indexes and data, not views; see the
                              README
+      --definer MODE         strip (default) or keep. strip removes the DEFINER
+                             clause of views, triggers, routines and events, so
+                             they belong to the user who restores; keep writes
+                             it as the server returned it, and the restore
+                             fails (error 1449) unless that user exists. No
+                             effect with --target sqlite or postgres
       --pg-schema DB=SCHEMA  with --target postgres, name the schema a database
                              becomes (default: the database's own name). For a
                              database whose name starts with pg_, which
@@ -330,7 +342,7 @@ quasi in the rule file). It counts only as the first argument.
 	var excludeTables, pgSchemas stringList
 	var (
 		host, user, socket, passwordFile, output string
-		sslMode, sslCA, target                   string
+		sslMode, sslCA, target, definer          string
 		maskRules, saltFile                      string
 		logLevel, logFormat                      string
 		noLock, showVersion, caseSafeNames       bool
@@ -358,6 +370,7 @@ quasi in the rule file). It counts only as the first argument.
 	fs.StringVar(&output, "o", "", "")
 	fs.StringVar(&output, "output", "", "")
 	fs.StringVar(&target, "target", targetMySQL, "")
+	fs.StringVar(&definer, "definer", definerStrip, "")
 	fs.BoolVar(&caseSafeNames, "case-safe-names", false, "")
 	fs.Uint64Var(&rowsPerInsert, "rows-per-insert", 1000, "")
 	fs.IntVar(&maxInsertBytes, "max-insert-bytes", 1048576, "")
@@ -406,6 +419,8 @@ quasi in the rule file). It counts only as the first argument.
 		return usage("-o/--output is required")
 	case target != targetMySQL && target != targetSQLite && target != targetPostgres:
 		return usage("--target must be %s, %s or %s, not %q", targetMySQL, targetSQLite, targetPostgres, target)
+	case definer != definerStrip && definer != definerKeep:
+		return usage("--definer must be %s or %s, not %q", definerStrip, definerKeep, definer)
 	case fs.NArg() == 0:
 		return usage("at least one database name is required")
 	case saltFile != "" && maskRules == "":
@@ -527,6 +542,10 @@ quasi in the rule file). It counts only as the first argument.
 		opt.Writer = writer.NewPostgres(data).WithSchemaNames(schemaNames)
 	default:
 		opt.Data = data
+		// Only the MySQL writer can keep a DEFINER: SQLite and PostgreSQL write
+		// no routines, triggers or events, and convert views without the clause,
+		// so the flag does nothing there (B-111).
+		opt.KeepDefiner = definer == definerKeep
 	}
 	if maskRules != "" {
 		rules, err := mask.Load(maskRules, mask.DefaultRegistry())

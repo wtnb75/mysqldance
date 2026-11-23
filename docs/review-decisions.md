@@ -1577,6 +1577,20 @@
 - 初出: B-110
 - 再出: 0
 
+## R-220 `--definer=keep` を `--target sqlite` / `postgres` と組み合わせても、警告もエラーも出ない
+- 対象: cmd/mysqldance/main.go の `--definer` の扱い
+- 指摘: 効かない組み合わせを黙って受け入れるのは、「黙って落とさない」に反する。警告か使い方のエラーにすべき。
+- 却下の理由: B-111 の確定した仕様が「`--definer` は `--target sqlite` / `postgres` では何もしない（エラーにしない）」と決めている。出力に `DEFINER` を残す対象が無いので、落とすものも無く、黙って落とす情報は無い。`TestParseArgsDefiner` が確かめている。README に書いた。
+- 初出: B-111
+- 再出: 0
+
+## R-221 `StripTriggerDB` が `DEFINER` を常に読み飛ばし、二重引用符の `DEFINER` を読めない
+- 対象: internal/schemafile/triggers.go の skipDefiner
+- 指摘: `strip` のときも `DEFINER` を許すので検査が緩む。`ANSI_QUOTES` では `"u"@"h"` が出て、`--definer=keep` で見出しを読めずに失敗する。
+- 却下の理由: 取得の接続は `SET SESSION sql_mode = ''` と `sql_quote_show_create = 1` に固定されている（`internal/source/dialect.go`）。`SHOW CREATE` は常にバッククォートで引用し、`R-090` も同じ。`strip` では `DEFINER` は先に除かれているので、読み飛ばす分岐は通らない。読めない見出しは「黙って渡さない」ためエラーになる（`TestMySQLTriggersUnreadableHeadingIsAnError`）。
+- 初出: B-111
+- 再出: 0
+
 ## R-219 MySQL 8.x の `SHOW GRANTS` はロールの行を出さないので、ロール経由の権限を持つアカウントを誤ってエラーにする
 - 対象: internal/source/grants.go の parseGrants、readGrants
 - 指摘: `mandatory_roles` や `activate_all_roles_on_login` で有効になるロールは `GRANT role TO user` の行として出ないので、直接の権限だけを見て、権限があるのにエラーにする。
