@@ -1046,6 +1046,20 @@
   - [x] 列挙されない場合、黙って落とさずにエラーにする（再現テストを書く。トリガー・ルーチン・イベントの 3 種類）
   - [x] README の記述が挙動に合っている
 
+## B-111 [done|P3] `--definer=strip|keep` でビュー・トリガー・ルーチン・イベントの DEFINER を選べるようにする
+- 概要: （B-048 のイベントも同じ仕組みで `DEFINER` を除く。イベントには `SQL SECURITY` がなく、常に定義者の権限で動くので、復元するのが管理者だと全イベントが管理者の権限で動く。これを避けるには `keep` を使うか、B-048 で README に書いた `event_scheduler=OFF` で復元する。B-048 のセキュリティ指摘より。）今は `schemafile.StripDefiner` でビュー・トリガー・ルーチンの `DEFINER=...` を常に除く（復元先にダンプ元のユーザーがいなくても作れ、ユーザー名が出力に入らないため）。元の `DEFINER` を残したい利用者向けに、`--definer=strip`（既定）と `--definer=keep` を選べるようにする。3 種類は `internal/writer/mysql.go` の同じ仕組み（`StripDefiner`）を通るので、1 つのフラグで扱う。`keep` のときの復元は、`DEFINER` のユーザーが復元先にいることが前提（いないと `CREATE` がエラー 1449 で失敗する）。
+- 仕様:
+  - 前提: フラグは `cmd/mysqldance/main.go` で受け、`dump.Options` から `internal/writer/mysql.go` の `StripDefiner` の呼び出しに渡す。`keep` のときは `StripDefiner` を通さない。イベントも同じフラグで扱う。
+  - 前提: `keep` の統合テストは、`DEFINER` のユーザーを復元先に先に作ってから復元する。
+  - 前提: `--definer` は `--target sqlite` / `postgres` では何もしない（エラーにしない）。
+- 受け入れ条件:
+  - [x] `--definer=strip`（既定）は今と同じ出力で、`--definer=keep` はビュー・トリガー・ルーチンの `DEFINER=...` を `SHOW CREATE` のまま残す
+  - [x] 不正な値は使い方のエラー
+  - [x] `--target sqlite` / `postgres` ではビュー・トリガー・ルーチンを出さないので、`--definer` は何もしない（README に書く）
+  - [x] `keep` の出力も決定的で、`DEFINER` のユーザーがいる復元先で復元できる（統合テスト）
+  - [x] README の使い方と、`DEFINER` の記述（「Stored routines」「Triggers」「Limitations」）をフラグに合わせる
+- 結果: `--definer=strip|keep` を足した。`keep` は `dump.Options.KeepDefiner` から `writer.MySQL.WithKeepDefiner` に渡り、ビュー・ルーチン・イベント・トリガーの `DEFINER` を `SHOW CREATE` のまま残す。トリガーの見出しの解析（`StripTriggerDB`）は `DEFINER` 付きでも読めるようにした。統合テスト `TestKeepDefinerRoundTrip` が、`DEFINER` のユーザーがいる復元先で復元して `information_schema` の `DEFINER` を確かめる。
+
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 - 概要: ビューは `<db>.00-schema.sql`、ルーチンは `<db>.15-routines.sql` に出るので、復元ではビューが先に作られる。MySQL は `CREATE VIEW` の時点で、本文が呼ぶストアド関数があるかを確かめる。ストアド関数を呼ぶビューがあると、`docker-entrypoint-initdb.d` の復元がそこで止まる。ビューをルーチンの後に作る形にする。
 - 仕様:

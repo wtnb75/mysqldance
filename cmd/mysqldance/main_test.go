@@ -146,6 +146,42 @@ func TestParseArgsCaseSafeNames(t *testing.T) {
 	}
 }
 
+func TestParseArgsDefiner(t *testing.T) {
+	for _, tt := range []struct {
+		args []string
+		want bool
+	}{
+		{nil, false},
+		{[]string{"--definer=strip"}, false},
+		{[]string{"--definer=keep"}, true},
+		{[]string{"--definer", "keep"}, true},
+		// No views, triggers, routines or events are written for these targets.
+		{[]string{"--target", "sqlite", "--definer=keep"}, false},
+		{[]string{"--target", "postgres", "--definer=keep"}, false},
+	} {
+		got, err := parseArgs(append(tt.args, "-o", "out", "db1"), noEnv)
+		if err != nil {
+			t.Fatalf("%v: parseArgs: %v", tt.args, err)
+		}
+		if got.KeepDefiner != tt.want {
+			t.Errorf("%v: KeepDefiner = %v, want %v", tt.args, got.KeepDefiner, tt.want)
+		}
+	}
+}
+
+func TestParseArgsDefinerUsageError(t *testing.T) {
+	for _, v := range []string{"", "drop", "KEEP"} {
+		var stderr bytes.Buffer
+		_, err := parseArgsTo([]string{"--definer=" + v, "-o", "out", "db1"}, noEnv, &stderr)
+		if !errors.Is(err, errUsage) {
+			t.Errorf("--definer=%q: err = %v, want errUsage", v, err)
+		}
+		if !strings.Contains(stderr.String(), "--definer") {
+			t.Errorf("--definer=%q: stderr does not name the flag:\n%s", v, stderr.String())
+		}
+	}
+}
+
 func TestParseArgsPGSchema(t *testing.T) {
 	got, err := parseArgs([]string{"--target", "postgres", "--pg-schema", "pg_a=app", "--pg-schema", "pg_b=bee", "-o", "out", "pg_a", "pg_b", "c"}, noEnv)
 	if err != nil {

@@ -1,18 +1,5 @@
 # Backlog
 
-## B-111 [ready|P3] `--definer=strip|keep` でビュー・トリガー・ルーチン・イベントの DEFINER を選べるようにする
-- 概要: （B-048 のイベントも同じ仕組みで `DEFINER` を除く。イベントには `SQL SECURITY` がなく、常に定義者の権限で動くので、復元するのが管理者だと全イベントが管理者の権限で動く。これを避けるには `keep` を使うか、B-048 で README に書いた `event_scheduler=OFF` で復元する。B-048 のセキュリティ指摘より。）今は `schemafile.StripDefiner` でビュー・トリガー・ルーチンの `DEFINER=...` を常に除く（復元先にダンプ元のユーザーがいなくても作れ、ユーザー名が出力に入らないため）。元の `DEFINER` を残したい利用者向けに、`--definer=strip`（既定）と `--definer=keep` を選べるようにする。3 種類は `internal/writer/mysql.go` の同じ仕組み（`StripDefiner`）を通るので、1 つのフラグで扱う。`keep` のときの復元は、`DEFINER` のユーザーが復元先にいることが前提（いないと `CREATE` がエラー 1449 で失敗する）。
-- 仕様:
-  - 前提: フラグは `cmd/mysqldance/main.go` で受け、`dump.Options` から `internal/writer/mysql.go` の `StripDefiner` の呼び出しに渡す。`keep` のときは `StripDefiner` を通さない。イベントも同じフラグで扱う。
-  - 前提: `keep` の統合テストは、`DEFINER` のユーザーを復元先に先に作ってから復元する。
-  - 前提: `--definer` は `--target sqlite` / `postgres` では何もしない（エラーにしない）。
-- 受け入れ条件:
-  - [ ] `--definer=strip`（既定）は今と同じ出力で、`--definer=keep` はビュー・トリガー・ルーチンの `DEFINER=...` を `SHOW CREATE` のまま残す
-  - [ ] 不正な値は使い方のエラー
-  - [ ] `--target sqlite` / `postgres` ではビュー・トリガー・ルーチンを出さないので、`--definer` は何もしない（README に書く）
-  - [ ] `keep` の出力も決定的で、`DEFINER` のユーザーがいる復元先で復元できる（統合テスト）
-  - [ ] README の使い方と、`DEFINER` の記述（「Stored routines」「Triggers」「Limitations」）をフラグに合わせる
-
 ## B-112 [ready|P3] `--sql-security=keep|invoker` でビュー・ルーチンの `SQL SECURITY` を書き換えられるようにする
 - 概要: `DEFINER` を除くと、`SQL SECURITY DEFINER`（既定）のビューとルーチンは、復元したユーザーの権限で動く。復元するのが管理者だと、元の定義者より高い権限で動く。オプトインで `SQL SECURITY INVOKER` に書き換えられるようにする（`--sql-security=keep`（既定）と `--sql-security=invoker`）。書き換えるとビューの見え方など定義の意味が変わるので、既定は書き換えない。トリガーには `SQL SECURITY` がないので対象外。
 - 仕様:
@@ -688,6 +675,7 @@
 ## B-108 [done|P3] 読み取りタイムアウトで切れたときの原因を、Open の後の失敗にも示す
 ## B-109 [done|P3] 接続タイムアウトを `--jobs` の追加接続の確立にも効かせる
 ## B-110 [done|P3] 権限がなくてサーバーが列挙しないトリガー・ルーチンを黙って落とさない
+## B-111 [done|P3] `--definer=strip|keep` でビュー・トリガー・ルーチン・イベントの DEFINER を選べるようにする
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 ## B-119 [done|P2] `--exclude-table` でテーブルを出力から外せるようにする
 ## B-138 [done|P2] 同じ出力先への並行実行を、出力ディレクトリのロックで拒否する

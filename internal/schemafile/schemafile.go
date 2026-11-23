@@ -16,6 +16,8 @@ import (
 var (
 	autoIncrementOption = regexp.MustCompile(` AUTO_INCREMENT=\d+`)
 	ident               = "(?:`(?:[^`]|``)*`|[^\\s@`]+)"
+	// The clause alone, after the CREATE of a trigger heading that keeps it.
+	definerAfterCreate = regexp.MustCompile("^\\s*DEFINER=" + ident + "@" + ident)
 	// Anchored to the statement header so view bodies are never touched.
 	definerClause = regexp.MustCompile("^(CREATE (?:OR REPLACE )?(?:ALGORITHM=\\w+ )?)DEFINER=" + ident + "@" + ident + " ?")
 )

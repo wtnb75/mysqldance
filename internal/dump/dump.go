@@ -35,6 +35,10 @@ type Options struct {
 	// Data configures the default MySQL writer; it is ignored when Writer is
 	// set.
 	Data datafile.Options
+	// KeepDefiner keeps the DEFINER clause of views, routines, events and
+	// triggers in the default MySQL writer (--definer=keep). Like Data, it
+	// cannot be combined with Writer.
+	KeepDefiner bool
 	// Writer renders the dump files; nil means the MySQL writer built from Data.
 	Writer writer.Writer
 	// FileMode is the exact permission of the output files; 0 means 0666
@@ -125,9 +129,9 @@ func Run(ctx context.Context, opt Options) (err error) {
 		opt.Log = slog.New(slog.DiscardHandler)
 	}
 	if opt.Writer == nil {
-		opt.Writer = writer.NewMySQL(opt.Data)
-	} else if opt.Data != (datafile.Options{}) {
-		return errors.New("Options.Data configures the default writer and cannot be combined with Options.Writer")
+		opt.Writer = writer.NewMySQL(opt.Data).WithKeepDefiner(opt.KeepDefiner)
+	} else if opt.Data != (datafile.Options{}) || opt.KeepDefiner {
+		return errors.New("Options.Data and Options.KeepDefiner configure the default writer and cannot be combined with Options.Writer")
 	}
 	// One connection and one transaction for all databases, so they all
 	// come from the same point in time. Open comes before anything touches the

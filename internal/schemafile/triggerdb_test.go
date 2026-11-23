@@ -18,6 +18,8 @@ func TestStripTriggerDB(t *testing.T) {
 		{"dot inside a quoted name", "CREATE TRIGGER `qexp`.`a.b` BEFORE INSERT ON `qexp`.`t.u`" + tail, "CREATE TRIGGER `a.b` BEFORE INSERT ON `t.u`" + tail},
 		{"ANSI_QUOTES names", `CREATE TRIGGER "qexp"."trg" AFTER UPDATE ON "qexp"."t"` + tail, `CREATE TRIGGER "trg" AFTER UPDATE ON "t"` + tail},
 		{"dollar and non-ASCII", "CREATE TRIGGER qexp.t$1 BEFORE INSERT ON qexp.表" + tail, "CREATE TRIGGER t$1 BEFORE INSERT ON 表" + tail},
+		// --definer=keep leaves the clause in the heading (B-111).
+		{"definer kept", "CREATE DEFINER=`u`@`%` TRIGGER qexp.trg BEFORE INSERT ON qexp.t" + tail, "CREATE DEFINER=`u`@`%` TRIGGER trg BEFORE INSERT ON t" + tail},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
