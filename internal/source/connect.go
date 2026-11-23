@@ -44,9 +44,10 @@ type Config struct {
 	// seconds. Zero leaves the server's lock_wait_timeout in force (no limit of
 	// the tool's own); a negative value is an error.
 	LockTimeout time.Duration
-	// ConnectTimeout bounds making the first connection: the TCP connect, the
-	// server's greeting and the login. Zero sets no limit of its own (the TCP
-	// connect is left to the operating system); a negative value is an error.
+	// ConnectTimeout bounds making each connection (the first one, and each
+	// that Jobs adds): the TCP connect, the server's greeting and the login.
+	// Zero sets no limit of its own (the TCP connect is left to the operating
+	// system); a negative value is an error.
 	ConnectTimeout time.Duration
 	// ReadTimeout bounds each wait for the server's response, so a server that
 	// stops answering fails the dump instead of stalling it. It is not a limit
@@ -191,11 +192,11 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 	// other sessions wait.
 	var excluded excludeSet
 	if err == nil {
-		excluded, err = resolveExcludes(ctx, sdb, excludeSpecs)
+		excluded, err = resolveExcludes(ctx, sdb, excludeSpecs, cfg.ConnectTimeout)
 	}
 	var s *Snapshot
 	if err == nil {
-		s, err = start(ctx, sdb, dbs, cfg.NoLock, cfg.Jobs, cfg.LockTimeout, lg)
+		s, err = start(ctx, sdb, dbs, cfg.NoLock, cfg.Jobs, cfg.LockTimeout, cfg.ConnectTimeout, lg)
 	}
 	if err == nil {
 		// Every reader gets the settings, as with the sort ones, so that any of
@@ -259,7 +260,29 @@ func pingWithin(ctx context.Context, db *sql.DB, timeout time.Duration) error {
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	err := db.PingContext(cctx)
+	return connectTimeoutError(ctx, cctx, timeout, db.PingContext(cctx))
+}
+
+// connWithin takes a connection from the pool, dialing a new one when none is
+// idle, and gives up after timeout like pingWithin, so the connections that
+// --jobs adds cannot hang on a server that stopped answering. Zero means no
+// limit. The deadline covers only the dial, greeting and login: the returned
+// Conn is not tied to it, and later statements run under ctx.
+func connWithin(ctx context.Context, db *sql.DB, timeout time.Duration) (*sql.Conn, error) {
+	if timeout <= 0 {
+		return db.Conn(ctx)
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	c, err := db.Conn(cctx)
+	return c, connectTimeoutError(ctx, cctx, timeout, err)
+}
+
+// connectTimeoutError names the connect timeout in err when cctx, the context
+// with that timeout, ran out while the parent ctx did not. It does not test
+// for context.DeadlineExceeded on purpose: the driver can report a handshake
+// cut off by the deadline as ErrInvalidConn instead (review ledger R-138).
+func connectTimeoutError(ctx, cctx context.Context, timeout time.Duration, err error) error {
 	if err != nil && cctx.Err() != nil && ctx.Err() == nil {
 		return fmt.Errorf("connect: no connection within the connect timeout of %v: %w", timeout, err)
 	}
@@ -351,11 +374,11 @@ func lockWaitSeconds(d time.Duration) int64 {
 }
 
 // start makes the Snapshot; lg must not be nil.
-func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int, lockTimeout time.Duration, lg *slog.Logger) (*Snapshot, error) {
+func start(ctx context.Context, sdb *sql.DB, dbs []string, noLock bool, jobs int, lockTimeout, connectTimeout time.Duration, lg *slog.Logger) (*Snapshot, error) {
 	if jobs > 1 {
-		return startParallel(ctx, sdb, dbs, jobs, lockTimeout, lg)
+		return startParallel(ctx, sdb, dbs, jobs, lockTimeout, connectTimeout, lg)
 	}
-	conn, err := sdb.Conn(ctx)
+	conn, err := connWithin(ctx, sdb, connectTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +447,7 @@ const lockPrivilegeNote = "the FLUSH_TABLES privilege also works on MySQL 8.0 an
 //
 // On failure every connection is returned to the pool, so the caller's
 // sdb.Close ends the sessions, the transactions and the lock.
-func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int, lockTimeout time.Duration, lg *slog.Logger) (_ *Snapshot, err error) {
+func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int, lockTimeout, connectTimeout time.Duration, lg *slog.Logger) (_ *Snapshot, err error) {
 	var conns []*sql.Conn
 	defer func() {
 		if err != nil {
@@ -434,7 +457,7 @@ func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int, loc
 		}
 	}()
 	open := func() (*sql.Conn, error) {
-		c, err := sdb.Conn(ctx)
+		c, err := connWithin(ctx, sdb, connectTimeout)
 		if err == nil {
 			conns = append(conns, c)
 		}
