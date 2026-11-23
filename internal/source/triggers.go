@@ -15,7 +15,8 @@ import (
 // server runs them in (the order they were created in). Triggers of the same
 // table, timing and event keep that relative order, so a restore that creates
 // them in this order runs them as the source does; the rest is name order.
-func (s *Snapshot) Triggers(ctx context.Context) ([]schemafile.Trigger, error) {
+func (s *Snapshot) Triggers(ctx context.Context) (_ []schemafile.Trigger, err error) {
+	defer func() { err = s.hint(err) }()
 	rows, err := s.conn.QueryContext(ctx,
 		"SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE, ACTION_TIMING, EVENT_MANIPULATION, ACTION_ORDER"+
 			" FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ?", s.name)

@@ -30,7 +30,7 @@ func largeTableRowsOrDefault(n int64) int64 {
 func (s *Snapshot) CreateDatabase(ctx context.Context) (string, error) {
 	var name, create string
 	err := s.conn.QueryRowContext(ctx, "SHOW CREATE DATABASE "+sqlvalue.QuoteIdent(s.name)).Scan(&name, &create)
-	return create, err
+	return create, s.hint(err)
 }
 
 type tableRow struct {
@@ -195,7 +195,8 @@ type Warning struct {
 // Tables returns the base tables sorted by name, and the warnings found while
 // reading them: tables not using InnoDB, and tables whose row estimate
 // without a key exceeds Config.LargeTableRows. Warnings follow table name order.
-func (s *Snapshot) Tables(ctx context.Context) ([]TableInfo, []Warning, error) {
+func (s *Snapshot) Tables(ctx context.Context) (_ []TableInfo, _ []Warning, err error) {
+	defer func() { err = s.hint(err) }()
 	list, err := s.listTables(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -414,7 +415,8 @@ func (s *Snapshot) showCreate(ctx context.Context, kind, name string) (string, e
 // statements and the other databases each reads (View.Reads), and deps[v]: the
 // other views of this database that v references, sorted. Views without such
 // references have no entry.
-func (s *Snapshot) Views(ctx context.Context) ([]schemafile.View, map[string][]string, error) {
+func (s *Snapshot) Views(ctx context.Context) (_ []schemafile.View, _ map[string][]string, err error) {
+	defer func() { err = s.hint(err) }()
 	list, err := s.listTables(ctx)
 	if err != nil {
 		return nil, nil, err

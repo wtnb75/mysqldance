@@ -205,18 +205,48 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 			r.sortMemory, r.sortFile = cfg.SortMemory, cfg.SortFile
 			r.largeTableRows = largeRows
 			r.excluded = excluded
+			r.readTimeout = cfg.ReadTimeout
 		}
 	}
 	if err != nil {
 		_ = sdb.Close()
-		// The driver reports a read timeout only as "invalid connection", and
-		// cannot tell it from a connection the server dropped, hence "may".
-		if cfg.ReadTimeout > 0 && errors.Is(err, mysql.ErrInvalidConn) {
-			err = fmt.Errorf("%w (the server may not have answered within the read timeout of %v)", err, cfg.ReadTimeout)
-		}
-		return nil, err
+		return nil, withReadTimeoutHint(err, cfg.ReadTimeout)
 	}
 	return s, nil
+}
+
+// readTimeoutError is a connection error with the read timeout that may have
+// caused it. Its type tells withReadTimeoutHint the hint is already there.
+type readTimeoutError struct {
+	err     error
+	timeout time.Duration
+}
+
+func (e *readTimeoutError) Error() string {
+	return fmt.Sprintf("%v (the server may not have answered within the read timeout of %v)", e.err, e.timeout)
+}
+
+func (e *readTimeoutError) Unwrap() error { return e.err }
+
+// withReadTimeoutHint adds the read timeout to a connection error. The driver
+// reports a read timeout only as "invalid connection", and cannot tell it from
+// a connection the server dropped, hence "may" (review ledger R-134). It adds
+// nothing when no read timeout is set (timeout is 0), when the error is not a
+// connection error, or when the hint is already there, so the layers of one
+// call can each apply it.
+func withReadTimeoutHint(err error, timeout time.Duration) error {
+	var rt *readTimeoutError
+	if err == nil || timeout <= 0 || !errors.Is(err, mysql.ErrInvalidConn) || errors.As(err, &rt) {
+		return err
+	}
+	return &readTimeoutError{err: err, timeout: timeout}
+}
+
+// hint is withReadTimeoutHint for the read timeout of this Snapshot. Methods
+// that read from the server apply it to their error, so a failure after Open
+// points at the same cause as one in Open.
+func (s *Snapshot) hint(err error) error {
+	return withReadTimeoutHint(err, s.readTimeout)
 }
 
 // pingWithin opens the first connection (dial, greeting and login) and gives up
@@ -486,7 +516,7 @@ func startParallel(ctx context.Context, sdb *sql.DB, dbs []string, jobs int, loc
 func (s *Snapshot) Use(ctx context.Context, db string) error {
 	for _, r := range s.Readers() {
 		if err := r.use(ctx, db); err != nil {
-			return err
+			return r.hint(err)
 		}
 	}
 	return nil

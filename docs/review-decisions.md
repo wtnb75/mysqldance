@@ -984,7 +984,8 @@
 - 指摘: `KILL`・`wait_timeout`・再起動でもドライバは `ErrInvalidConn` を返すので、タイムアウトが起きていないのに「read timeout 内に応答しなかったかも」と出て、誤解させる。
 - 却下の理由: ドライバは読み取りタイムアウトを `ErrInvalidConn` にまとめて返し、原因を区別できない（ログに `i/o timeout` を出すだけ）。ヒントは「may」と留保し、`--read-timeout` を指定したときだけ付く。何も付けないと、原因の分からない `invalid connection` だけが残る（受け入れ条件「指定時間で失敗する」を使い手が確かめられない）。経過時間での推定は、同じ条件で誤る上に脆い。
 - 初出: B-015
-- 再出: 1（接続の確立中に起きた `ErrInvalidConn` へのヒントとして。Open のコメントに「may」の理由は書いてある）
+- 再出: 3（B-108 の 2 回目のレビューでも、範囲を `Open` の後の全ての読み出しに広げたことへの同じ指摘。検討済みで、他の原因（`KILL`・`wait_timeout`）でも付くが「may」で留保する。経過時間の測定は、読み出しごとに時計を持つ割に、`wait_timeout` との区別にならない。）
+- 再出（内訳）: 2（接続の確立中に起きた `ErrInvalidConn` へのヒントとして。Open のコメントに「may」の理由は書いてある。B-108: `Open` の後の読み出しにも同じヒントを付けたときの同じ指摘。`internal/source/connect.go` の `withReadTimeoutHint` のコメントに R-134 を書いた）
 
 ## R-135 `--read-timeout` が `--lock-timeout` より短い組み合わせを起動時に拒否・警告すべき
 - 対象: cmd/mysqldance/main.go の parseArgsTo（`--read-timeout` の検査）

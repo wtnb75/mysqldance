@@ -71,6 +71,8 @@ type Snapshot struct {
 	// sortMemory and sortFile are Config.SortMemory and Config.SortFile.
 	sortMemory int64
 	sortFile   extsort.NewFile
+	// readTimeout is Config.ReadTimeout; the errors of reads name it (see hint).
+	readTimeout time.Duration
 	// largeTableRows is Config.LargeTableRows with its default applied.
 	largeTableRows int64
 	// excluded is the tables of Config.ExcludeTables, resolved by Open; it is

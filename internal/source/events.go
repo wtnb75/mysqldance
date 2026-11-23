@@ -10,7 +10,8 @@ import (
 // Events returns the events of the database with their SHOW CREATE EVENT
 // statements, sql_mode and time zone, by name in byte order. An event does not
 // depend on another, so the order is only there to be the same every run.
-func (s *Snapshot) Events(ctx context.Context) ([]schemafile.Event, error) {
+func (s *Snapshot) Events(ctx context.Context) (_ []schemafile.Event, err error) {
+	defer func() { err = s.hint(err) }()
 	rows, err := s.conn.QueryContext(ctx,
 		"SELECT EVENT_NAME FROM information_schema.EVENTS WHERE EVENT_SCHEMA = ?", s.name)
 	if err != nil {

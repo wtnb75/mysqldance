@@ -75,7 +75,8 @@ type ForeignKey struct {
 // Defs returns the structure of every base table of the current database,
 // keyed by table name. It reads the catalog only; Tables and Rows do not
 // depend on it.
-func (s *Snapshot) Defs(ctx context.Context) (map[string]TableDef, error) {
+func (s *Snapshot) Defs(ctx context.Context) (_ map[string]TableDef, err error) {
+	defer func() { err = s.hint(err) }()
 	list, err := s.listTables(ctx)
 	if err != nil {
 		return nil, err

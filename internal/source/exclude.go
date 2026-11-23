@@ -106,7 +106,8 @@ func (s *Snapshot) excludes(table string) bool {
 // may fail unless the table exists. A view is found by the server's own list of
 // what it reads (MySQL 8.0.13+) or else by a text search of its definition, and
 // a view of another database that reads a left-out table is not found.
-func (s *Snapshot) ExcludedRefs(ctx context.Context) ([]Warning, error) {
+func (s *Snapshot) ExcludedRefs(ctx context.Context) (_ []Warning, err error) {
+	defer func() { err = s.hint(err) }()
 	if len(s.excluded) == 0 {
 		return nil, nil
 	}
