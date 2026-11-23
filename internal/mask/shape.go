@@ -37,6 +37,7 @@ var hashKeepShapeTransform = Transform{
 	BreaksKeys:    true,
 	UniqueChecked: true,
 	Build:         buildHashKeepShape,
+	BuildLeaf:     buildShapeLeaf,
 }
 
 // The ranges the characters of the non-ASCII classes are drawn from. Each holds
@@ -96,6 +97,26 @@ func buildHashKeepShape(c BuildContext) (Func, error) {
 			return sqlvalue.Value{}, fmt.Errorf("column %q: %w", name, err)
 		}
 		return sqlvalue.NewValue(in.Value.Type(), out, false), nil
+	}, nil
+}
+
+// buildShapeLeaf applies hash_keep_shape to the JSON strings a path reaches. The
+// same string gives the same output as in a column (the key is the one of the
+// transform, not of the column or the path).
+func buildShapeLeaf(c BuildContext) (LeafFunc, error) {
+	fn, err := buildHashKeepShape(c)
+	if err != nil {
+		return nil, err
+	}
+	return func(in Leaf) (Leaf, error) {
+		if in.Kind != LeafString {
+			return Leaf{}, fmt.Errorf("hash_keep_shape can only be used on a JSON string, but the value is %s", in.Kind)
+		}
+		v, err := fn(Input{Value: sqlvalue.NewValue("VARCHAR", in.Text, false)})
+		if err != nil {
+			return Leaf{}, err
+		}
+		return Leaf{Kind: LeafString, Text: v.Bytes()}, nil
 	}, nil
 }
 

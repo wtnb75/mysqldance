@@ -42,13 +42,15 @@ var fixedTransform = Transform{
 	Version:    1,
 	BreaksKeys: true,
 	Build:      buildFixed,
+	BuildLeaf:  buildFixedLeaf,
 }
 
 // nullifyTransform replaces every value with NULL; it applies to every type.
 var nullifyTransform = Transform{
-	Name:    "nullify",
-	Version: 1,
-	Build:   buildNullify,
+	Name:      "nullify",
+	Version:   1,
+	Build:     buildNullify,
+	BuildLeaf: buildNullifyLeaf,
 }
 
 // keepTransform writes the value as it is. Without --strict-columns it does the
@@ -66,6 +68,42 @@ func buildNullify(c BuildContext) (Func, error) {
 	}
 	return func(in Input) (sqlvalue.Value, error) {
 		return sqlvalue.NewValue(in.Value.Type(), nil, true), nil
+	}, nil
+}
+
+// buildNullifyLeaf replaces the value a JSON path reaches with null, whatever it
+// is (a container too).
+func buildNullifyLeaf(BuildContext) (LeafFunc, error) {
+	return func(Leaf) (Leaf, error) { return Leaf{Kind: LeafNull}, nil }, nil
+}
+
+// buildFixedLeaf writes the value of the rule in place of a JSON string, number
+// or boolean of the same type. Which type the leaf has is known only when a row
+// is read, so a leaf of another type is an error then; the number is checked
+// now, because a number that JSON cannot write is wrong for every row.
+func buildFixedLeaf(c BuildContext) (LeafFunc, error) {
+	sc, ok := c.Args["value"].(Scalar)
+	if !ok {
+		return nil, fmt.Errorf("transform %q needs argument %q", "fixed", "value")
+	}
+	want := LeafString
+	switch sc.Kind {
+	case ScalarInt, ScalarFloat:
+		want = LeafNumber
+		// A rule file's number has at most maxScalarText characters, so it fits a
+		// double and only the grammar needs checking.
+		if end, ok := scanNumber([]byte(sc.Text), 0); !ok || end != len(sc.Text) {
+			return nil, fmt.Errorf("the value of fixed cannot be written as a JSON number (a number has digits before and after a decimal point, and no leading +)")
+		}
+	case ScalarBool:
+		want = LeafBool
+	}
+	text := []byte(sc.Text)
+	return func(in Leaf) (Leaf, error) {
+		if in.Kind != want {
+			return Leaf{}, fmt.Errorf("the value of fixed does not fit: it is %s, but the JSON value is %s", want, in.Kind)
+		}
+		return Leaf{Kind: want, Text: text}, nil
 	}, nil
 }
 

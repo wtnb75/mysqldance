@@ -268,6 +268,12 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 			continue
 		}
 		if len(e.Rule.Paths) > 0 {
+			fn, err := buildJSONPaths(e, *col, reg, salt)
+			if err != nil {
+				bad("%v", err)
+				continue
+			}
+			plan.add(dbName, tbl.Name, columnOf(tableColumns(tbl), col.Name), e.Spec, fn)
 			continue
 		}
 		t, _ := reg.Lookup(e.Rule.Use)
@@ -309,9 +315,6 @@ func checkUnsupported(r Rule) error {
 		if k.val != "" {
 			keys = append(keys, k.name)
 		}
-	}
-	if len(r.Paths) > 0 {
-		keys = append(keys, "paths")
 	}
 	if len(keys) == 0 {
 		return nil
@@ -452,15 +455,24 @@ func containsFold(list []string, s string) bool {
 	return slices.ContainsFunc(list, func(x string) bool { return strings.EqualFold(x, s) })
 }
 
+// keyOf derives the HMAC key of a transform that needs a salt, and returns nil
+// for one that does not.
+func keyOf(t Transform, salt *Salt) ([]byte, error) {
+	if !t.NeedsSalt {
+		return nil, nil
+	}
+	if salt == nil {
+		return nil, fmt.Errorf("transform %q needs a salt: pass --salt-file or set %s (there is no default salt)", t.Name, SaltEnv)
+	}
+	return DeriveKey(*salt, t.Name, t.Version), nil
+}
+
 // buildRule prepares the transform of a rule for its column. A transform that
 // is registered without a Build (tests) is checked no further.
 func buildRule(e Entry, t Transform, col Column, cols []Column, salt *Salt) (Func, error) {
-	var key []byte
-	if t.NeedsSalt {
-		if salt == nil {
-			return nil, fmt.Errorf("transform %q needs a salt: pass --salt-file or set %s (there is no default salt)", t.Name, SaltEnv)
-		}
-		key = DeriveKey(*salt, t.Name, t.Version)
+	key, err := keyOf(t, salt)
+	if err != nil {
+		return nil, err
 	}
 	if t.Build == nil {
 		return nil, nil

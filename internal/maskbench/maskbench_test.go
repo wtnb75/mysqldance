@@ -1,6 +1,7 @@
 // Package maskbench measures the cost of the per-cell transformations of data
-// masking (B-201). The string transform is the real hash_keep_shape (B-167);
-// the JSON rewrite is still a stand-in (B-169). It holds only benchmarks: they
+// masking (B-201). The string transform is the real hash_keep_shape (B-167) and
+// the JSON rewrite the real one of a path rule (B-169); the encoding/json round
+// trip B-201 first measured is kept as a baseline. It holds only benchmarks: they
 // run with `go test -bench`; `task test` compiles them but does not run them.
 // They call the product's mask and sqlvalue packages and change nothing in them.
 //
@@ -158,9 +159,12 @@ func parseJSON(doc []byte) (map[string]any, error) {
 	return root, err
 }
 
-// rewriteJSON parses (numbers kept as the text that was read), rewrites
-// user.email and writes the document back out.
-func rewriteJSON(s *shaper, doc []byte) ([]byte, error) {
+// rewriteJSONStdlib is the stand-in B-201 first measured, kept as the baseline
+// the real rewrite is compared with: parse with encoding/json (numbers kept as
+// the text that was read), rewrite user.email and write the document back. It
+// changes the bytes it does not rewrite (the order of the keys, the spaces, the
+// escapes), which is why the product does not do it.
+func rewriteJSONStdlib(s *shaper, doc []byte) ([]byte, error) {
 	root, err := parseJSON(doc)
 	if err != nil {
 		return nil, err
@@ -172,23 +176,81 @@ func rewriteJSON(s *shaper, doc []byte) ([]byte, error) {
 	return json.Marshal(root)
 }
 
-// BenchmarkJSON is (b): parse, rewrite one path, write back.
+// jsonMasker is the real rewrite of a JSON column (B-169): the rule
+// "$.user.email: hash_keep_shape" for one column, resolved the way a dump does
+// and applied to a row. It is safe for several goroutines, as in a dump.
+type jsonMasker struct {
+	apply func(row []sqlvalue.Value) error
+}
+
+func newJSONMasker() *jsonMasker {
+	reg := mask.DefaultRegistry()
+	rules, err := mask.Parse([]byte("version: 1\nrules:\n  bench.t.doc:\n    paths:\n      $.user.email:\n        use: hash_keep_shape\n"), reg)
+	if err != nil {
+		panic(err)
+	}
+	cat := mask.Catalog{Databases: map[string][]mask.CatalogTable{"bench": {{
+		Name:    "t",
+		Columns: []mask.CatalogColumn{{Name: "doc", TypeName: "JSON", ColumnType: "json", DataType: "json", Nullable: true}},
+	}}}}
+	salt, err := mask.LoadSalt("", func(string) string { return string(key) })
+	if err != nil {
+		panic(err)
+	}
+	plan, err := rules.Resolve(cat, reg, &salt)
+	if err != nil {
+		panic(err)
+	}
+	apply, err := plan.Table("bench", "t", []sqlvalue.Column{{Name: "doc", TypeName: "JSON"}})
+	if err != nil {
+		panic(err)
+	}
+	return &jsonMasker{apply: apply}
+}
+
+// rewrite masks user.email of the document and keeps every other byte.
+func (m *jsonMasker) rewrite(doc []byte) ([]byte, error) {
+	row := []sqlvalue.Value{sqlvalue.NewValue("JSON", doc, false)}
+	if err := m.apply(row); err != nil {
+		return nil, err
+	}
+	return row[0].Bytes(), nil
+}
+
+// BenchmarkJSON is (b): the real rewrite of one path, against the encoding/json
+// round trip and a parse alone.
 func BenchmarkJSON(b *testing.B) {
 	for _, sz := range jsonSizes {
 		doc := jsonDoc(sz.n)
-		s := newShaper()
-		out, err := rewriteJSON(s, doc)
+		m := newJSONMasker()
+		out, err := m.rewrite(doc)
 		if err != nil {
 			b.Fatal(err)
 		}
-		if !bytes.Contains(out, []byte("12345678901234567890.123456789")) {
-			b.Fatal("number was not kept as read")
+		// Only the email changes: every other byte, the numbers included, is as read.
+		const email = `"taro.yamada@example.com"`
+		before, after, _ := bytes.Cut(doc, []byte(email))
+		if !json.Valid(out) || !bytes.HasPrefix(out, before) || !bytes.HasSuffix(out, after) || len(out) != len(doc) || bytes.Equal(out, doc) {
+			b.Fatal("the rewrite changed more than the email, or nothing")
+		}
+		s := newShaper()
+		if _, err := rewriteJSONStdlib(s, doc); err != nil {
+			b.Fatal(err)
 		}
 		b.Run(sz.name+"/full", func(b *testing.B) {
 			b.SetBytes(int64(len(doc)))
 			b.ReportAllocs()
 			for b.Loop() {
-				if _, err := rewriteJSON(s, doc); err != nil {
+				if _, err := m.rewrite(doc); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run(sz.name+"/stdlib-roundtrip", func(b *testing.B) {
+			b.SetBytes(int64(len(doc)))
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := rewriteJSONStdlib(s, doc); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -209,13 +271,15 @@ func BenchmarkJSON(b *testing.B) {
 // ns/op is wall time per cell, so a perfect scale-out divides it by the count.
 func BenchmarkParallel(b *testing.B) {
 	doc := jsonDoc(2 << 10)
+	jm := newJSONMasker()
 	v := cell("ascii", 32)
 	cases := []struct {
 		name string
 		work func(s *shaper) error
 	}{
 		{"shape-ascii-32B", func(s *shaper) error { s.shape(v); return nil }},
-		{"json-2KB", func(s *shaper) error { _, err := rewriteJSON(s, doc); return err }},
+		{"json-2KB", func(*shaper) error { _, err := jm.rewrite(doc); return err }},
+		{"json-2KB-stdlib", func(s *shaper) error { _, err := rewriteJSONStdlib(s, doc); return err }},
 	}
 	for _, c := range cases {
 		for _, procs := range []int{1, 2, 4, 8} {
