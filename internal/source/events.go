@@ -12,6 +12,9 @@ import (
 // depend on another, so the order is only there to be the same every run.
 func (s *Snapshot) Events(ctx context.Context) (_ []schemafile.Event, err error) {
 	defer func() { err = s.hint(err) }()
+	if err := s.requirePrivilege(ctx, "events", "EVENT"); err != nil {
+		return nil, err
+	}
 	rows, err := s.conn.QueryContext(ctx,
 		"SELECT EVENT_NAME FROM information_schema.EVENTS WHERE EVENT_SCHEMA = ?", s.name)
 	if err != nil {

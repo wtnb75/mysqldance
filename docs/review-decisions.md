@@ -1562,3 +1562,24 @@
 - 却下の理由: 再現しない。`--read-timeout 1m --connect-timeout 300ms` で応答しないサーバーに接続すると、エラーは接続タイムアウトだけを挙げ、読み取りタイムアウトは挙げない（TestOpenConnectTimeoutDoesNotBlameReadTimeout）。期限で切れた接続のエラーは `ErrInvalidConn` ではない。
 - 初出: B-109
 - 再出: 0
+
+## R-217 権限の DB 名を、`lower_case_table_names` に応じて大文字小文字を区別せずに比べる
+- 対象: internal/source/grants.go の matchDBPattern、covers
+- 指摘: `lower_case_table_names` が 1 / 2 のサーバーでは、権限の DB 名は大文字小文字を区別しないので、`GRANT TRIGGER ON `MyDB`.*` のアカウントが `mydb` のダンプで誤ってエラーになる。
+- 却下の理由: 区別しない比べ方に変えると、`lower_case_table_names=0`（大文字小文字を区別するサーバー）で `MyDB` への権限を `mydb` の権限と見なし、権限がないのに検査を通す。通すと、見えないトリガー・ルーチン・イベントが黙って落ちる。B-110 は、誤ってエラーにするより黙って落とす方を避ける（不変条件「黙って落とさない」）。`lower_case_table_names` が 1 のサーバーは、権限の DB 名も小文字で保存するので、`SHOW GRANTS` の綴りとダンプ中の DB の綴りは、小文字に折りたたまれた同じものになる。2（macOS）の環境で綴りが違う権限は、エラーの文言どおり DB 単位で付け直せる。設計書 11 節の B-110 に、権限を数える範囲を書いた。
+- 初出: B-110
+- 再出: 0
+
+## R-218 表・ルーチン単位の権限だけのアカウントを誤ってエラーにする
+- 対象: internal/source/grants.go の parseScope、covers、requirePrivilege
+- 指摘: `GRANT TRIGGER ON db.t` を全表に付けたアカウントや、`GRANT EXECUTE ON PROCEDURE db.p` を全ルーチンに付けたアカウントは、サーバーが全部を列挙するのに、検査でエラーになる。コメントの「足りないと確かめられたときだけ言う」と食い違う。
+- 却下の理由: B-110 の確定した仕様が、列挙されない物を黙って落とさずエラーにすると決めている。表単位の権限は、あとで作られた表のトリガーや、権限のない表のトリガーを見せないので、「全部を見られる」と言えない。見えない物の有無は分からない（実機で、権限がないことと無いことは区別できない。設計書 11 節）ので、「全部見える」と確かめられない限りエラーにする。コメントの「確かめられたとき」は、`SHOW GRANTS` を読めない、形が分からない、ロールがあるときに飛ばす範囲の話で、読めた権限が足りないときは、足りないと確かめられている。DB 単位で付け直せばよく、README の「Privileges for listing objects」と設計書 11 節に書いてある。
+- 初出: B-110
+- 再出: 0
+
+## R-219 MySQL 8.x の `SHOW GRANTS` はロールの行を出さないので、ロール経由の権限を持つアカウントを誤ってエラーにする
+- 対象: internal/source/grants.go の parseGrants、readGrants
+- 指摘: `mandatory_roles` や `activate_all_roles_on_login` で有効になるロールは `GRANT role TO user` の行として出ないので、直接の権限だけを見て、権限があるのにエラーにする。
+- 却下の理由: 再現しない。MySQL 8.4 の実機で、`mandatory_roles` のロール（`GRANT TRIGGER ON *.*`）を、`activate_all_roles_on_login` が OFF のときも ON のときも、`SHOW GRANTS` は `GRANT mr TO mu` の行を出した（ON のときは `GRANT TRIGGER ON *.*` を畳み込んだ上で、その行も出す）。ロールの行があると `parseGrants` は「不明」にして検査を飛ばす（`TestPrivilegesThroughARole`、設計書 11 節の B-110）。
+- 初出: B-110
+- 再出: 0

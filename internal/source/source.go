@@ -78,6 +78,11 @@ type Snapshot struct {
 	// excluded is the tables of Config.ExcludeTables, resolved by Open; it is
 	// read only, and shared by every reader.
 	excluded excludeSet
+	// grants is the SHOW GRANTS of the account, read once by readGrants;
+	// grantsOK is false when it could not be read or understood.
+	grants     grantSet
+	grantsOK   bool
+	grantsRead bool
 }
 
 // Readers returns the connections that can read rows in parallel: the
