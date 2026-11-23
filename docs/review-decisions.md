@@ -1013,7 +1013,7 @@
 - 指摘: 認証の拒否が期限とほぼ同時に起きると「接続タイムアウト」と報告される。`errors.Is(err, context.DeadlineExceeded)` で判定すべき。
 - 却下の理由: 期限と同じミリ秒に別の失敗が重なる偶然が必要で、起きても 1 回の誤った文言に留まる（元のエラーは `%w` で残る）。ドライバは接続の確立中に ctx が切れると、ctx のエラーではなく `ErrInvalidConn` を返しうるので、`errors.Is` に変えると本物のタイムアウトを見逃す恐れがある（TestOpenConnectTimeoutCoversHandshake が見ているのは、この経路の文言）。
 - 初出: B-015
-- 再出: 0
+- 再出: 2
 
 ## R-139 `mc.Timeout` / `mc.ReadTimeout` を無条件に代入するので、ドライバの既存の設定を 0 で上書きする
 - 対象: internal/source/source.go の Open（`mc.Timeout, mc.ReadTimeout = ...`）
@@ -1554,4 +1554,11 @@
 - 指摘: `paths = ['\.pdf$'], regexes = ['^test']` の `OR` の許可リストで `paths` を捨てると、`^test` が全ての列で許可するので、許可が広がる。
 - 却下の理由: `OR` では、`regexes` は `paths` と無関係に、元から全ての列で許可している。`paths` を捨てると、列名への許可が消えるだけで、許可は増えない。`AND` のときだけ、`paths` を捨てると許可が広がるので、許可リストごと捨てると決めた。
 - 初出: B-206
+- 再出: 0
+
+## R-216 接続タイムアウトで切れたエラーに、読み取りタイムアウトのヒントも重なる
+- 対象: internal/source/connect.go の connectTimeoutError と withReadTimeoutHint
+- 指摘: 接続タイムアウトのエラーはドライバの `ErrInvalidConn` を包みうるので、`--read-timeout` があると「読み取りタイムアウトかもしれない」が重なり、別のフラグを指す。
+- 却下の理由: 再現しない。`--read-timeout 1m --connect-timeout 300ms` で応答しないサーバーに接続すると、エラーは接続タイムアウトだけを挙げ、読み取りタイムアウトは挙げない（TestOpenConnectTimeoutDoesNotBlameReadTimeout）。期限で切れた接続のエラーは `ErrInvalidConn` ではない。
+- 初出: B-109
 - 再出: 0

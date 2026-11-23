@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"mysqldance/internal/sqlvalue"
 )
@@ -55,11 +56,11 @@ func checkExcludeSpecs(specs, dbs []string) ([][2]string, error) {
 // catalog has it, so the later comparison follows the server's rules for the
 // case of names (the same comparison as the catalog queries). A table that does
 // not exist and a view are errors: a mistyped name must not pass silently.
-func resolveExcludes(ctx context.Context, sdb *sql.DB, specs [][2]string) (excludeSet, error) {
+func resolveExcludes(ctx context.Context, sdb *sql.DB, specs [][2]string, connectTimeout time.Duration) (excludeSet, error) {
 	if len(specs) == 0 {
 		return nil, nil
 	}
-	conn, err := sdb.Conn(ctx)
+	conn, err := connWithin(ctx, sdb, connectTimeout)
 	if err != nil {
 		return nil, err
 	}
