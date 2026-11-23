@@ -992,6 +992,18 @@
   - [x] 実機（8.0 と 8.4）で、`FLUSH_TABLES` だけを持つアカウントが `--jobs 2` と、非 InnoDB の表のあるダンプ（ロックあり）を実行できることを統合テストで確かめる
   - [x] エラー文言、`--jobs` のヘルプ、README の該当 2 か所が、`RELOAD`（8.0 以降は `FLUSH_TABLES` でも可。5.7 と MariaDB は `RELOAD`）と書く。5.7 と MariaDB で `FLUSH_TABLES` が通らないことを確かめて書く
 
+## B-105 [done|P3] `latin1` の列に入った Shift_JIS / EUC-JP など UTF-8 以外の文字コードの扱いを調べる
+- 依存: B-081
+- 概要: B-081 の案（設計書 14 節）は、`latin1` の列に入った UTF-8 だけを扱う。日本語の古いシステムでは、`cp932` / `EUC-JP` のバイト列を `latin1` の列に入れたものもある（検出の集計では「不正」に分類される）。`--latin1-as-utf8` を文字コードの指定（例: `SPEC=cp932`）に広げる案を、実機で確かめて設計書に書く。コードは変えない。
+- 仕様:
+  - 前提: 結果は設計書（`docs/superpowers/specs/2026-11-09-mysqldance-design.md`）の 14 節に新しい小節として書く。コードは変えない。
+  - 前提: Go の変換は、リポジトリの外の使い捨てのモジュール（スクラッチ）で `golang.org/x/text/encoding/japanese` を使って確かめる。このリポジトリの `go.mod` には足さない。
+  - 前提: 試すバイト列は `cp932` の機種依存文字（丸数字など）と `EUC-JP`、`latin1` の列に入った状態を `CAST(col AS BINARY)` で読み、MySQL 8.4 の `latin1` の列で行う。
+- 結果: 設計書 14.9 に記録した。`cp932` と `EUC-JP` のバイト列を入れた `latin1` の列を `CAST(col AS BINARY)` で読み、`x/text` で復号すると、機種依存文字・IBM 拡張・半角カナを含めて正しい文字になった（8.4.13）。全コードの照合では、`cp932` は Go が定義する 7,787 コードがサーバーと完全に一致し、サーバーだけが定義するのは外字（`F040`〜`F9FC`）の 1,880 コード。`EUC-JP` は表が違い（JIS と Microsoft の対応の 7 コードと、`F5`〜`FE` 行の 374 コードなど）、`x/text` をそのまま使う案にした。指定の形は `--latin1-as SPEC=ENC`（`--latin1-as-utf8 SPEC` は `SPEC=utf8` の別名）。検出の限界は、乱数の文字列で測った: 3 文字以上なら「UTF-8 として有効」はほぼ確かだが、「`cp932` として復号できた」は UTF-8 のバイト列でも 10 文字で約 14% 成り立つので、文字コードは自動で選ばない。5.7、5.6、MariaDB、8.0 と実データでの率は確かめていない。コードは変えていない。
+- 受け入れ条件:
+  - [x] `cp932` と `EUC-JP` のバイト列を `latin1` の列に入れた表を、`CAST(col AS BINARY)` で読み、Go の変換で正しい文字になることを 8.4 で確かめる
+  - [x] 指定の形（B-081 の `SPEC` の拡張）と、検出の限界（UTF-8 との見分け）を書く
+
 ## B-106 [done|P2] MySQL 5.7.44 で `TestTriggers` と `TestTriggersRoundTrip` が失敗するのを直す
 - 概要: `task test:integration:mysql57` で、`internal/source` の `TestTriggers` と `internal/dump` の `TestTriggersRoundTrip` が失敗する（B-095 の作業中に、`origin/main`（117d4c7）でも同じ失敗を確認した既存の失敗）。5.7 の `SHOW CREATE TRIGGER` は、書いたとおりの名前を返し、`CREATE DEFINER=`root`@`%` TRIGGER z_first ...` のように名前が逆引用符で囲まれない。そのため、作成順を確かめる判定（`` CREATE TRIGGER `z_first` `` を探す）に合わない。テストが 5.7 の形を想定していないのか、5.7 でのトリガーの出力が実際に正しくないのかを確かめて直す。
 - 前提: `task test:integration:mysql57` で再現する。MySQL 5.6 は同じイベントに複数のトリガーを作れないので、この 2 つのテストは 5.6 では skip する（B-095）。
