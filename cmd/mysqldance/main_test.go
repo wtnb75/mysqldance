@@ -182,6 +182,48 @@ func TestParseArgsDefinerUsageError(t *testing.T) {
 	}
 }
 
+func TestParseArgsSQLSecurity(t *testing.T) {
+	for _, tt := range []struct {
+		args []string
+		want bool
+	}{
+		{nil, false},
+		{[]string{"--sql-security=keep"}, false},
+		{[]string{"--sql-security=invoker"}, true},
+		{[]string{"--sql-security", "invoker"}, true},
+		// No routines are written, and the views lose SQL SECURITY, for these targets.
+		{[]string{"--target", "sqlite", "--sql-security=invoker"}, false},
+		{[]string{"--target", "postgres", "--sql-security=invoker"}, false},
+	} {
+		got, err := parseArgs(append(tt.args, "-o", "out", "db1"), noEnv)
+		if err != nil {
+			t.Fatalf("%v: parseArgs: %v", tt.args, err)
+		}
+		if got.SQLSecurityInvoker != tt.want {
+			t.Errorf("%v: SQLSecurityInvoker = %v, want %v", tt.args, got.SQLSecurityInvoker, tt.want)
+		}
+	}
+}
+
+func TestParseArgsSQLSecurityUsageError(t *testing.T) {
+	for _, v := range []string{"", "definer", "INVOKER"} {
+		var stderr bytes.Buffer
+		_, err := parseArgsTo([]string{"--sql-security=" + v, "-o", "out", "db1"}, noEnv, &stderr)
+		if !errors.Is(err, errUsage) {
+			t.Errorf("--sql-security=%q: err = %v, want errUsage", v, err)
+		}
+		if !strings.Contains(stderr.String(), "--sql-security") {
+			t.Errorf("--sql-security=%q: stderr does not name the flag:\n%s", v, stderr.String())
+		}
+	}
+	// An invalid value is an error for the other targets too.
+	var stderr bytes.Buffer
+	_, err := parseArgsTo([]string{"--target", "sqlite", "--sql-security=x", "-o", "out", "db1"}, noEnv, &stderr)
+	if !errors.Is(err, errUsage) {
+		t.Errorf("--target sqlite --sql-security=x: err = %v, want errUsage", err)
+	}
+}
+
 func TestParseArgsPGSchema(t *testing.T) {
 	got, err := parseArgs([]string{"--target", "postgres", "--pg-schema", "pg_a=app", "--pg-schema", "pg_b=bee", "-o", "out", "pg_a", "pg_b", "c"}, noEnv)
 	if err != nil {

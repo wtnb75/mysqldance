@@ -1,22 +1,5 @@
 # Backlog
 
-## B-112 [ready|P3] `--sql-security=keep|invoker` でビュー・ルーチンの `SQL SECURITY` を書き換えられるようにする
-- 概要: `DEFINER` を除くと、`SQL SECURITY DEFINER`（既定）のビューとルーチンは、復元したユーザーの権限で動く。復元するのが管理者だと、元の定義者より高い権限で動く。オプトインで `SQL SECURITY INVOKER` に書き換えられるようにする（`--sql-security=keep`（既定）と `--sql-security=invoker`）。書き換えるとビューの見え方など定義の意味が変わるので、既定は書き換えない。トリガーには `SQL SECURITY` がないので対象外。
-- 仕様:
-  - 実機で確かめた（MySQL 8.4 / 5.7.44、MariaDB 10.11。`SHOW CREATE`）:
-    - ビューは、どの版でも `SQL SECURITY DEFINER` か `SQL SECURITY INVOKER` を必ず書く（`CREATE ALGORITHM=UNDEFINED DEFINER=... SQL SECURITY DEFINER VIEW ...`）。書き換えは、ヘッダーのこの語の置き換え。
-    - ルーチンは、`DEFINER`（既定）のときは `SQL SECURITY` を**書かない**。`INVOKER` のときだけ、シグネチャ行の次に 4 つの空白で字下げした `SQL SECURITY INVOKER` の行が出る（8.4 / 5.7.44 / MariaDB 10.11 で同じ）。本体は、字下げの無い行から始まる。したがって、ルーチンの `invoker` は「行を足す」処理になる。
-  - ルーチン: 特性の行に `SQL SECURITY INVOKER` が既にあれば何もしない。無ければ、シグネチャ行（`CREATE ... PROCEDURE|FUNCTION name(...) [RETURNS ...]`）の末尾の改行の直前に、`\n    SQL SECURITY INVOKER` を足す。シグネチャ行の終わりは、引用符・バッククォート・括弧の外の最初の改行とする（`ENUM('a\nb')` のような型の中の改行で誤らない）。`DETERMINISTIC` などの特性の順序は問われない。
-  - 前提: ビューは、ヘッダー（`VIEW` より前）にある `SQL SECURITY DEFINER` だけを置き換える。`DEFINER=...` の有無（B-111 の `keep` / `strip`）に依らず動く。`schemafile.StripDefiner` の隣に、同じ流儀（本体に触れない）で関数を足し、`internal/writer/mysql.go` の `WriteViews` と `WriteRoutines` から、`StripDefiner` の後に呼ぶ。
-  - 前提: フラグは `cmd/mysqldance/main.go` で受け、`dump.Options` から `writer.MySQL` に渡す。`--target sqlite` / `postgres` では、ビューを別の変換で出し（`SQL SECURITY` は落とす）、ルーチンは出さないので、何もしない（エラーにしない）。
-  - 前提: B-111 とは独立で、どちらが先でも動く。
-- 受け入れ条件:
-  - [ ] `--sql-security=keep`（既定）は今と同じ出力。`invoker` は、ビューの `SQL SECURITY DEFINER` を `SQL SECURITY INVOKER` にし、ルーチンは上記のとおり `SQL SECURITY INVOKER` の行を足す（既に `INVOKER` のものは変えない）
-  - [ ] 本体や文字列の中の `SQL SECURITY DEFINER` という文字列、`ENUM` の型の中の改行を含むシグネチャは、書き換えを誤らない（単体テスト）
-  - [ ] 不正な値は使い方のエラー。`--target sqlite` / `postgres` では何もしない（README に書く）
-  - [ ] `invoker` の出力が決定的で、復元して `information_schema` の `VIEWS.SECURITY_TYPE` と `ROUTINES.SECURITY_TYPE` が `INVOKER` になる（統合テスト。`SQL SECURITY DEFINER` を明示したビューと、何も書かないルーチンの両方）
-  - [ ] README に、意味が変わること（ビューの見え方、権限）を書く
-
 ## B-113 [ready|P3] SQLite 向けのビューの注意の警告を、列の型と照合順序を使って正確にする
 - 依存: B-062
 - 概要: B-062 の SQLite 向けビューの注意の警告は、構文だけで決める（文字列リテラル、`LIKE`、`GROUP BY` など）。列の型を知らないため、次の差は警告されない。`DECIMAL` / `BIGINT UNSIGNED` / `BIT(64)` の列は SQLite では `TEXT` なので、整数との比較（`price > 5`）や算術（`price + tax`）の結果が MySQL と変わる。大文字小文字を区別しない照合順序の文字列列どうしの比較（`a.name = b.name`、`IN`、`MIN` / `MAX`、`JOIN ... ON`）が、SQLite では 1 バイトずつの比較になる。ビューが読む列の型と照合順序（`source.TableDef`）を使って、該当するビューに理由つきの警告を出す。B-062 のレビューで指摘された。
@@ -676,6 +659,7 @@
 ## B-109 [done|P3] 接続タイムアウトを `--jobs` の追加接続の確立にも効かせる
 ## B-110 [done|P3] 権限がなくてサーバーが列挙しないトリガー・ルーチンを黙って落とさない
 ## B-111 [done|P3] `--definer=strip|keep` でビュー・トリガー・ルーチン・イベントの DEFINER を選べるようにする
+## B-112 [done|P3] `--sql-security=keep|invoker` でビュー・ルーチンの `SQL SECURITY` を書き換えられるようにする
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 ## B-119 [done|P2] `--exclude-table` でテーブルを出力から外せるようにする
 ## B-138 [done|P2] 同じ出力先への並行実行を、出力ディレクトリのロックで拒否する

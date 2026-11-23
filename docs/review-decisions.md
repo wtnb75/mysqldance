@@ -1582,6 +1582,20 @@
 - 指摘: 効かない組み合わせを黙って受け入れるのは、「黙って落とさない」に反する。警告か使い方のエラーにすべき。
 - 却下の理由: B-111 の確定した仕様が「`--definer` は `--target sqlite` / `postgres` では何もしない（エラーにしない）」と決めている。出力に `DEFINER` を残す対象が無いので、落とすものも無く、黙って落とす情報は無い。`TestParseArgsDefiner` が確かめている。README に書いた。
 - 初出: B-111
+- 再出: 2（B-112 の 2 回目のレビューでも同じ指摘。コメントを足した）（B-112: `--sql-security=invoker` でも同じ指摘。ルーチンは出さず、ビューは `SQL SECURITY` を落とすので、書き換える対象が無い。B-112 の確定した仕様が「何もしない（エラーにしない）」と決めている。`TestParseArgsSQLSecurity` が確かめ、`main.go` にコメントを足した）
+
+## R-222 `RoutineSecurityInvoker` が `NO_BACKSLASH_ESCAPES` のルーチンのシグネチャ行の終わりを誤る
+- 対象: internal/schemafile/sqlsecurity.go の signatureEnd（`skipQuoted` の再利用）
+- 指摘: `skipQuoted` は `'` と `"` の中の `\` をエスケープとして読む。`NO_BACKSLASH_ESCAPES` で作ったルーチンの、`\` で終わる文字列（ENUM の値など）の引用の終わりを誤る。
+- 却下の理由: 誤ると、閉じない引用になって `-1`（エラー）か、本体の中の改行になる。後者は `SQL SECURITY` が本体に入って復元が構文エラーになるだけで、黙って DEFINER のままにはならない。B-112 の確定した仕様の範囲（シグネチャの型の中の改行）の外で、`\` で終わる文字列をシグネチャ行に持つ `NO_BACKSLASH_ESCAPES` のルーチンは現実には稀。
+- 初出: B-112
+- 再出: 0
+
+## R-223 `RoutineSecurityInvoker` と `ViewSecurityInvoker` の読み取りが、SHOW CREATE の決まった形に頼っている
+- 対象: internal/schemafile/sqlsecurity.go の RoutineSecurityInvoker、viewSecurity
+- 指摘: 本体が字下げで始まる場合、特性の行が 1 行に 2 つある場合、MariaDB の ORACLE モードや余分なトークンがある見出しで、誤って書き換える、または 2 つ目の `SQL SECURITY` を足す。
+- 却下の理由: B-112 の確定した仕様が、実機（MySQL 8.4 / 5.7.44、MariaDB 10.11）の `SHOW CREATE` の形（特性は 1 行に 1 つ、4 つの空白の字下げ。本体は字下げの無い行から始まる。`SQL SECURITY` は本体の文の先頭になれない）を前提にしている。形が違う見出しは `ViewSecurityInvoker` がエラーにし、黙って DEFINER のままにはならない（`TestViewSecurityInvokerUnparsable`）。ルーチンで形が違っても、二重の `SQL SECURITY` は復元の構文エラーになるだけで、権限が黙って残ることはない。
+- 初出: B-112
 - 再出: 0
 
 ## R-221 `StripTriggerDB` が `DEFINER` を常に読み飛ばし、二重引用符の `DEFINER` を読めない
