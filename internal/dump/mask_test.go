@@ -554,6 +554,82 @@ func TestMaskDumpHashKeepShapeUnique(t *testing.T) {
 	}
 }
 
+// A child column and the UNIQUE parent column it references, given one domain,
+// are masked to the same value, so the files restore with the foreign key intact
+// (B-170). Without the domain on both sides the dump is refused up front.
+func TestMaskDumpDomainKeepsForeignKeys(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE parent (id INT PRIMARY KEY, code VARCHAR(40) NOT NULL, UNIQUE KEY uq_code (code))",
+		"CREATE TABLE child (id INT PRIMARY KEY, pcode VARCHAR(40) NULL, KEY ix_pcode (pcode), CONSTRAINT fk_pcode FOREIGN KEY (pcode) REFERENCES parent (code))",
+		"INSERT INTO parent VALUES (1,'alpha-RAW-0001'),(2,'bravo-RAW-0002'),(3,'charlie-RAW-0003')",
+		"INSERT INTO child VALUES (1,'alpha-RAW-0001'),(2,'alpha-RAW-0001'),(3,'charlie-RAW-0003'),(4,NULL)",
+	)
+	salt, err := mask.LoadSalt("", func(string) string { return "0123456789abcdef-test-salt" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	parse := func(childDomain string) *mask.Rules {
+		t.Helper()
+		src := fmt.Sprintf("version: 1\nrules:\n  %[1]s.parent.code:\n    use: hash_keep_shape\n    domain: code\n  %[1]s.child.pcode:\n    use: hash_keep_shape\n%[2]s", db, childDomain)
+		rules, err := mask.Parse([]byte(src), mask.DefaultRegistry())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rules
+	}
+	run := func(jobs int, rules *mask.Rules) (map[string]string, error) {
+		dir := t.TempDir()
+		cfg := e.cfg
+		cfg.Jobs = jobs
+		err := Run(context.Background(), Options{Source: cfg, DBs: []string{db}, OutDir: dir, Log: testLogger(io.Discard), Mask: rules, MaskSalt: &salt})
+		if err != nil {
+			return nil, err
+		}
+		return readFiles(t, dir), nil
+	}
+
+	// One side without the domain is refused before the output directory is touched.
+	missing := filepath.Join(t.TempDir(), "new", "out")
+	err = Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: missing, Log: testLogger(io.Discard), Mask: parse(""), MaskSalt: &salt})
+	if err == nil || !strings.Contains(err.Error(), `foreign key "fk_pcode"`) {
+		t.Fatalf("a child without the domain: err = %v", err)
+	}
+	if exists(t, filepath.Dir(missing)) {
+		t.Error("a refused run created the output directory")
+	}
+
+	rules := parse("    domain: code\n")
+	first, err := run(1, rules)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if again, err := run(1, rules); err != nil || !reflect.DeepEqual(again, first) {
+		t.Errorf("two runs differ (err = %v)", err)
+	}
+	if two, err := run(2, rules); err != nil || !reflect.DeepEqual(two, first) {
+		t.Errorf("--jobs 2 differs from --jobs 1 (err = %v)", err)
+	}
+	dir := t.TempDir()
+	for name, text := range first {
+		if strings.Contains(text, "RAW") {
+			t.Errorf("%s holds a raw value", name)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.restore(t, dir)
+	if got := queryRows(t, e, "SELECT COUNT(*) FROM child c JOIN parent p ON c.pcode = p.code"); !reflect.DeepEqual(got, []string{"3"}) {
+		t.Errorf("children that find their parent = %v, want 3", got)
+	}
+	if got := queryRows(t, e, "SELECT COUNT(*) FROM parent WHERE code LIKE '%RAW%'"); !reflect.DeepEqual(got, []string{"0"}) {
+		t.Errorf("a parent value was not masked: %v", got)
+	}
+}
+
 // A wrong rule fails the run before the output directory is touched, and every
 // wrong rule is reported at once.
 func TestMaskRulesAreCheckedBeforeTheOutputDirectory(t *testing.T) {

@@ -275,7 +275,6 @@ rules:
 // ignored, so that a rule never masks less than it says.
 func TestValidateRefusesKeysWithoutMeaning(t *testing.T) {
 	cases := map[string]string{
-		"domain":       "    domain: mail\n",
 		"when":         "    when: x\n",
 		"on_null":      "    on_null: keep\n",
 		"on_collision": "    on_collision: error\n",
