@@ -1,18 +1,5 @@
 # Backlog
 
-## B-114 [ready|P3] SQLite 向けの出力で、親テーブルが出力されない外部キーを警告して落とす
-- 依存: B-036
-- 概要: B-063 のレビューで指摘された（B-063 以前からの挙動）。`writeSQLiteTable` は、親が `sc.Defs` に無い（出力されない）外部キーをそのまま出力する。親が存在しない SQLite ファイルになり、外部キーを有効にすると子への書き込みが `no such table` で失敗する。PostgreSQL のライタは、親が出力に無い外部キーを理由つきの警告にして落とす（`byName`）。SQLite もこれに揃え、警告して落とす。
-- 仕様:
-  - 親が出力されない = `fk.RefTable` が `sc.Defs` に無い。`Snapshot.Defs`（`internal/source/def.go`）は、`--exclude-table` で外した表とビューを含めないので、外した表を親にする外部キーが、今はそのまま出力される。
-  - 前提: 判定の順序は `writeSQLiteTable` の今の順（別 DB の参照 → 生成列 → 親の有無 → 親のキー（`isSQLiteParentKey`）の順）に、「親が `defs` に無い」を、`isSQLiteParentKey` の前に足す。`defs[fk.RefTable]` の引き方（完全一致）は今のまま変えない。「親を読んでいなければ判定しない」という `writeSQLiteTable` のコメントは、この項目で直す。
-  - 警告の文言は PostgreSQL のライタに揃える（`foreign key X references table Y, which is not output`）。自己参照（親が自分）は `defs` にあるので変わらない。
-- 受け入れ条件:
-  - [ ] 親テーブルが出力されない（`--exclude-table` で外した）外部キーは、出力せず、理由つきの警告になる（単体テスト）
-  - [ ] 親テーブルが出力される外部キー（自己参照を含む）の出力は変わらない
-  - [ ] 外した親を持つ子の表を含む出力を SQLite に復元し、外部キーを有効にして子へ書き込める（統合テスト。SQLite の統合テストがある場合。無ければ単体テストで足りる）
-  - [ ] README の SQLite の節を、外部キーの扱いに合わせて更新する
-
 ## B-115 [todo|P3] PostgreSQL 向けのビューの静的検査を広げる
 - 依存: B-064
 - 概要: B-064 のレビューで指摘された。B-064 の検査は、確実に通らない形だけを見る。次の形は PostgreSQL が `CREATE VIEW` で拒否しうるが、まだ見ていない: `HAVING` / `ORDER BY` の中の、`GROUP BY` に入っていない列（`sql_mode` から `ONLY_FULL_GROUP_BY` を外して作ったビュー）、`CASE` の枝・`UNION` の枝・列同士の比較での boolean 列と整数列の混在、別名つきテーブルの主キーによる `GROUP BY` の依存の判定（今は別名があると主キーの免除をしない）、別のビューを通して読む boolean 列、列名だけで判定している boolean 列・生成列の、別テーブルの同名の列による過剰な拒否、`GROUP BY` の列だけでできた式（`UPPER(t.a)` など）の `SELECT`（今は拒否する）。式の型を推論するか、検査を広げるか、方針を決める。
@@ -552,6 +539,21 @@
 - 受け入れ条件:
   - [ ] 3 件を 5.6 で通す（生成列を外すか skip する）。`task test:integration:mysql56` で `internal/dump` が通る
 
+## B-215 [todo|P3] SQLite 向けの出力で、親の生成列を参照する外部キーを警告して落とす
+- 概要: B-114 のレビューで指摘された（B-114 以前からの挙動）。`isSQLiteParentKey` は親の索引だけを見るので、親の生成列（SQLite の親には無い列）を参照する外部キーを出力してしまい、外部キーを有効にすると子への書き込みが失敗する。PostgreSQL のライタは `references a generated column` で落とす。SQLite もこれに揃える。
+- 受け入れ条件:
+  - [ ] 親の生成列を参照する外部キーは、出力せず、理由つきの警告になる（単体テスト）
+  - [ ] 親が生成列を参照しない外部キーの出力は変わらない
+  - [ ] README の SQLite の節を更新する
+
+## B-216 [todo|P3] `--exclude-table` の外部キーの警告を、外部キーを落とす `--target` と食い違わないようにする
+- 依存: B-114
+- 概要: B-114 のレビューで指摘された。`--exclude-table` の警告 `foreign key ... references table ..., which is excluded; the output still refers to it` は、B-114 以降の `--target sqlite`（と、外部キーを落とす `--target postgres`）では偽になる（外部キーは出力されない）。README の「Excluding tables」は「文面は MySQL 向け」と書くだけ。`--target` ごとに文面を変えるか、警告をライタ側に任せるか、方針を決める。
+- 受け入れ条件:
+  - [ ] `--target sqlite` で外した表を親にする外部キーに、食い違う 2 つの警告が出ない
+  - [ ] `--target mysql` の警告は変わらない
+  - [ ] README の「Excluding tables」を合わせる
+
 # Done
 
 ## B-003 [done|P2] 複数 DB を 1 つのスナップショットで読む
@@ -658,6 +660,7 @@
 ## B-111 [done|P3] `--definer=strip|keep` でビュー・トリガー・ルーチン・イベントの DEFINER を選べるようにする
 ## B-112 [done|P3] `--sql-security=keep|invoker` でビュー・ルーチンの `SQL SECURITY` を書き換えられるようにする
 ## B-113 [done|P3] SQLite 向けのビューの注意の警告を、列の型と照合順序を使って正確にする
+## B-114 [done|P3] SQLite 向けの出力で、親テーブルが出力されない外部キーを警告して落とす
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
 ## B-119 [done|P2] `--exclude-table` でテーブルを出力から外せるようにする
 ## B-138 [done|P2] 同じ出力先への並行実行を、出力ディレクトリのロックで拒否する

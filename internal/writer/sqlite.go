@@ -153,9 +153,17 @@ func writeSQLiteTable(out *strings.Builder, db string, t source.TableInfo, def s
 		}
 		// InnoDB accepts any index on the referenced columns; SQLite needs the
 		// primary key or a unique index there, or writing to the child fails with
-		// "foreign key mismatch" once foreign keys are on. A parent that was not
-		// read is not judged: the reference is carried over as it was.
-		if parent, ok := defs[fk.RefTable]; ok && !isSQLiteParentKey(parent, fk.RefColumns) {
+		// "foreign key mismatch" once foreign keys are on. A parent that is not in
+		// defs is not output (for example it was excluded), and a reference to it
+		// would fail with "no such table" on a write to the child.
+		// The lookup is an exact match on purpose, as in the PostgreSQL writer
+		// (review ledger R-188, R-228).
+		parent, ok := defs[fk.RefTable]
+		if !ok {
+			warn("foreign key %s references table %s, which is not output", name, sqlvalue.QuoteIdent(fk.RefTable))
+			continue
+		}
+		if !isSQLiteParentKey(parent, fk.RefColumns) {
 			warn("foreign key %s is not output: its columns in %s are not the primary key or a unique index",
 				name, sqlvalue.QuoteIdent(fk.RefTable))
 			continue
