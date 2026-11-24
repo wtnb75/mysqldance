@@ -128,18 +128,12 @@ tasks:
   #   REF   git ref to read FILE from instead of the working tree, e.g.
   #         REF=origin/main (an unmerged branch can show a dependency as done)
   #   N     number of candidates shown per status by backlog:next (default 5)
-  # flow:sync copies the newest deskil flow engine from the plugin cache
-  # (outside the repo) into .claude/scripts/flow.py. Run it by hand after
-  # updating deskil, then run flow:lint. CACHE_GLOB overrides the source path.
-  flow:sync:
-    desc: Copy the newest deskil flow.py into .claude/scripts/
-    cmds:
-      - python3 -I .claude/scripts/sync_flow.py {{.CACHE_GLOB}}
 
+  # flow:lint needs the deskil CLI: uv tool install git+https://github.com/wtnb75/deskil
   flow:lint:
-    desc: Lint every skill's flow.toml with the bundled flow.py
+    desc: Lint every skill's flow.toml with the deskil CLI
     cmds:
-      - for f in .claude/skills/*/flow.toml; do uv run .claude/scripts/flow.py lint "$f" || exit 1; done
+      - for f in .claude/skills/*/flow.toml; do deskil flow lint "$f" || exit 1; done
 
   backlog:stats:
     desc: Show backlog item counts per priority and status
