@@ -1,8 +1,10 @@
 ---
 name: refine-backlog
 description: Use when the user wants to confirm, refine, or finalize the spec of backlog items before implementing them, or to make items ready (仕様を確定, 仕様を詰める, バックログを詰める, ready にする, 次に実装する項目を準備).
-allowed-tools: Bash(uv run .claude/scripts/flow.py:*)
+allowed-tools: Bash(deskil --version), Bash(deskil flow:*)
 ---
+
+Before anything else, run `deskil --version`. If the command is not found, tell the user to run `uv tool install git+https://github.com/wtnb75/deskil` and stop.
 
 # refine-backlog
 
@@ -12,11 +14,9 @@ allowed-tools: Bash(uv run .claude/scripts/flow.py:*)
 
 手順は `flow.toml` に定義してある。次を繰り返す。
 
-1. `uv run .claude/scripts/flow.py start .claude/skills/refine-backlog/flow.toml` を実行する。
+1. `deskil flow start .claude/skills/refine-backlog/flow.toml` を実行する。
 2. 出力の指示に従って作業し、出力の最後に示される `next` コマンドを実行する（分岐があるときは `--result <ラベル>`、承認が要る状態では `--approval "<ユーザーの答え>"` を付ける）。
 3. 出力が `Flow complete.` で終わるまで繰り返す。
-
-`.claude/scripts/flow.py` は deskil の flow エンジンのコピー（全 skill 共通）。更新は `task flow:sync`。
 
 ## 背景
 
