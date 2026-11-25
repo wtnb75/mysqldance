@@ -1702,3 +1702,17 @@
 - 却下の理由: カタログの外部キーは `internal/source/def.go` の外部キーの読み出しで、行ごとに `Columns` と `RefColumns` へ同時に足して作るので、長さは必ず等しい。合わないのはテストの手組みのカタログだけで、実サーバーでは起きない。子の側には、手組みのカタログで panic しないよう検査を置いた（B-170）。
 - 初出: B-170
 - 再出: 0
+
+## R-237 `--strict-rules` が、全部の行が NULL の列のルールを「当たらない」として失敗にする
+- 対象: internal/mask/plan.go の RuleUsage.Unused、internal/dump/mask.go の reportMaskUsage
+- 指摘: NULL だけの列や、どの文書にも無い任意のパスは正当なデータで、書き間違いと区別できない。そのルールを持つ表で `--strict-rules` が毎回終了コード 1 になる。
+- 却下の理由: B-172 の確定した仕様（「当たった行は、ルールの列の値が NULL でない行」「全部の行が NULL の列のルールが 0 件として報告される」が受け入れ条件）そのもの。存在しない列は `Resolve` でエラーになるので、0 件になるのは NULL だけの列かパスの書き間違いに限られる。区別できないことは README の「Masking rows」に書いた。ルールごとの例外は仕様に無く、必要なら別の項目にする。`fixed` と `hash_keep_shape` と `nullify` は NULL をそのまま返す（`fixed.go` の `in.Value.IsNull()`）ので、NULL の列を「変換が書き換える」ルールは今は無い。
+- 初出: B-172
+- 再出: 1（NULL を書き換える変換が無いか、という形で再出。`Plan.Table` の `hits` にコメントを足した）
+
+## R-238 `--strict-rules` の失敗が、`dump finished` のあとに返る
+- 対象: internal/dump/dump.go の Run（`reportMaskUsage` と `dump finished` の順）
+- 指摘: ログだけで成否を判断する利用者は、`dump finished` があるので成功と見なす。失敗の記録を `dump finished` の前に出すか、件数を `dump finished` に入れるべき。
+- 却下の理由: B-172 の確定した仕様が「ダンプを書き終えたあとに終了コード 1 で終える。出力は完成したまま」。`dump finished` は「ファイルが置かれ、古いファイルが消えた」ことを表し、それは本当に起きている。判定は終了コードで行い、0 件のルールは `WARN` で `dump finished` の前に出る。README の「Masking rows」にこの順を書いた。
+- 初出: B-172
+- 再出: 0

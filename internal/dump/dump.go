@@ -94,6 +94,10 @@ type Options struct {
 	// (a rule of its own, keep included, or a DB.TABLE.* rule) an error, checked
 	// with the rules. It needs Mask.
 	StrictColumns bool
+	// StrictRules (B-172) makes Run return ErrUnusedRules, after the dump is
+	// complete and in place, when a rule did nothing on a table that has rows.
+	// It needs Mask. The usage of the rules is logged either way.
+	StrictRules bool
 
 	clock    clock      // time source of the progress records; the zero value is the real clock
 	prog     *progress  // set by Run; nil without progress records
@@ -128,6 +132,9 @@ func Run(ctx context.Context, opt Options) (err error) {
 	}
 	if opt.StrictColumns && opt.Mask == nil {
 		return errors.New("StrictColumns needs Mask")
+	}
+	if opt.StrictRules && opt.Mask == nil {
+		return errors.New("StrictRules needs Mask")
 	}
 	if opt.Log == nil {
 		opt.Log = slog.New(slog.DiscardHandler)
@@ -257,11 +264,16 @@ func Run(ctx context.Context, opt Options) (err error) {
 	// The bar stops here, not after the last table: B-203 fixes it to the end of
 	// the run, where the progress records end too (review ledger R-211).
 	opt.prog.stop()
+	// Only a dump that is in place is judged: a failure above returns its own
+	// error and hides nothing behind a rule that missed. The error comes after
+	// "dump finished" on purpose: the files are in place, and the exit code, not
+	// that record, is the verdict of --strict-rules (B-172).
+	usageErr := reportMaskUsage(opt.Log, opt.maskPlan, opt.StrictRules)
 	// The last record of a successful run: the files are in place and the stale
 	// ones are gone. Run fails on an empty opt.DBs, so there is always a database.
 	opt.Log.Info("dump finished", "databases", len(opt.DBs), "tables", all.tables,
 		"rows", all.rows, "bytes", all.bytes, "files", all.files, "duration", time.Since(runStart))
-	return nil
+	return usageErr
 }
 
 // prepareOutDir creates dir if it is missing. A directory it creates gets

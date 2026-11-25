@@ -118,11 +118,22 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	ctx, stop := notifyContext(context.Background())
 	defer stop()
 	if err := dump.Run(ctx, opt); err != nil {
-		// Report through the logger so --log-format and --log-level apply.
-		opt.Log.Error("dump failed", "error", err)
+		logRunError(opt.Log, err)
 		return 1
 	}
 	return 0
+}
+
+// logRunError reports the error of dump.Run through the logger, so --log-format
+// and --log-level apply. A rule that matched no row under --strict-rules comes
+// after the dump was put in place (the "dump finished" record), so it is not
+// called a failed dump.
+func logRunError(log *slog.Logger, err error) {
+	if errors.Is(err, dump.ErrUnusedRules) {
+		log.Error("masking rule matched no row", "dump", "complete and in place", "error", err)
+		return
+	}
+	log.Error("dump failed", "error", err)
 }
 
 // notifyContext returns a context canceled by Ctrl-C (SIGINT) or SIGTERM, the
@@ -343,6 +354,11 @@ quasi in the rule file). It counts only as the first argument.
                              column needs a rule (use: keep if it needs no
                              masking) or a DB.TABLE.* rule of keep for its
                              table. Needs --mask-rules
+      --strict-rules         exit with code 1, after the dump is complete and in
+                             place, if a rule was applied to no value in any row of a
+                             table that has rows (a misspelled path, or a column that is NULL in every row).
+                             The rows each rule was applied to are logged either way.
+                             Needs --mask-rules
       --salt-file FILE       file holding the salt for the transforms that need
                              one (hash_keep_shape; at least 16 bytes; group and others must not
                              be able to read or write it), else MYSQLDANCE_SALT.
@@ -362,7 +378,7 @@ quasi in the rule file). It counts only as the first argument.
 		maskRules, saltFile                      string
 		logLevel, logFormat                      string
 		noLock, showVersion, caseSafeNames       bool
-		strictColumns                            bool
+		strictColumns, strictRules               bool
 		fileMode, dirMode                        string
 		sortMemory                               string
 		port, jobs                               int
@@ -408,6 +424,7 @@ quasi in the rule file). It counts only as the first argument.
 	fs.StringVar(&maskRules, "mask-rules", "", "")
 	fs.StringVar(&saltFile, "salt-file", "", "")
 	fs.BoolVar(&strictColumns, "strict-columns", false, "")
+	fs.BoolVar(&strictRules, "strict-rules", false, "")
 	fs.StringVar(&logLevel, "log-level", "info", "")
 	fs.StringVar(&logFormat, "log-format", "text", "")
 	fs.BoolVar(&showVersion, "version", false, "")
@@ -450,6 +467,8 @@ quasi in the rule file). It counts only as the first argument.
 		// Without rules every column would be undecided; asking for the check
 		// with nothing to check is a mistake, not a request to refuse the dump.
 		return usage("--strict-columns needs --mask-rules")
+	case strictRules && maskRules == "":
+		return usage("--strict-rules needs --mask-rules")
 	case len(pgSchemas) > 0 && target != targetPostgres:
 		return usage("--pg-schema applies to --target %s only", targetPostgres)
 	case rowsPerInsert == 0 || rowsPerInsert > math.MaxUint32:
@@ -576,6 +595,7 @@ quasi in the rule file). It counts only as the first argument.
 		}
 		opt.Mask = rules
 		opt.StrictColumns = strictColumns
+		opt.StrictRules = strictRules
 		// A salt that is given is checked whether or not a transform uses it, so
 		// a wrong one is found before it is needed. MYSQLDANCE_SALT alone, without
 		// rules, is ignored: it may be set for every run of a machine.

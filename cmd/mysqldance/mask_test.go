@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"mysqldance/internal/dump"
 )
 
 const goodRules = "version: 1\nrules:\n  shop.users.email:\n    use: nullify\n"
@@ -66,6 +71,47 @@ func TestParseArgsStrictColumns(t *testing.T) {
 	got, err = parseArgs([]string{"--mask-rules", rules, "-o", "out", "d"}, noEnv)
 	if err != nil || got.StrictColumns {
 		t.Fatalf("by default StrictColumns = %v, err = %v; want off", got.StrictColumns, err)
+	}
+}
+
+func TestParseArgsStrictRules(t *testing.T) {
+	// Without rules there is nothing to be strict about: a usage error.
+	_, err := parseArgs([]string{"--strict-rules", "-o", "out", "d"}, noEnv)
+	if !errors.Is(err, errUsage) {
+		t.Fatalf("err = %v, want a usage error", err)
+	}
+	rules := writeFile(t, "rules.yaml", goodRules, 0o600)
+	got, err := parseArgs([]string{"--mask-rules", rules, "--strict-rules", "-o", "out", "d"}, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.StrictRules {
+		t.Error("StrictRules is not set")
+	}
+	got, err = parseArgs([]string{"--mask-rules", rules, "-o", "out", "d"}, noEnv)
+	if err != nil || got.StrictRules {
+		t.Fatalf("by default StrictRules = %v, err = %v; want off", got.StrictRules, err)
+	}
+}
+
+// A dump that is complete and in place but has a rule that matched no row is not
+// logged as a failed dump: the exit code is 1, the record says what happened.
+func TestLogRunError(t *testing.T) {
+	for _, tt := range []struct {
+		name, want, wantNot string
+		err                 error
+	}{
+		{"failure", `msg="dump failed"`, "in place", errors.New("boom")},
+		{"unused rule", `msg="masking rule matched no row"`, "dump failed", fmt.Errorf("--strict-rules: %w: 1 rule(s)", dump.ErrUnusedRules)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logRunError(slog.New(slog.NewTextHandler(&buf, nil)), tt.err)
+			out := buf.String()
+			if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, tt.want) || strings.Contains(out, tt.wantNot) {
+				t.Errorf("log = %s, want %s and not %s", out, tt.want, tt.wantNot)
+			}
+		})
 	}
 }
 

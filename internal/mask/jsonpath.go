@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 )
 
 // The paths a rule can give for a JSON column (B-169) are a small subset of
@@ -196,6 +197,10 @@ type pathNode struct {
 // pathLeaf is the rule at the end of a path.
 type pathLeaf struct {
 	fn LeafFunc
+	// path and use name the rule for the usage report. hits counts the rows where
+	// the path found a value to transform.
+	path, use string
+	hits      atomic.Int64
 }
 
 func (n *pathNode) child(step pathStep, path string) *pathNode {
