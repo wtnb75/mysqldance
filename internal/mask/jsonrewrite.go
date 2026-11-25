@@ -37,6 +37,10 @@ func (r *jsonRewriter) rewrite(doc []byte) ([]byte, bool, error) {
 	if s.pos != len(doc) {
 		return nil, false, s.syntax()
 	}
+	// A path counts once for the document, however many values it reached.
+	for _, l := range s.hit {
+		l.hits.Add(1)
+	}
 	if s.out == nil {
 		return doc, false, nil
 	}
@@ -51,6 +55,8 @@ type jsonScan struct {
 	out    []byte
 	copied int
 	enc    []byte // the encoding of a replacement, reused
+	// hit holds each path that found a value to transform in the document, once.
+	hit []*pathLeaf
 }
 
 func (s *jsonScan) syntax() error {
@@ -162,6 +168,9 @@ func (s *jsonScan) leaf(n *pathNode) error {
 		return fmt.Errorf("path %q: %w", n.path, err)
 	}
 	s.enc = enc
+	if !slices.Contains(s.hit, n.leaf) {
+		s.hit = append(s.hit, n.leaf)
+	}
 	s.replace(start, end, enc)
 	return nil
 }

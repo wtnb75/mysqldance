@@ -16,7 +16,7 @@ import (
 // be used under a path, and what the transform finds wrong with its arguments
 // or its salt. What a path reaches is not known until a row is read; a value of
 // another type than the transform takes is an error then.
-func buildJSONPaths(e Entry, col CatalogColumn, reg *Registry, salt *Salt) (Func, error) {
+func buildJSONPaths(e Entry, col CatalogColumn, reg *Registry, salt *Salt) (Func, []*pathLeaf, error) {
 	var errs []error
 	type parsed struct {
 		path  string
@@ -25,6 +25,9 @@ func buildJSONPaths(e Entry, col CatalogColumn, reg *Registry, salt *Salt) (Func
 	var ok []parsed
 	changes := false // some path has a transform that changes values
 	root := &pathNode{}
+	// The paths that change values, for the usage report. Never nil, even with no
+	// such path: Plan.add tells a rule with paths from the others by it.
+	leaves := make([]*pathLeaf, 0, len(e.Rule.Paths))
 	for _, pr := range e.Rule.Paths {
 		bad := func(err error) { errs = append(errs, fmt.Errorf("path %q: %w", pr.Path, err)) }
 		steps, err := parseJSONPath(pr.Path)
@@ -56,11 +59,13 @@ func buildJSONPaths(e Entry, col CatalogColumn, reg *Registry, salt *Salt) (Func
 		if root.path == "" {
 			root.path = pr.Path
 		}
+		leaf.path, leaf.use = pr.Path, pr.Rule.Use
 		root.add(steps, pr.Path, leaf)
+		leaves = append(leaves, leaf)
 		changes = true
 	}
 	if err := errors.Join(errs...); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	rw := &jsonRewriter{root: root}
 	return func(in Input) (sqlvalue.Value, error) {
@@ -75,7 +80,7 @@ func buildJSONPaths(e Entry, col CatalogColumn, reg *Registry, salt *Salt) (Func
 			return in.Value, nil
 		}
 		return sqlvalue.NewValue(in.Value.Type(), out, false), nil
-	}, nil
+	}, leaves, nil
 }
 
 // buildPathLeaf prepares the transform of one path. keep leaves the value alone

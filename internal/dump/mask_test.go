@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -752,6 +753,66 @@ func TestStrictColumns(t *testing.T) {
 	full := parse("  DB.users.email:\n    use: fixed\n    value: masked@example.invalid\n  DB.users.*:\n    use: keep\n  DB.logs.*:\n    use: keep\n")
 	if err := run(t.TempDir(), full, true); err != nil {
 		t.Fatalf("every column decided: %v", err)
+	}
+}
+
+// A rule whose column is NULL in every row is reported as matching no row. The
+// run is a warning; with StrictRules it ends with ErrUnusedRules, after the
+// dump is written whole. A rule that was used, and a rule of an empty table,
+// are not reported.
+func TestMaskUsageIsReported(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE users (id INT PRIMARY KEY, email VARCHAR(40) NOT NULL, note VARCHAR(30) NULL)",
+		"INSERT INTO users (id, email, note) VALUES (1,'alice-RAW@x.test',NULL),(2,'bob-RAW@x.test',NULL)",
+		"CREATE TABLE empty_t (id INT PRIMARY KEY, memo VARCHAR(30) NULL)",
+	)
+	rules, err := mask.Parse([]byte("version: 1\nrules:\n"+strings.ReplaceAll(
+		"  DB.users.email:\n    use: fixed\n    value: masked@example.invalid\n"+
+			"  DB.users.note:\n    use: fixed\n    value: hidden-note\n"+
+			"  DB.empty_t.memo:\n    use: fixed\n    value: hidden-memo\n", "DB", db)), mask.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(strict bool) (string, string, error) {
+		dir := t.TempDir()
+		var log bytes.Buffer
+		err := Run(context.Background(), Options{Source: e.cfg, DBs: []string{db}, OutDir: dir, Mask: rules, StrictRules: strict, Log: testLogger(&log)})
+		files := readFiles(t, dir)
+		var all strings.Builder
+		for _, name := range slices.Sorted(maps.Keys(files)) {
+			all.WriteString(files[name])
+		}
+		return log.String(), all.String(), err
+	}
+	for _, strict := range []bool{false, true} {
+		log, out, err := run(strict)
+		if strings.Contains(log, "hidden-") || strings.Contains(log, "RAW") {
+			t.Errorf("the log holds a value:\n%s", log)
+		}
+		var warns []string
+		for line := range strings.SplitSeq(log, "\n") {
+			if strings.Contains(line, "level=WARN") && strings.Contains(line, "no row") {
+				warns = append(warns, line)
+			}
+		}
+		if len(warns) != 1 || !strings.Contains(warns[0], "rule="+db+".users.note") || !strings.Contains(warns[0], "rows_hit=0 table_rows=2") {
+			t.Errorf("strict %v: warnings = %q, want only users.note", strict, warns)
+		}
+		if !strings.Contains(log, "rule="+db+".users.email use=fixed rows_hit=2 table_rows=2") || !strings.Contains(log, "level=INFO msg=\"dump finished\"") {
+			t.Errorf("strict %v: the usage of the used rule or the end of the dump is not logged:\n%s", strict, log)
+		}
+		if strings.Contains(out, "RAW") || strings.Count(out, "masked@example.invalid") != 2 {
+			t.Errorf("strict %v: the dump is not written whole:\n%s", strict, out)
+		}
+		switch {
+		case strict && (!errors.Is(err, ErrUnusedRules) || !strings.Contains(err.Error(), db+".users.note")):
+			t.Errorf("strict: err = %v, want ErrUnusedRules naming users.note", err)
+		case !strict && err != nil:
+			t.Errorf("err = %v, want nil", err)
+		}
 	}
 }
 

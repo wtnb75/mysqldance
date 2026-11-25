@@ -277,12 +277,12 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 			continue
 		}
 		if len(e.Rule.Paths) > 0 {
-			fn, err := buildJSONPaths(e, *col, reg, salt)
+			fn, leaves, err := buildJSONPaths(e, *col, reg, salt)
 			if err != nil {
 				bad("%v", err)
 				continue
 			}
-			plan.add(dbName, tbl.Name, columnOf(tableColumns(tbl), col.Name), e.Spec, fn)
+			plan.add(dbName, tbl.Name, columnOf(tableColumns(tbl), col.Name), e.Spec, "", fn, leaves)
 			continue
 		}
 		t, _ := reg.Lookup(e.Rule.Use)
@@ -301,7 +301,7 @@ func (r *Rules) Resolve(cat Catalog, reg *Registry, salt *Salt) (*Plan, error) {
 			bad("%v", err)
 			continue
 		}
-		plan.add(dbName, tbl.Name, c, e.Spec, fn)
+		plan.add(dbName, tbl.Name, c, e.Spec, t.Name, fn, nil)
 		if t.UniqueChecked {
 			plan.noteChecked(dbName, *tbl, col.Name)
 		}
