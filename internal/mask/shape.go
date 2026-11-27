@@ -72,11 +72,7 @@ func buildHashKeepShape(c BuildContext) (Func, error) {
 	lower := strings.ToLower(charset)
 	wideOK := lower == "utf8mb4" || lower == "utf8mb3" || lower == "utf8"
 	key := c.Key
-	// An HMAC state is not safe for two goroutines, and the tables of a dump are
-	// read in parallel, so each call takes a state from the pool.
-	pool := &sync.Pool{New: func() any {
-		return &shapeState{h: hmac.New(sha256.New, key)}
-	}}
+	pool := newShapePool(key)
 	name := c.Column.Name
 	return func(in Input) (sqlvalue.Value, error) {
 		if in.Value.IsNull() {
@@ -138,6 +134,21 @@ type shapeState struct {
 	pos  int // the next unread byte of blk
 }
 
+// newShapePool returns a pool of key streams keyed by key. An HMAC state is not
+// safe for two goroutines, and the tables of a dump are read in parallel, so each
+// call takes a state from the pool.
+func newShapePool(key []byte) *sync.Pool {
+	return &sync.Pool{New: func() any {
+		return &shapeState{h: hmac.New(sha256.New, key)}
+	}}
+}
+
+// start begins the key stream of a new value at block 0, which is read on first
+// use.
+func (s *shapeState) start() {
+	s.next, s.pos = 0, len(s.blk)
+}
+
 // number reads the next width bytes of the key stream of the value as one
 // big-endian number. Block 0 is HMAC(key, value); block c is
 // SHA-256(block 0 || c). Block 0 is secret (it needs the key), so the later
@@ -170,7 +181,7 @@ func (s *shapeState) number(value []byte, width int) uint64 {
 // shape returns the masked form of raw: the same length in bytes and in
 // characters. wideOK says whether characters other than ASCII may be written.
 func (s *shapeState) shape(raw []byte, wideOK bool) ([]byte, error) {
-	s.next, s.pos = 0, len(s.blk) // start at block 0, which is read on first use
+	s.start()
 	out := make([]byte, 0, len(raw))
 	for i := 0; i < len(raw); {
 		r, w := utf8.DecodeRune(raw[i:])

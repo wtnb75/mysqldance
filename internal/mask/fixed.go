@@ -17,7 +17,7 @@ import (
 // DefaultRegistry returns the registry of the transforms this build has.
 func DefaultRegistry() *Registry {
 	reg := NewRegistry()
-	for _, t := range []Transform{fixedTransform, nullifyTransform, keepTransform, hashKeepShapeTransform} {
+	for _, t := range []Transform{fixedTransform, nullifyTransform, keepTransform, hashKeepShapeTransform, hashEmailTransform} {
 		if err := reg.Register(t); err != nil {
 			panic(err) // a mistake in this file, caught by the tests
 		}
