@@ -146,42 +146,10 @@ func Open(ctx context.Context, cfg Config, dbs ...string) (*Snapshot, error) {
 		return nil, err
 	}
 
-	mc := mysql.NewConfig()
-	mc.User = cfg.User
-	mc.Passwd = cfg.Password
-	host := cfg.Host
-	// Only where the connection goes: never the password or the DSN.
-	var target []any
-	if cfg.Socket != "" {
-		mc.Net, mc.Addr = "unix", cfg.Socket
-		target = []any{"socket", cfg.Socket}
-	} else {
-		port := cfg.Port
-		if host == "" {
-			host = "127.0.0.1"
-		}
-		if port == 0 {
-			port = 3306
-		}
-		mc.Net, mc.Addr = "tcp", net.JoinHostPort(host, strconv.Itoa(port))
-		target = []any{"host", host, "port", port}
-	}
-	lg := cfg.Log
-	if lg == nil {
-		lg = slog.New(slog.DiscardHandler)
-	}
-	lg = lg.With(target...)
-	// A bad ssl setting must fail here, as the first thing Run does, so it
-	// aborts before the output directory is created or any file is deleted
-	// or written.
-	if mc.TLS, mc.AllowFallbackToPlaintext, err = tlsConfig(cfg, host); err != nil {
+	mc, lg, err := driverConfig(cfg)
+	if err != nil {
 		return nil, err
 	}
-	// Interpolate parameters client-side so no statement is ever prepared:
-	// everything, including rows, travels over the text protocol. ParseTime
-	// stays false so temporal values arrive as the server's text.
-	mc.InterpolateParams = true
-	mc.Timeout, mc.ReadTimeout = cfg.ConnectTimeout, cfg.ReadTimeout
 	connector, err := mysql.NewConnector(mc)
 	if err != nil {
 		return nil, err
@@ -648,4 +616,49 @@ func (s *Snapshot) Close() error {
 		s.lockedAt = time.Time{}
 	}
 	return errors.Join(append(errs, s.db.Close())...)
+}
+
+// driverConfig builds the driver's configuration for cfg, and the logger Open
+// uses (cfg.Log, or one that discards, with where the connection goes added). The
+// driver's own messages go to that logger too (mc.Logger, B-117).
+func driverConfig(cfg Config) (*mysql.Config, *slog.Logger, error) {
+	mc := mysql.NewConfig()
+	mc.User = cfg.User
+	mc.Passwd = cfg.Password
+	host := cfg.Host
+	// Only where the connection goes: never the password or the DSN.
+	var target []any
+	if cfg.Socket != "" {
+		mc.Net, mc.Addr = "unix", cfg.Socket
+		target = []any{"socket", cfg.Socket}
+	} else {
+		port := cfg.Port
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		if port == 0 {
+			port = 3306
+		}
+		mc.Net, mc.Addr = "tcp", net.JoinHostPort(host, strconv.Itoa(port))
+		target = []any{"host", host, "port", port}
+	}
+	lg := cfg.Log
+	if lg == nil {
+		lg = slog.New(slog.DiscardHandler)
+	}
+	lg = lg.With(target...)
+	mc.Logger = newDriverLogger(lg, cfg.Password)
+	// A bad ssl setting must fail here, as the first thing Run does, so it
+	// aborts before the output directory is created or any file is deleted
+	// or written.
+	var err error
+	if mc.TLS, mc.AllowFallbackToPlaintext, err = tlsConfig(cfg, host); err != nil {
+		return nil, nil, err
+	}
+	// Interpolate parameters client-side so no statement is ever prepared:
+	// everything, including rows, travels over the text protocol. ParseTime
+	// stays false so temporal values arrive as the server's text.
+	mc.InterpolateParams = true
+	mc.Timeout, mc.ReadTimeout = cfg.ConnectTimeout, cfg.ReadTimeout
+	return mc, lg, nil
 }
