@@ -340,27 +340,6 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
-## B-177 [ready|P2] スキャン: `scan` サブコマンドで列の値を検査し、検出した場所を報告する
-- 依存: B-176, B-206
-- 概要: 同じスナップショットで行を読み、ルールに当たった `DB.TABLE.COLUMN`・ルール ID・行数を報告する。値そのものは出力しない。表が大きいので、全件読みでも動くようにする（サンプリングは B-182）。
-- 仕様:
-  - ユーザーが選択: 設定を渡さないときは、組み込みの `pii`（`internal/scan/builtin/pii.toml`。`[extend] useBuiltin = ["pii"]` 相当）だけを使う。`pii-columns`（列名で当てる）は、利用者が設定で `useBuiltin` に書いたときだけ使う。`--scan-config FILE` を渡すと、その設定（`scan.Load`）に従う（設定に `useBuiltin` が無ければ、組み込みは使わない）。
-  - ユーザーが選択: 結果は、既定がテキストの表で、`--format json` で 1 行 1 JSON オブジェクト（`scan-k` と同じ形の選び方）。
-  - 前提: `mysqldance scan [flags] DB [DB...]`。サブコマンドは、`scan-k`（`cmd/mysqldance/scank.go` の `subcommandScanK`）と同じく、最初の引数が `scan` のときだけ。フラグは `scan-k` の接続系（`-h` `-P` `-u` `--socket` `--password-file` `--ssl-mode` `--ssl-ca` `--connect-timeout` など、`scan-k` に在るもの）、`--exclude-table`、`--no-lock`、`--log-level`、`--log-format` と同じ。固有のフラグは `--scan-config` と `--format table|json`。パスワードは `--password-file` か `MYSQL_PWD`。
-  - 前提: 終了コードは、読めて報告できたとき 0（検出があっても 0。検出で失敗にするのは B-179 の `--check`）、動かせなかったとき 2（`scan-k` と同じ番号）。
-  - 前提: 検査する列は、`TableInfo.Columns`（生成列を除く、ビューを除く）のうち、型が `BINARY` / `VARBINARY` / `BLOB` 系 / `BIT` / 空間型でないもの。値はサーバーが返す文字列のまま（文字列、数値、日付、`JSON` 全体の文字列、`ENUM` / `SET`）当てる。`JSON` を葉ごとに当てるのは B-178。`BINARY` 系などを検査しないことを README に書く。NULL は検査しない。
-  - 前提: 当てるときの `path` は `DB.TABLE.COLUMN`（`scan.Config.Scan`）。1 つの行で同じ（列、ルール）に何回当たっても 1 行と数える。
-  - 前提（重要）: 読み出しは、新しい `source.Snapshot` のメソッド（名前は実装時に決める）で、並べ替えず、一時ファイルを使わない。既存の `EachRow` は、キーの無い表で生の行を `extsort` に積み、メモリの上限を超えると一時ファイルに載るため、使わない（scan は生の本番データを読む）。選ぶ列だけを `SELECT` し、`ORDER BY` を付けない。メモリは表の大きさに比例しない。スナップショットと表の選び方（`--exclude-table`、`--no-lock`）は `source.Open` を使うので、同じ時点のダンプと同じになる。
-  - 前提: 設定を作る関数（組み込みだけの `*scan.Config` を返す）を `internal/scan` に足す（今は `builtin(name)` が小文字で外に出ていない）。
-  - 前提: 報告は `DATABASE`・`TABLE`・`COLUMN`・`RULE`・`ROWS`（当たった行数）・`SCANNED`（その列で調べた行数、NULL を除く）。当たりのある（列、ルール）だけを、DB、表、列、ルール `id` のバイト順で並べる（決定的）。値、値の一部、行の位置は出さない。ルールの `id` と列の名前は出る（README に書く）。
-  - 前提: README に「Scanning for sensitive values」の節（フラグ、既定のルール、検出は目安で漏れがないことの保証にならない旨（設計書 20.5 の注意）、値は出ないこと、`BINARY` 系を見ないこと）を足す。
-- 受け入れ条件:
-  - [ ] `scan` サブコマンドが組み込み `pii` か `--scan-config` の設定で、列ごと・ルールごとに当たった行数と調べた行数を、表と JSON で報告する。順序は決定的（単体テスト）
-  - [ ] 読み出しが `ORDER BY` なし・一時ファイルなしで、`BINARY` 系・`BIT`・空間型・生成列・ビューを読まない（単体テスト。偽の読み取りで、生の行が `extsort` を通らないことを確かめる）
-  - [ ] 出力・ログ・エラーに、検出した値が出ない（MySQL 8.0 の統合テストで、既知のメール・電話番号を入れて、報告が期待どおりで、標準出力と標準エラーに値が含まれない）
-  - [ ] `--exclude-table`、`--no-lock`、接続のフラグが `scan-k` と同じに効く。終了コード 0 / 2（単体テスト）
-  - [ ] README を更新する
-
 ## B-178 [todo|P2] スキャン: JSON 列は葉ごとに検査し、パスで報告する
 - 依存: B-177
 - 概要: JSON 列は中の値を葉まで辿って検査し、`$.profile.email` の形で報告する。配列の要素は `[*]` にまとめる。
@@ -719,6 +698,7 @@
 ## B-170 [done|P2] マスク: 外部キーの親子で同じ値にする（`domain`）
 ## B-172 [done|P2] マスク: ルールごとの当たり行数を報告し、当たらないルールを警告する（`--strict-rules`）
 ## B-176 [done|P2] スキャン: gitleaks / betterleaks 互換の設定ファイルを読み込んで、値に当てる（`internal/scan`）
+## B-177 [done|P2] スキャン: `scan` サブコマンドで列の値を検査し、検出した場所を報告する
 ## B-180 [done|P2] スキャン: 個人情報を値から検出する組み込みルール集（メール・電話・郵便番号・カード・マイナンバー・IP）
 ## B-181 [done|P2] スキャン: 氏名・住所などを列名から推定する組み込みルール集
 ## B-184 [done|P2] マスク: ルールに判断のない列があればエラーにする（`--strict-columns`、`keep` ルール）

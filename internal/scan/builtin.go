@@ -2,9 +2,11 @@ package scan
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -29,6 +31,26 @@ func BuiltinNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// WithBuiltin returns a config of the built-in rule sets of names only, the same
+// as a rule file that holds nothing but [extend] useBuiltin = names. It is the
+// config of a scan that is given no rule file. No name is an error: a config
+// without a rule would report that nothing was found.
+func WithBuiltin(names ...string) (*Config, error) {
+	if len(names) == 0 {
+		return nil, errors.New("no built-in rule set named")
+	}
+	var b strings.Builder
+	b.WriteString("[extend]\nuseBuiltin = [")
+	for i, n := range names {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(strconv.Quote(n))
+	}
+	b.WriteString("]\n")
+	return Parse([]byte(b.String()))
 }
 
 // builtin parses the rule set of the name. The files are part of the program,

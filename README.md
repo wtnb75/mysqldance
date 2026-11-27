@@ -115,7 +115,7 @@ MYSQL_PWD=secret mysqldance -h 127.0.0.1 -P 3306 -u root -o ./dump mydb otherdb
 
 Put flags **before** the database names (Go's standard `flag` package stops parsing at the first positional argument).
 
-The first argument may name a subcommand. It counts only when it is exactly the name of one (`scan-k`, see "Measuring k-anonymity"); anything else is the dump above. A database that has the name of a subcommand is dumped by writing the flags first: `mysqldance -o out scan-k` dumps the database `scan-k`.
+The first argument may name a subcommand. It counts only when it is exactly the name of one (`scan-k`, see "Measuring k-anonymity"; `scan`, see "Scanning for sensitive values"); anything else is the dump above. A database that has the name of a subcommand is dumped by writing the flags first: `mysqldance -o out scan-k` dumps the database `scan-k`.
 
 | Flag | Default | Description |
 | --- | --- | --- |
@@ -475,6 +475,29 @@ The report has one line per table, in the order of the database names, then of t
 **How it measures.** For each table the server runs `SELECT cnt, COUNT(*) FROM (SELECT COUNT(*) AS cnt FROM t GROUP BY col, ...) g GROUP BY cnt`, so only sizes and counts leave it. A NULL is a value: rows with NULL in the same columns fall in one group. A string column (`CHAR`, `VARCHAR`, the `TEXT` types, `ENUM`, `SET`) is compared byte by byte (`CAST(col AS BINARY)`), so `A` and `a` are two groups; comparing with the collation of the column would put them in one and report a larger k than the data has. The cost is that of reading the whole table plus a temporary table of the groups, once per table, one table at a time (there is no `--jobs`).
 
 **Limits.** The quasi-identifier is one set of columns per table. A combination across tables (a `JOIN`) is not measured, nor are columns of a table that are not marked. A table is measured whole, so a column with a different value in every row (such as a key) makes every k equal to 1.
+
+### Scanning for sensitive values
+
+`mysqldance scan [flags] DB [DB...]` reads the values of the columns and reports where a rule matches: which database, table and column, which rule, and how many rows. It reports counts only. It never prints, logs or returns a value, a part of one, or the position of a row; the output and the logs hold the names of databases, tables, columns and rules (the `id` of a rule), which you may want to keep in mind when you paste them somewhere. It writes no file (there is no `-o`). It reads the values in the server in the same kind of snapshot as a dump (same `--exclude-table`, `--no-lock` and connection flags), before any masking.
+
+| Flag | Description |
+| --- | --- |
+| `-h`, `-P`, `-u`, `--socket`, `--password-file`, `--ssl-mode`, `--ssl-ca` | As for the dump (the password is also read from `MYSQL_PWD`) |
+| `--scan-config FILE` | A gitleaks-compatible TOML rule file. Without it, only the built-in `pii` rules are used. With it, the file decides: no built-in rule is used unless the file says `[extend] useBuiltin = ["pii", "pii-columns"]` |
+| `--format table\|json` | `table` (default) is a text table; `json` is one JSON object per finding, one per line |
+| `--exclude-table DB.TABLE`, `--no-lock`, `--log-level`, `--log-format` | As for the dump |
+
+The report has one line for each (column, rule) that matched at least one row: `DATABASE`, `TABLE`, `COLUMN`, `RULE`, `ROWS` (rows where the rule matched; a row counts once however many times the rule matched in it) and `SCANNED` (rows of that column that were scanned; a NULL is not scanned). The lines are in the byte order of database, table, column and rule, so the same data gives the same report. Nothing is listed for a column that nothing matched. A rule that matches on the name of the column (`pii-columns`) fires only when the column has a value to scan, so a column that holds only NULL or empty strings is not listed, even if its name is `email`.
+
+The rules see the path `DB.TABLE.COLUMN` as the `path` of a rule and of an allowlist, and the value as the server returns it (a string, a number, a date, the whole text of a `JSON` column, a member of an `ENUM` or `SET`). The built-in rule sets are `pii` (values: e-mail addresses, Japanese and international phone numbers, Japanese postal codes, card numbers, My Number, IP addresses; on by default) and `pii-columns` (the names of columns such as `email` or `last_name`; only with `useBuiltin`).
+
+**What is not scanned.** `BINARY`, `VARBINARY`, the `BLOB` types, `BIT` and the spatial types are not read: the bytes of such a column are not text, and a rule written for text would match them by chance. Generated columns and views are not read either: a scan covers the columns a dump writes, and a view shows the rows of its tables. A generated column that turns a skipped column into text (for example `HEX(blob_col)`) is therefore not seen. A `JSON` column is scanned as one string, not leaf by leaf.
+
+**A finding is a hint.** A rule matches what it was written for, so a report with no finding does not prove that the data holds nothing sensitive: a value in a form no rule knows, a value in a binary column, or a value split over several columns is not found. Equally, a match may be a false positive. The rules are a net, not a guarantee.
+
+**How it reads.** For each table, one `SELECT` of the columns that are scanned, with no `ORDER BY`, so the server sends the rows as they come and the memory used does not grow with the table. Unlike the dump, a table without a key is not sorted and no temporary file is written, so raw values never reach the disk. It still reads every row of every table (sampling is not supported yet), so the cost is that of reading the databases once.
+
+**Exit status**: 0 when the scan ran, also when something was found; 2 when it could not run (a wrong flag, a connection that fails, a rule file that is wrong, a query that fails).
 
 ### Parallel reads
 

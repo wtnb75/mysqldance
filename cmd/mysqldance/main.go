@@ -100,6 +100,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if len(args) > 0 && args[0] == subcommandScanK {
 		return runScanK(args[1:], getenv, stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == subcommandScan {
+		return runScan(args[1:], getenv, stdout, stderr)
+	}
 	opt, err := parseArgsTo(args, getenv, stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
@@ -257,7 +260,8 @@ func parseArgsTo(args []string, getenv func(string) string, stderr io.Writer) (d
 Flags must come before the database names.
 The password is read from --password-file, else from MYSQL_PWD.
 Subcommand: mysqldance scan-k --help (measure k-anonymity of the columns marked
-quasi in the rule file). It counts only as the first argument.
+quasi in the rule file), mysqldance scan --help (report where the values match
+rules for sensitive data). They count only as the first argument.
 
   -h, --host HOST            server host (default 127.0.0.1)
   -P, --port PORT            server port (default 3306)
