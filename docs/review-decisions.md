@@ -1716,3 +1716,24 @@
 - 却下の理由: B-172 の確定した仕様が「ダンプを書き終えたあとに終了コード 1 で終える。出力は完成したまま」。`dump finished` は「ファイルが置かれ、古いファイルが消えた」ことを表し、それは本当に起きている。判定は終了コードで行い、0 件のルールは `WARN` で `dump finished` の前に出る。README の「Masking rows」にこの順を書いた。
 - 初出: B-172
 - 再出: 0
+
+## R-239 scan が、型名の除外リストにない型（`VECTOR`、`UUID` など）を文字列として読む
+- 対象: internal/scanrun/scanrun.go の `Scannable`、`notText`
+- 指摘: 除外リストは未知の型を文字列として読むので、バイナリの列に正規表現が当たる。文字列の型の許可リストにするか、未知の型は読まずに警告するべき。
+- 却下の理由: B-177 の確定した仕様が「検査する列は、`BINARY` / `VARBINARY` / `BLOB` 系 / `BIT` / 空間型でないもの」（除外の形）。対象のサーバーは MySQL 5.6 から 8.4 と MariaDB 10.11 / 11.4 で、`VECTOR` は MySQL 9 以降にしかない。許可リストにすると、未知の文字列型の列を黙って検査から外す（見逃す側に倒れる）。README の「Scanning for sensitive values」に、読まない型を書いた。型を足す必要が出たら `notText` に足す。
+- 初出: B-177
+- 再出: 0
+
+## R-240 scan が生成列を読まない（`HEX(blob)` などの導出値を見逃す）
+- 対象: internal/scanrun/scanrun.go の `scanTable`（`TableInfo.Columns` だけを読む）
+- 指摘: 生成列は `SELECT` で読めるので、`HEX(bin_col)` のような導出で文字列になった値や、生成列の名前に当たる列名ルールが見逃される。読むか、読まない列を警告するべき。
+- 却下の理由: B-177 の確定した仕様が「検査する列は、`TableInfo.Columns`（生成列を除く、ビューを除く）」で、受け入れ条件にも「生成列を読まない」がある。ダンプも生成列を書かないので、scan は ダンプに出る列と同じ範囲を見る。見逃す場合があることは README の「Scanning for sensitive values」の「What is not scanned」に書いた（元の列が文字列なら、その列で見つかる）。生成列も読むなら別の項目にする。
+- 初出: B-177
+- 再出: 0
+
+## R-241 scan が、同じ `id` の 2 つのルールを 1 つの行にまとめる
+- 対象: internal/scanrun/scanrun.go の `scanTable`（`seen` と `rows` を `RuleID` で数える）
+- 指摘: 同じ `id` のルールが 2 つあると、ROWS が合算され、どちらのルールが当たったか分からない。ルールの番号で数えるか、重複を拒否するべき。
+- 却下の理由: B-177 の確定した仕様が、報告の単位を（列、ルール `id`）としている（「1 つの行で同じ（列、ルール）に何回当たっても 1 行と数える」）。`id` は gitleaks 互換の設定でルールを指す名前で、同じ `id` の再定義は `[extend]` で組み込みのルールを置き換える使い方（`TestExtendOwnRuleReplacesBuiltinOfTheSameID`）。報告が `id` で数えるのは意図どおりで、`Match` も `RuleID` しか持たない。
+- 初出: B-177
+- 再出: 0

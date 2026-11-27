@@ -190,7 +190,13 @@ func chooseKey(keys map[string][]string, cols []columnRow) []string {
 // it concerns, or empty when it concerns no one table.
 type Warning struct {
 	Table, Message string
+	// Kind is WarnSort for a warning about how EachRow sorts the rows of a table
+	// without a key, which does not apply to a read that does not sort; else empty.
+	Kind string
 }
+
+// WarnSort is the Kind of a warning about the sort of a table without a key.
+const WarnSort = "sort"
 
 // Tables returns the base tables sorted by name, and the warnings found while
 // reading them: tables not using InnoDB, and tables whose row estimate
@@ -251,7 +257,7 @@ func (s *Snapshot) Tables(ctx context.Context) (_ []TableInfo, _ []Warning, err 
 			warnings = append(warnings, Warning{Table: ti.Name, Message: fmt.Sprintf(
 				"table %s has about %d rows, far beyond the scale this tool is designed for; "+
 					"its rows are sorted through temporary files because it has no primary key or NOT NULL unique key, which is slow for a table this large",
-				sqlvalue.QuoteIdent(ti.Name), ti.ApproxRows)})
+				sqlvalue.QuoteIdent(ti.Name), ti.ApproxRows), Kind: WarnSort})
 		}
 		out = append(out, ti)
 	}

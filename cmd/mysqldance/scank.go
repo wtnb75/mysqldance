@@ -11,7 +11,6 @@ import (
 
 	"mysqldance/internal/kanon"
 	"mysqldance/internal/mask"
-	"mysqldance/internal/source"
 )
 
 // subcommandScanK is the name that makes the command measure k-anonymity
@@ -123,33 +122,13 @@ The password is read from --password-file, else from MYSQL_PWD.
       --log-format FORMAT    text or json (default text)
 `)
 	}
-	var excludeTables stringList
-	var (
-		host, user, socket, passwordFile string
-		sslMode, sslCA                   string
-		maskRules, format                string
-		logLevel, logFormat              string
-		noLock                           bool
-		port                             int
-		k                                int64
-	)
-	fs.StringVar(&host, "h", "127.0.0.1", "")
-	fs.StringVar(&host, "host", "127.0.0.1", "")
-	fs.IntVar(&port, "P", 3306, "")
-	fs.IntVar(&port, "port", 3306, "")
-	fs.StringVar(&user, "u", "", "")
-	fs.StringVar(&user, "user", "", "")
-	fs.StringVar(&socket, "socket", "", "")
-	fs.StringVar(&passwordFile, "password-file", "", "")
-	fs.StringVar(&sslMode, "ssl-mode", source.SSLPreferred, "")
-	fs.StringVar(&sslCA, "ssl-ca", "", "")
+	var rf readFlags
+	var maskRules, format string
+	var k int64
+	rf.register(fs)
 	fs.StringVar(&maskRules, "mask-rules", "", "")
 	fs.Int64Var(&k, "k", 0, "")
 	fs.StringVar(&format, "format", scanKFormatText, "")
-	fs.Var(&excludeTables, "exclude-table", "")
-	fs.BoolVar(&noLock, "no-lock", false, "")
-	fs.StringVar(&logLevel, "log-level", "info", "")
-	fs.StringVar(&logFormat, "log-format", "text", "")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return scanKOptions{}, err
@@ -158,49 +137,26 @@ The password is read from --password-file, else from MYSQL_PWD.
 	}
 	kGiven := false
 	fs.Visit(func(f *flag.Flag) { kGiven = kGiven || f.Name == "k" })
-	usage := func(format string, a ...any) (scanKOptions, error) {
-		_, _ = fmt.Fprintf(stderr, "mysqldance scan-k: "+format+"\n", a...)
-		fs.Usage()
-		return scanKOptions{}, errUsage
-	}
+	usage := usageFunc("scan-k", fs, stderr)
 	switch {
 	case maskRules == "":
-		return usage("--mask-rules is required: the columns to measure are the ones marked quasi in it")
+		return scanKOptions{}, usage("--mask-rules is required: the columns to measure are the ones marked quasi in it")
 	case fs.NArg() == 0:
-		return usage("at least one database name is required")
+		return scanKOptions{}, usage("at least one database name is required")
 	case kGiven && k < 1:
-		return usage("--k must be at least 1")
+		return scanKOptions{}, usage("--k must be at least 1")
 	case format != scanKFormatText && format != scanKFormatJSON:
-		return usage("--format must be %s or %s, not %q", scanKFormatText, scanKFormatJSON, format)
-	case port <= 0 || port > 65535:
-		return usage("--port must be between 1 and 65535")
+		return scanKOptions{}, usage("--format must be %s or %s, not %q", scanKFormatText, scanKFormatJSON, format)
 	}
-	if err := (source.Config{Socket: socket, SSLMode: sslMode, SSLCA: sslCA}).ValidateSSL(); err != nil {
-		return usage("%v", err)
-	}
-	logger, err := newLogger(stderr, logLevel, logFormat)
+	src, logger, err := rf.resolve(getenv, stderr, usage)
 	if err != nil {
-		return usage("%v", err)
-	}
-	for _, spec := range excludeTables {
-		if _, _, err := source.SplitTableSpec(spec); err != nil {
-			return usage("--exclude-table: %v", err)
-		}
+		return scanKOptions{}, err
 	}
 	rules, err := mask.Load(maskRules, mask.DefaultRegistry())
 	if err != nil {
 		return scanKOptions{}, fmt.Errorf("--mask-rules: %w", err)
 	}
 	opt := scanKOptions{format: format}
-	opt.DBs, opt.ExcludeTables, opt.Rules, opt.K, opt.Log = fs.Args(), excludeTables, rules, k, logger
-	opt.Source.Host, opt.Source.Port, opt.Source.Socket, opt.Source.User = host, port, socket, user
-	opt.Source.SSLMode, opt.Source.SSLCA = sslMode, sslCA
-	opt.Source.NoLock = noLock
-	opt.Source.Jobs = 1
-	opt.Source.LockTimeout = source.DefaultLockTimeout
-	opt.Source.ConnectTimeout = source.DefaultConnectTimeout
-	if opt.Source.Password, err = loadPassword(passwordFile, getenv, logger); err != nil {
-		return scanKOptions{}, err
-	}
+	opt.Source, opt.DBs, opt.ExcludeTables, opt.Rules, opt.K, opt.Log = src, fs.Args(), rf.excludeTables, rules, k, logger
 	return opt, nil
 }
