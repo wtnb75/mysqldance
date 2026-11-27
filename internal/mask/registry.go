@@ -71,6 +71,9 @@ type Transform struct {
 	// of a unique index (not the primary key): the dump compares the transformed
 	// rows and stops with an error if two of them collide.
 	UniqueChecked bool
+	// NoDomain is true for a transform that uses a key but takes no domain (B-170):
+	// its output must not depend on the column, so a rule that names one is refused.
+	NoDomain bool
 	// NoChange is true for a transform that leaves every value as it is (keep). It
 	// only records that the column was looked at, so it costs nothing per row and
 	// may be used on any column, a column of a key included.

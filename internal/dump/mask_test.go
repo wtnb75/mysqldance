@@ -382,6 +382,98 @@ func TestMaskDumpHashKeepShape(t *testing.T) {
 	}
 }
 
+// hash_email in a dump (B-185): every target gets the same bytes in every run,
+// no raw address is in the files or the log, and a restore keeps the length in
+// bytes of every value (a VARCHAR(n) column still holds it), the host of the rule,
+// NULL, and the empty string. One address gives one output in two columns.
+func TestMaskDumpHashEmail(t *testing.T) {
+	e := newEnv(t)
+	db := uniqueName(t)
+	e.createDB(t, db)
+	e.exec(t,
+		"CREATE TABLE people (id INT PRIMARY KEY, mail VARCHAR(40) CHARACTER SET utf8mb4 NULL, alt VARCHAR(40) CHARACTER SET utf8mb4 NULL)",
+		"INSERT INTO people VALUES (1,'alice-RAW@corp.example.org','alice-RAW@corp.example.org'),(2,'山田太郎RAW@x.example.co.jp','山田太郎RAW@x.example.co.jp'),(3,NULL,''),(4,'','bob-RAW@corp.example.org'),(5,'alice-RAW@corp.example.org','a@b@corp.example.org')",
+	)
+	const lengths = "SELECT id, LENGTH(mail), LENGTH(alt), mail IS NULL, alt IS NULL FROM people ORDER BY id"
+	want := queryRows(t, e, lengths)
+	before := queryRows(t, e, "SELECT id, mail, alt FROM people ORDER BY id")
+	salt, err := mask.LoadSalt("", func(string) string { return "0123456789abcdef-test-salt" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, err := mask.Parse(fmt.Appendf(nil, "version: 1\nrules:\n  %[1]s.people.mail:\n    use: hash_email\n  %[1]s.people.alt:\n    use: hash_email\n    host: t.example.invalid\n", db), mask.DefaultRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(jobs int, tgt writer.Writer) (map[string]string, string) {
+		t.Helper()
+		dir := t.TempDir()
+		cfg := e.cfg
+		cfg.Jobs = jobs
+		var log bytes.Buffer
+		opt := Options{Source: cfg, DBs: []string{db}, OutDir: dir, Log: testLogger(&log), Mask: rules, MaskSalt: &salt, Writer: tgt}
+		if err := Run(context.Background(), opt); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return readFiles(t, dir), log.String()
+	}
+	for name, mk := range map[string]func() writer.Writer{
+		"mysql":    func() writer.Writer { return writer.NewMySQL(datafile.Options{}) },
+		"sqlite":   func() writer.Writer { return writer.NewSQLite(datafile.Options{}) },
+		"postgres": func() writer.Writer { return writer.NewPostgres(datafile.Options{}) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			first, log := run(1, mk())
+			if got, _ := run(1, mk()); !reflect.DeepEqual(got, first) {
+				t.Error("two runs differ")
+			}
+			if got, _ := run(2, mk()); !reflect.DeepEqual(got, first) {
+				t.Error("--jobs 2 differs from --jobs 1")
+			}
+			for file, text := range first {
+				for _, raw := range []string{"RAW", "alice", "山田", "corp.example"} {
+					if strings.Contains(text, raw) {
+						t.Errorf("%s holds the raw value %q", file, raw)
+					}
+				}
+			}
+			if strings.Contains(log, "RAW") || strings.Contains(log, "alice") {
+				t.Errorf("the log holds a value:\n%s", log)
+			}
+		})
+	}
+
+	files, _ := run(1, writer.NewMySQL(datafile.Options{}))
+	dir := t.TempDir()
+	for name, text := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.restore(t, dir)
+	if got := queryRows(t, e, lengths); !reflect.DeepEqual(got, want) {
+		t.Errorf("lengths = %v, want %v", got, want)
+	}
+	if after := queryRows(t, e, "SELECT id, mail, alt FROM people ORDER BY id"); reflect.DeepEqual(after, before) {
+		t.Error("the values did not change")
+	}
+	if got := queryRows(t, e, "SELECT COUNT(*) FROM people WHERE mail LIKE '%@example.invalid' AND alt LIKE '%@t.example.invalid'"); !reflect.DeepEqual(got, []string{"3"}) {
+		t.Errorf("rows with both hosts = %v, want 3 (ids 1, 2 and 5)", got)
+	}
+	// The same address gives the same output (rows 1 and 5 hold one address in mail).
+	var one, five string
+	for _, r := range queryRows(t, e, "SELECT id, mail FROM people WHERE id IN (1,5) ORDER BY id") {
+		if strings.HasPrefix(r, "1|") {
+			one = r[2:]
+		} else {
+			five = r[2:]
+		}
+	}
+	if one == "" || one != five {
+		t.Errorf("rows 1 and 5 hold one address, but got %q and %q", one, five)
+	}
+}
+
 // A rule per JSON path (B-169) changes only the values the paths reach: in the
 // files of every target, the same bytes come out of every run (twice, with one
 // reader and with two), the files hold no raw value of a path, and a restore

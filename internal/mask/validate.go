@@ -583,6 +583,8 @@ func checkDomainUse(r Rule, reg *Registry) error {
 	}
 	if t, ok := reg.Lookup(r.Use); ok && !t.NeedsSalt {
 		return fmt.Errorf("domain has no effect on transform %q, which uses no key", t.Name)
+	} else if ok && t.NoDomain {
+		return fmt.Errorf("transform %q takes no domain: its output does not depend on the column", t.Name)
 	}
 	return nil
 }
