@@ -6,20 +6,6 @@
 - 受け入れ条件:
   - [ ] 仕様を確定する（`refine-backlog`）
 
-## B-117 [ready|P3] ドライバのログを `slog` に通す
-- 概要: `go-sql-driver/mysql` は、読み取りタイムアウトなどを自前のロガーで標準エラー出力に書く（README の `--read-timeout` の説明にある `i/o timeout` の行）。この行は `--log-format json` でも素のテキストで、`--log-level` も効かない。`mysql.Config.Logger` に、`slog` へ渡すアダプタを設定する。
-- 仕様:
-  - 前提: 設定する場所は `internal/source/connect.go` の `mysql.NewConnector(mc)` の前（`mc.Logger`）。ロガーは同じ関数の `lg`（`cfg.Log` に接続先の `host` / `port` を付けたもの。`cfg.Log` が nil のときは `slog.DiscardHandler`）を使う。`scan-k` など `source.Open` を通る経路にも効く。
-  - 前提: ドライバの `Logger` は `Print(v ...any)` だけを持つ（`go-sql-driver/mysql` v1.10.2 の `errors.go`）。アダプタは `fmt.Sprint(v...)` を `WARN` のレコードにする。メッセージは固定の `mysql driver`、ドライバの文は属性 `message` に入れる。`--log-level error` では出ない。
-  - 前提: 漏れの防止として、文に接続のパスワード（空でないとき）が含まれていたら `***` に置き換える。DSN は組み立てないので入らない。それ以上の加工（行頭の `[mysql] ` の除去など）はしない。
-  - 前提: `mysql.SetLogger`（プロセス全体）は使わない。接続ごとの `mc.Logger` だけを設定し、テストが並列でも干渉しないようにする。
-  - 前提: README の `--read-timeout` の説明の「the driver logs `i/o timeout` to standard error」を、`WARN` のレコードで出ると直す。
-- 受け入れ条件:
-  - [ ] アダプタが `WARN` で出力し、`--log-format json` では JSON、`--log-level error` では出ない（単体テスト）
-  - [ ] パスワードを含む文がレコードに出ない（単体テスト。パスワードが空のときは置換しない）
-  - [ ] `source.Open` の接続がこのアダプタを使う（`mc.Logger` が設定される。単体テスト）
-  - [ ] README の `--read-timeout` の説明を合わせる
-
 ## B-118 [todo|P3] `utf8mb4` に変換できない文字が `?` に化けるかを調べる
 - 概要: 行は `SET NAMES utf8mb4` で読むので、サーバーが列の文字コードから `utf8mb4` に変換する。`sjis` / `cp932` / `ujis` / `gbk` / `big5` などの列に、Unicode に対応のないバイト列（未定義の符号、外字）があると、サーバーはエラーにせず `?` に置き換えて返すと思われる（コードレビューでの指摘。実機では未確認）。そうなら「黙って落とさない」に反する。実機で確かめ、検出の方法と費用を設計書に書く。コードは変えない。B-081（`latin1` の列に入った UTF-8）と B-105 とは原因が別。
 - 受け入れ条件:
@@ -662,6 +648,7 @@
 ## B-113 [done|P3] SQLite 向けのビューの注意の警告を、列の型と照合順序を使って正確にする
 ## B-114 [done|P3] SQLite 向けの出力で、親テーブルが出力されない外部キーを警告して落とす
 ## B-116 [done|P2] ストアド関数を呼ぶビューを復元できるようにする
+## B-117 [done|P3] ドライバのログを `slog` に通す
 ## B-119 [done|P2] `--exclude-table` でテーブルを出力から外せるようにする
 ## B-138 [done|P2] 同じ出力先への並行実行を、出力ディレクトリのロックで拒否する
 ## B-139 [done|P2] リポジトリに LICENSE を置く

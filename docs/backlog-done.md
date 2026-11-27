@@ -1129,6 +1129,20 @@
   - [x] `--target sqlite` / `--target postgres` の出力は 1 バイトも変わらない
   - [x] README の「Output format」「Stored routines」「Re-dumping and removing stale files」を出力に合わせ、ビューの移動で差分が出ることを書く
 
+## B-117 [done|P3] ドライバのログを `slog` に通す
+- 概要: `go-sql-driver/mysql` は、読み取りタイムアウトなどを自前のロガーで標準エラー出力に書く（README の `--read-timeout` の説明にある `i/o timeout` の行）。この行は `--log-format json` でも素のテキストで、`--log-level` も効かない。`mysql.Config.Logger` に、`slog` へ渡すアダプタを設定する。
+- 仕様:
+  - 前提: 設定する場所は `internal/source/connect.go` の `mysql.NewConnector(mc)` の前（`mc.Logger`）。ロガーは同じ関数の `lg`（`cfg.Log` に接続先の `host` / `port` を付けたもの。`cfg.Log` が nil のときは `slog.DiscardHandler`）を使う。`scan-k` など `source.Open` を通る経路にも効く。
+  - 前提: ドライバの `Logger` は `Print(v ...any)` だけを持つ（`go-sql-driver/mysql` v1.10.2 の `errors.go`）。アダプタは `fmt.Sprint(v...)` を `WARN` のレコードにする。メッセージは固定の `mysql driver`、ドライバの文は属性 `message` に入れる。`--log-level error` では出ない。
+  - 前提: 漏れの防止として、文に接続のパスワード（空でないとき）が含まれていたら `***` に置き換える。DSN は組み立てないので入らない。それ以上の加工（行頭の `[mysql] ` の除去など）はしない。
+  - 前提: `mysql.SetLogger`（プロセス全体）は使わない。接続ごとの `mc.Logger` だけを設定し、テストが並列でも干渉しないようにする。
+  - 前提: README の `--read-timeout` の説明の「the driver logs `i/o timeout` to standard error」を、`WARN` のレコードで出ると直す。
+- 受け入れ条件:
+  - [x] アダプタが `WARN` で出力し、`--log-format json` では JSON、`--log-level error` では出ない（単体テスト）
+  - [x] パスワードを含む文がレコードに出ない（単体テスト。パスワードが空のときは置換しない）
+  - [x] `source.Open` の接続がこのアダプタを使う（`mc.Logger` が設定される。単体テスト）
+  - [x] README の `--read-timeout` の説明を合わせる
+
 ## B-119 [done|P2] `--exclude-table` でテーブルを出力から外せるようにする
 - 概要: 出力を Git で管理すると、セッションの表、ログの表、個人情報の表を外したい場面があるが、今は DB 単位でしか選べない。`--exclude-table DB.TABLE`（繰り返し指定できる。完全一致で、ワイルドカードなし）を足し、その表のスキーマとデータを出力しない。前回のダンプにあったその表のデータファイルは、古いファイルとして消える（今の動作のまま）。
 - 仕様:
