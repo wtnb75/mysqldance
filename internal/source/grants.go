@@ -303,8 +303,7 @@ func (s *Snapshot) readGrants(ctx context.Context) (grants grantSet, ok bool, er
 	}
 	lines, err := s.queryGrants(ctx)
 	if err != nil {
-		var serverErr *mysql.MySQLError
-		if !errors.As(err, &serverErr) {
+		if _, ok := errors.AsType[*mysql.MySQLError](err); !ok {
 			return nil, false, err
 		}
 		s.grantsRead = true

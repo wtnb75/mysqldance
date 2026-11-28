@@ -67,8 +67,7 @@ func TestSecondSignalKills(t *testing.T) {
 	go func() { done <- cmd.Wait() }()
 	select {
 	case err := <-done:
-		var ee *exec.ExitError
-		if !errors.As(err, &ee) {
+		if _, ok := errors.AsType[*exec.ExitError](err); !ok {
 			t.Fatalf("child exited with %v, want death by signal", err)
 		}
 	case <-time.After(5 * time.Second):
