@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/go-sql-driver/mysql v1.10.2
+	github.com/go-sql-driver/mysql v1.11.0
 	github.com/jackc/pgx/v5 v5.7.2
 	github.com/mattn/go-isatty v0.0.24
 	go.yaml.in/yaml/v3 v3.0.6
